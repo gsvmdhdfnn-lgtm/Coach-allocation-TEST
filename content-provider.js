@@ -117,9 +117,13 @@ function applyVisibleLabels(){
     ['IDP',label('idp_label','IDP')]
   ];
   map.forEach(function(pair){replaceExact(document.body,pair[0],pair[1])});
-  if(current.organisation&&current.organisation.hub_name){
-    document.title=current.organisation.hub_name;
-  }
+if(
+  current.organisation &&
+  current.organisation.hub_name &&
+  document.title !== current.organisation.hub_name
+){
+  document.title=current.organisation.hub_name;
+}
 }
 
 function notify(){
@@ -185,7 +189,8 @@ window.HubContent={
 };
 
 var observer=new MutationObserver(function(){applyVisibleLabels()});
-observer.observe(document.documentElement,{childList:true,subtree:true});
+  observer.observe(document.body,{childList:true,subtree:true});
+
 load();
 
 })();
