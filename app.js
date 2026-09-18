@@ -1,4 +1,4 @@
-
+document.body.innerHTML = '<h1 style="padding:30px;font-family:Arial">TEST APP IS RUNNING</h1>';
 (function(){
 'use strict';
 var CFG=window.APP_CONFIG||{};
