@@ -17,6 +17,9 @@
 --------------------------------------------------------------------------- */
 
 window.APP_CONFIG = {
+supabaseUrl: "https://bkkukymqaxawnudoxdjs.supabase.co",
+supabasePublishableKey: "YOUR_JOSHEVANSHUB_PUBLISHABLE_KEY",
+   
   contentApiUrl: "https://bkkukymqaxawnudoxdjs.supabase.co/functions/v1/hub-content",
   /* Published CSV URL for the "Sessions" tab. Public — safe to share. */
   sessionsCsvUrl: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQj4giL7oEoZLLfC74Sq97bnUGIdMqnG_ECOkNyRis-Drz4yH1OUssQ-YBRbCR6ajiJBvV05JjzOi8I/pub?gid=349419235&single=true&output=csv",
