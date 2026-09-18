@@ -18,7 +18,7 @@
 
 window.APP_CONFIG = {
 supabaseUrl: "https://bkkukymqaxawnudoxdjs.supabase.co",
-supabasePublishableKey: "YOUR_JOSHEVANSHUB_PUBLISHABLE_KEY",
+supabasePublishableKey: "sb_publishable_DP7dm6PyNAp3YYNg1gvz1A_tsSX2QIA",
    
   contentApiUrl: "https://bkkukymqaxawnudoxdjs.supabase.co/functions/v1/hub-content",
   /* Published CSV URL for the "Sessions" tab. Public — safe to share. */
