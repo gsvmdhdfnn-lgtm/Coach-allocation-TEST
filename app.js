@@ -12,7 +12,24 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){retur
 function headerKey(s){return String(s||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'')}
 function parseCsv(text){var rows=[],row=[],field='',q=false;for(var i=0;i<text.length;i++){var c=text[i],n=text[i+1];if(q){if(c==='"'&&n==='"'){field+='"';i++}else if(c==='"'){q=false}else field+=c}else{if(c==='"')q=true;else if(c===','){row.push(field);field=''}else if(c==='\n'){row.push(field);rows.push(row);row=[];field=''}else if(c!=='\r')field+=c}}row.push(field);if(row.some(Boolean))rows.push(row);return rows}
 function objects(text){var rows=parseCsv(text),h=(rows.shift()||[]).map(headerKey);return rows.map(function(r){var o={};h.forEach(function(k,i){if(k)o[k]=(r[i]||'').trim()});return o})}
-function fetchCsv(url){if(!url||/^PASTE_/.test(url))return Promise.resolve([]);return fetch(url,{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('Could not load data');return r.text()}).then(objects)}
+function fetchCsv(url,required){
+ if(!url||/^PASTE_/.test(url))return Promise.resolve([]);
+ var controller=new AbortController();
+ var timer=setTimeout(function(){controller.abort()},8000);
+
+ return fetch(url,{cache:'no-store',signal:controller.signal})
+  .then(function(r){
+   if(!r.ok)throw new Error('Could not load data');
+   return r.text();
+  })
+  .then(objects)
+  .catch(function(e){
+   if(required)throw e;
+   console.warn('Optional data source unavailable; continuing without it.',url,e);
+   return [];
+  })
+  .finally(function(){clearTimeout(timer)});
+}
 function nameKey(s){return String(s||'').trim().toLowerCase().replace(/\s+/g,' ')}
 function splitCoaches(s){return String(s||'').split(',').map(function(x){return x.trim()}).filter(Boolean)}
 function parseDate(s){if(!s)return null;var m=String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);return m?new Date(+m[1],+m[2]-1,+m[3],12):null}
@@ -36,7 +53,14 @@ function demoData(){
 function load(){
  if(DEMO){demoData();render();return}
  root.innerHTML='<div class="loading">Loading your hub…</div>';
- Promise.all([fetchCsv(CFG.sessionsCsvUrl),fetchCsv(CFG.calendarCsvUrl),fetchCsv(CFG.changesCsvUrl),fetchCsv(CFG.termsCsvUrl),fetchCsv(CFG.themesCsvUrl),fetchCsv(CFG.venueInfoCsvUrl)]).then(function(all){
+ Promise.all([
+ fetchCsv(CFG.sessionsCsvUrl,true),
+ fetchCsv(CFG.calendarCsvUrl,false),
+ fetchCsv(CFG.changesCsvUrl,false),
+ fetchCsv(CFG.termsCsvUrl,false),
+ fetchCsv(CFG.themesCsvUrl,false),
+ fetchCsv(CFG.venueInfoCsvUrl,false)
+])
   var ss=all[0];state.sessions=ss.map(function(r){return {id:r.session_id,name:r.session_name,programme:r.programme,category:r.category,ageGroup:r.age_group,day:r.day,time:r.time,venue:r.venue,address:r.address,coaches:splitCoaches(r.coaches),client:r.client,hours:r.hours}});
   var names={};state.sessions.forEach(function(s){s.coaches.forEach(function(c){names[c]=true})});var qs=new URLSearchParams(location.search);var coach=qs.get('coach');state.role=(qs.get('role')||'coach').toLowerCase();state.me={name:coach&&names[coach]?coach:(names.David?'David':Object.keys(names)[0]||'Coach'),owner:false};
   all[1].forEach(function(r){var d=parseDate(r.week_commencing);if(d)state.calendar[iso(mondayOf(d))]={label:r.label||'',weekNo:r.week_no||'',running:!/^(no|n|0|false)$/i.test(r.running||'yes')}});
