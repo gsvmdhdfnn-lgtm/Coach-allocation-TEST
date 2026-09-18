@@ -61,7 +61,7 @@ function load(){
  fetchCsv(CFG.themesCsvUrl,false),
  fetchCsv(CFG.venueInfoCsvUrl,false)
 ]).then(function(all){
-  var ss=all[0];
+ 
   var ss=all[0];state.sessions=ss.map(function(r){return {id:r.session_id,name:r.session_name,programme:r.programme,category:r.category,ageGroup:r.age_group,day:r.day,time:r.time,venue:r.venue,address:r.address,coaches:splitCoaches(r.coaches),client:r.client,hours:r.hours}});
   var names={};state.sessions.forEach(function(s){s.coaches.forEach(function(c){names[c]=true})});var qs=new URLSearchParams(location.search);var coach=qs.get('coach');state.role=(qs.get('role')||'coach').toLowerCase();state.me={name:coach&&names[coach]?coach:(names.David?'David':Object.keys(names)[0]||'Coach'),owner:false};
   all[1].forEach(function(r){var d=parseDate(r.week_commencing);if(d)state.calendar[iso(mondayOf(d))]={label:r.label||'',weekNo:r.week_no||'',running:!/^(no|n|0|false)$/i.test(r.running||'yes')}});
