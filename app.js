@@ -30,6 +30,32 @@ function fetchCsv(url,required){
   })
   .finally(function(){clearTimeout(timer)});
 }
+/**
+ * Changes (cancellations/cover/extras) is the one "optional" source whose
+ * failure isn't safe to hide: fetchCsv()'s silent fallback would show a
+ * cancelled or covered session as perfectly normal. So this fetches it
+ * directly rather than through fetchCsv(), and sets a flag the screens
+ * that depend on it can check and warn about instead of failing quietly.
+ */
+function fetchChanges(){
+ if(!CFG.changesCsvUrl||/^PASTE_/.test(CFG.changesCsvUrl))return Promise.resolve([]);
+ var controller=new AbortController();
+ var timer=setTimeout(function(){controller.abort()},8000);
+ return fetch(CFG.changesCsvUrl,{cache:'no-store',signal:controller.signal})
+  .then(function(r){if(!r.ok)throw new Error('Could not load data');return r.text()})
+  .then(objects)
+  .catch(function(e){
+   console.warn('Changes could not be loaded - failing visibly, not silently.',e);
+   state.changesLoadFailed=true;
+   return [];
+  })
+  .finally(function(){clearTimeout(timer)});
+}
+function changesWarningBanner(){
+ if(!state.changesLoadFailed)return '';
+ return '<div class="data-warning"><b>Today’s cancellations and cover couldn’t be loaded.</b> '+
+  'What you see below may not reflect a last-minute change. Pull down to refresh and try again.</div>';
+}
 function nameKey(s){return String(s||'').trim().toLowerCase().replace(/\s+/g,' ')}
 function splitCoaches(s){return String(s||'').split(',').map(function(x){return x.trim()}).filter(Boolean)}
 function parseDate(s){if(!s)return null;var m=String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);return m?new Date(+m[1],+m[2]-1,+m[3],12):null}
@@ -56,7 +82,7 @@ function load(){
  Promise.all([
  fetchCsv(CFG.sessionsCsvUrl,true),
  fetchCsv(CFG.calendarCsvUrl,false),
- fetchCsv(CFG.changesCsvUrl,false),
+ fetchChanges(),
  fetchCsv(CFG.termsCsvUrl,false),
  fetchCsv(CFG.themesCsvUrl,false),
  fetchCsv(CFG.venueInfoCsvUrl,false)
@@ -120,6 +146,7 @@ function render(){setNav(state.screen);if(state.role!=='coach'){root.innerHTML='
 function renderHome(){
  var now=new Date(),n=nextOccurrence(now),today=todaysOccurrences(now),ns=n&&n.session;
  root.innerHTML='<div class="coach-home">'+
+ changesWarningBanner()+
  (n?'<section class="next-home-card" data-session="'+esc(ns.id)+'" data-date="'+iso(n.date)+'"><div class="next-home-head"><span>NEXT SESSION</span><span class="next-arrow">›</span></div><div class="next-home-body"><h1>'+esc(ns.name)+'</h1><div class="home-meta"><span>'+icons.clock+'</span><b>'+esc(ns.time)+'</b></div><div class="home-meta"><span>'+icons.pin+'</span><span>'+esc(ns.venue)+'</span></div><span class="countdown-pill" id="next-countdown" data-start="'+n.start.toISOString()+'" data-end="'+n.end.toISOString()+'">'+esc(countdownText(n,now))+'</span></div></section>':'<section class="next-home-card empty"><div class="next-home-head"><span>NEXT SESSION</span></div><div class="next-home-body"><h1>No upcoming sessions</h1></div></section>')+
  '<section class="today-home"><div class="home-section-title"><h2>TODAY’S SESSIONS</h2><button data-nav="schedule">View all</button></div><div class="today-home-list">'+(today.length?today.map(function(o,i){var s=o.session;return '<button class="today-home-row" data-session="'+esc(s.id)+'" data-date="'+iso(o.date)+'"><span class="today-line"></span><span class="today-time">'+esc(s.time.split(/\s*[-–—]\s*/)[0])+'</span><span class="today-copy"><b>'+esc(s.name)+'</b><small>'+esc(s.venue)+'</small></span><span class="chev">›</span></button>'}).join(''):'<div class="today-empty">No sessions today.</div>')+'</div></section>'+
  '<section class="home-shortcuts"><button data-nav="schedule"><span>▣</span><b>My Schedule</b></button><button data-nav="resources"><span>▤</span><b>Resources</b></button><button data-nav="venues"><span>⌖</span><b>Venues</b></button><button data-nav="support"><span>▧</span><b>Coach Support</b></button></section>'+
@@ -153,7 +180,7 @@ function renderWeekSchedule(){var start=addDays(allowedScheduleStart(),state.sch
 function monthName(d){return d.toLocaleDateString('en-GB',{month:'long',year:'numeric'})}
 function monthGrid(cursor,selected){var y=cursor.getFullYear(),m=cursor.getMonth(),first=new Date(y,m,1,12),startOffset=(first.getDay()+6)%7,days=new Date(y,m+1,0).getDate(),cells='';for(var i=0;i<startOffset;i++)cells+='<span class="cal-cell is-blank"></span>';for(var day=1;day<=days;day++){var d=new Date(y,m,day,12),allowed=inCalendarYear(d),list=allowed?scheduleOccurrencesForDate(d):[],sel=selected&&sameDay(d,selected);cells+='<button class="cal-cell '+(allowed?'':'is-disabled')+(sel?' is-selected':'')+'" '+(allowed?'data-action="select-date" data-date="'+iso(d)+'"':'disabled')+'><b>'+day+'</b>'+(list.length?'<i></i>':'')+'</button>'}return cells}
 function renderCalendarSchedule(){var today=new Date(),ayStart=academicYearStart(),ayEnd=academicYearEnd();if(!state.calendarCursor)state.calendarCursor=new Date(today.getFullYear(),today.getMonth(),1,12);if(!state.calendarSelected||!inCalendarYear(state.calendarSelected))state.calendarSelected=new Date(today.getFullYear(),today.getMonth(),today.getDate(),12);var cursor=state.calendarCursor,sel=state.calendarSelected,list=scheduleOccurrencesForDate(sel),prev=new Date(cursor.getFullYear(),cursor.getMonth()-1,1,12),next=new Date(cursor.getFullYear(),cursor.getMonth()+1,1,12),canPrev=new Date(prev.getFullYear(),prev.getMonth()+1,0,12)>=ayStart,canNext=next<=ayEnd;return '<section class="calendar-card"><div class="calendar-head"><button data-action="month-shift" data-dir="-1" '+(canPrev?'':'disabled')+'>‹</button><b>'+esc(monthName(cursor))+'</b><button data-action="month-shift" data-dir="1" '+(canNext?'':'disabled')+'>›</button></div><div class="calendar-year-note">Academic year · September '+ayStart.getFullYear()+' – August '+ayEnd.getFullYear()+'</div><div class="calendar-weekdays"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><div class="calendar-grid">'+monthGrid(cursor,sel)+'</div></section><section class="schedule-panel calendar-results"><div class="schedule-date-heading"><h2>'+esc(formatDateLong(sel))+'</h2><span>'+list.length+' session'+(list.length===1?'':'s')+'</span></div><div class="schedule-list">'+(list.length?list.map(function(o){return scheduleCard(o,true)}).join(''):'<div class="schedule-empty">No sessions on this date.</div>')+'</div></section><button class="calendar-action" data-action="calendar-options" data-scope="day" data-date="'+iso(sel)+'">▣ Add selected date to Calendar <span>⌄</span></button>'}
-function renderSchedule(){state.virtualSessions={};var body=state.scheduleView==='week'?renderWeekSchedule():state.scheduleView==='calendar'?renderCalendarSchedule():renderTodaySchedule();root.innerHTML='<div class="coach-schedule"><div class="page-title schedule-title"><h1>Schedule</h1><p>Today and This Week show the current week plus the next 3 weeks. Calendar covers the full academic year.</p></div>'+scheduleTabs()+body+'</div>'}
+function renderSchedule(){state.virtualSessions={};var body=state.scheduleView==='week'?renderWeekSchedule():state.scheduleView==='calendar'?renderCalendarSchedule():renderTodaySchedule();root.innerHTML='<div class="coach-schedule">'+changesWarningBanner()+'<div class="page-title schedule-title"><h1>Schedule</h1><p>Today and This Week show the current week plus the next 3 weeks. Calendar covers the full academic year.</p></div>'+scheduleTabs()+body+'</div>'}
 function findSession(id){return state.sessions.find(function(s){return s.id===id})||state.virtualSessions[id]}
 function venueDetailsFor(s){var direct=state.venueInfo[venueKey(s.venue)]||null;if(direct)return direct;var alias=(CFG.venueAliases||{})[s.venue];if(alias&&state.venueInfo[venueKey(alias)])return state.venueInfo[venueKey(alias)];return {venue:s.venue,address:s.address||'',postcode:'',parking:'',meetingPoint:'',access:'',notes:''}}
 function sessionNoteFor(s,d){if(s.note)return s.note;var notes=changesForDate(d).filter(function(ch){return changeHits(ch,s)&&ch.note}).map(function(ch){return ch.note.trim()}).filter(Boolean);return notes[0]||''}
