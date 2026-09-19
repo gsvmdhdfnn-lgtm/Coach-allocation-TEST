@@ -3,7 +3,7 @@
 'use strict';
 var CFG=window.APP_CONFIG||{};
 var DEMO=new URLSearchParams(location.search).get('demo')==='1';
-var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff'};
+var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[]};
 var supabaseClient=(!DEMO&&window.supabase&&CFG.supabaseUrl&&CFG.supabasePublishableKey)?window.supabase.createClient(CFG.supabaseUrl,CFG.supabasePublishableKey):null;
 var root=document.getElementById('screen-root');
 var sheet=document.getElementById('sheet'),sheetContent=document.getElementById('sheet-content');
@@ -258,10 +258,49 @@ function occurrenceByIdDate(id,dateIso){var d=parseDate(dateIso),s=findSession(i
 function openCalendarOptions(scope,dateIso){var d=parseDate(dateIso)||new Date(),opts=[];if(scope==='week'){var list=[];for(var i=0;i<7;i++)list=list.concat(scheduleOccurrencesForDate(addDays(d,i)).filter(function(o){return o.status!=='cancelled'}));opts.push({label:'Add this visible week',count:list.length,list:list,file:'coach-week-'+iso(d)})}else{var day=scheduleOccurrencesForDate(d).filter(function(o){return o.status!=='cancelled'});opts.push({label:'Add selected day',count:day.length,list:day,file:'coach-day-'+iso(d)});var wk=mondayOf(d),week=[];for(var j=0;j<7;j++)week=week.concat(scheduleOccurrencesForDate(addDays(wk,j)).filter(function(o){return o.status!=='cancelled'}));opts.push({label:'Add whole week',count:week.length,list:week,file:'coach-week-'+iso(wk)})}sheet.hidden=false;sheetContent.innerHTML='<div class="calendar-sheet"><h3>Add to Calendar</h3><p>Choose what you want to add.</p>'+opts.map(function(o,i){return '<button data-action="calendar-download" data-option="'+i+'"><span><b>'+esc(o.label)+'</b><small>'+o.count+' session'+(o.count===1?'':'s')+'</small></span><span>›</span></button>'}).join('')+'</div>';sheetContent._calendarOptions=opts}
 function closeSheet(){sheet.hidden=true;sheetContent.innerHTML='';sheetContent._calendarOptions=null}
 function toast(t){var e=document.getElementById('toast');e.textContent=t;e.hidden=false;setTimeout(function(){e.hidden=true},1800)}
+function publicPagesByCategory(){
+ var order=['General','Trials','Academy','Tours','Events'],groups={};
+ (state.publicPages||[]).forEach(function(p){var cat=order.indexOf(p.category)>=0?p.category:'General';(groups[cat]=groups[cat]||[]).push(p)});
+ return order.filter(function(c){return groups[c]&&groups[c].length}).map(function(c){return {category:c,items:groups[c]}});
+}
+function publicPageCard(p){
+ var img=p.image_url?'<div class="public-card-img"><img src="'+esc(p.image_url)+'" alt=""></div>':'';
+ return '<article class="card public-card">'+img+'<div class="public-card-body"><h3>'+esc(p.title)+'</h3>'+
+  (p.body?'<p>'+esc(p.body)+'</p>':'')+
+  (p.cta_label&&p.cta_link?'<a class="secondary-btn sheet-link-btn" href="'+esc(p.cta_link)+'" target="_blank" rel="noopener">'+esc(p.cta_label)+'</a>':'')+
+ '</div></article>';
+}
+function renderPublicHome(){
+ document.getElementById('app').classList.add('auth-mode');
+ var org=(window.HubContent&&HubContent.get()&&HubContent.get().organisation)||{};
+ var groups=publicPagesByCategory();
+ root.innerHTML='<div class="public-page">'+
+  '<section class="public-hero"><img class="public-hero-logo" src="je-logo.png" alt="'+esc(org.hub_name||'Josh Evans Hub')+'">'+
+   '<h1>'+esc(org.hub_name||'Josh Evans Hub')+'</h1>'+
+   (org.tagline?'<p class="public-hero-tag">'+esc(org.tagline)+'</p>':'')+
+   '<div class="public-hero-actions"><button class="secondary-btn" data-action="show-signin">Sign In</button><button class="primary-btn" data-action="show-signup">Register</button></div>'+
+  '</section>'+
+  (groups.length?groups.map(function(g){
+   return '<section class="public-section"><div class="home-section-title"><h2>'+esc(g.category.toUpperCase())+'</h2></div><div class="public-card-list">'+g.items.map(publicPageCard).join('')+'</div></section>';
+  }).join(''):'<div class="schedule-empty">More information coming soon.</div>')+
+ '</div>';
+}
+function loadPublicHome(){
+ document.getElementById('app').classList.add('auth-mode');
+ root.innerHTML='<div class="loading">Loading…</div>';
+ Promise.all([
+  HubContent.load().catch(function(){return null}),
+  HubContent.loadPublicPages().catch(function(){return []})
+ ]).then(function(all){
+  state.publicPages=all[1]||[];
+  renderPublicHome();
+ });
+}
 function renderAuthShell(inner){document.getElementById('app').classList.add('auth-mode');root.innerHTML='<div class="auth-page"><div class="auth-card">'+
  '<img class="auth-logo" src="je-logo.png" alt="Josh Evans Soccer School">'+inner+'</div></div>'}
-function renderAuthMessage(title,body,showLogout){renderAuthShell('<h1>'+esc(title)+'</h1><p class="auth-sub">'+esc(body)+'</p>'+
- (showLogout?'<button class="secondary-btn" data-action="logout">Log out</button>':''))}
+function renderAuthMessage(title,body,showLogout,showBack){renderAuthShell('<h1>'+esc(title)+'</h1><p class="auth-sub">'+esc(body)+'</p>'+
+ (showLogout?'<button class="secondary-btn" data-action="logout">Log out</button>':'')+
+ (showBack?'<button class="auth-switch" data-action="show-public">‹ Back to Josh Evans Soccer School</button>':''))}
 function renderAuth(){
  var mode=state.authScreen==='signup'?'signup':'login';
  var type=state.authAccountType==='parent'?'parent':'staff';
@@ -284,7 +323,8 @@ function renderAuth(){
   err+
   '<button class="primary-btn" data-action="auth-submit" '+(state.authBusy?'disabled':'')+'>'+(state.authBusy?'Please wait…':(mode==='signup'?'Create account':'Sign in'))+'</button>'+
   '<button class="auth-switch" data-action="auth-switch">'+(mode==='signup'?'Already have an account? Sign in':'New here? Create an account')+'</button>'+
-  typeNote
+  typeNote+
+  '<button class="auth-switch" data-action="show-public">‹ Back to Josh Evans Soccer School</button>'
  );
  var first=document.getElementById(state.authEmail?'auth-password':'auth-email');if(first)first.focus()
 }
@@ -302,7 +342,7 @@ function authSubmit(){
   if(res.error){state.authError=res.error.message||'Something went wrong. Please try again.';renderAuth();return}
   var session=res.data&&res.data.session;
   if(session){onSignedIn(session);return}
-  if(mode==='signup'){renderAuthMessage('Check your email','We’ve sent a confirmation link to '+email+'. Follow it, then come back here and sign in.',false);return}
+  if(mode==='signup'){renderAuthMessage('Check your email','We’ve sent a confirmation link to '+email+'. Follow it, then come back here and sign in.',false,true);return}
   state.authError='Could not sign you in. Please try again.';renderAuth();
  }).catch(function(){state.authBusy=false;state.authError='Something went wrong. Please try again.';renderAuth()});
 }
@@ -325,13 +365,13 @@ function init(){
  renderAuthMessage('Loading','One moment…',false);
  supabaseClient.auth.getSession().then(function(res){
   var session=res.data&&res.data.session;
-  if(session)onSignedIn(session);else renderAuth()
+  if(session)onSignedIn(session);else loadPublicHome()
  });
  supabaseClient.auth.onAuthStateChange(function(event){
-  if(event==='SIGNED_OUT'){state.me=null;state.role='coach';state.screen='home';state.authScreen='login';state.authEmail='';state.authError='';state.authAccountType='staff';renderAuth()}
+  if(event==='SIGNED_OUT'){state.me=null;state.role='coach';state.screen='home';state.authScreen='login';state.authEmail='';state.authError='';state.authAccountType='staff';loadPublicHome()}
  });
 }
-document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;renderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;renderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;renderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);renderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);renderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='logout'){if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}});
+document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;renderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;renderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;renderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);renderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);renderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='show-signin'){state.authScreen='login';state.authError='';renderAuth();return}if(act==='show-signup'){state.authScreen='signup';state.authError='';renderAuth();return}if(act==='show-public'){if(state.publicPages&&state.publicPages.length)renderPublicHome();else loadPublicHome();return}if(act==='logout'){if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}});
 document.addEventListener('input',function(e){if(e.target&&e.target.id==='venue-search'){state.venueQuery=e.target.value;renderVenues();var i=document.getElementById('venue-search');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}}});
 document.addEventListener('keydown',function(e){if(e.key==='Enter'&&e.target&&(e.target.id==='auth-email'||e.target.id==='auth-password')){e.preventDefault();authSubmit()}});
 init();

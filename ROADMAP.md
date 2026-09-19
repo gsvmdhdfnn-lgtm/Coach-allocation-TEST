@@ -354,6 +354,36 @@ Programmes, Locations, Trials & Events, General info — no login needed,
 for people who aren't signed up yet. Nothing above depends on this; good
 fill-in-the-gaps work, not a blocker to anything else.
 
+- [x] **Pulled forward and built** (David's own call — this is now the
+  actual front door of the Hub, not a fill-in-later page): hitting the
+  Hub URL with no session lands on a **public home page**, no login at
+  all — org name/logo/tagline, then Trials/Academy/Tours/Events/General
+  cards, each from a new Airtable table (**Public Pages** — Title, Page
+  ID, Category, Body, CTA Label, CTA Link, Image, Active, Sort Order),
+  seeded with placeholder rows David can replace directly in Airtable
+  whenever real copy is ready. A new public `hub-content` route
+  (`public-pages`) serves it, same trust level and same `verify_jwt:
+  false` as Resources/Venues/Coach Support already had.
+  - **Sign In** and **Register** buttons on that page are the only way
+    into the account flow — Register goes straight to the existing
+    Coach/Parent picker from Phase 0. Every auth screen (including the
+    "check your email" confirmation screen, which used to be a genuine
+    dead end with no way out) now has a "‹ Back to Josh Evans Soccer
+    School" link back to the public page.
+  - Logging out lands back on the public page too, not a bare login
+    form — consistent with "this is the front door" rather than
+    treating login as the default state.
+  - One real dependency to flag: if the Supabase project has "confirm
+    email" switched on (the default), Register doesn't drop someone
+    straight into the app on the first click — they hit the check-email
+    screen first. That's a toggle in the Supabase dashboard, not
+    something set here.
+- [ ] Trial Interest capture form (see the parallel track below) isn't
+  wired into these cards yet — today "Find out more" is just a plain
+  link (blank until a real `CTA Link` is added in Airtable). Hooking a
+  register-interest form to a specific card is natural follow-up work
+  once that track is built.
+
 ### Phase 5 — Productisation
 
 Promoted from a vague "open question" to a real final milestone: the

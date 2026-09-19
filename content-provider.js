@@ -183,6 +183,7 @@ window.HubContent={
   loadResources:function(){return apiCollection('resources')},
   loadVenues:function(){return apiCollection('venues')},
   loadCoachSupport:function(){return apiCollection('coach-support')},
+  loadPublicPages:function(){return apiCollection('public-pages')},
   loadPlayers:function(){return apiCollection('players')},
   loadFeedback:function(){return apiCollection('feedback')},
   loadDevelopmentPlans:function(){return apiCollection('development-plans')}
