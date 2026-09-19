@@ -258,10 +258,25 @@ function occurrenceByIdDate(id,dateIso){var d=parseDate(dateIso),s=findSession(i
 function openCalendarOptions(scope,dateIso){var d=parseDate(dateIso)||new Date(),opts=[];if(scope==='week'){var list=[];for(var i=0;i<7;i++)list=list.concat(scheduleOccurrencesForDate(addDays(d,i)).filter(function(o){return o.status!=='cancelled'}));opts.push({label:'Add this visible week',count:list.length,list:list,file:'coach-week-'+iso(d)})}else{var day=scheduleOccurrencesForDate(d).filter(function(o){return o.status!=='cancelled'});opts.push({label:'Add selected day',count:day.length,list:day,file:'coach-day-'+iso(d)});var wk=mondayOf(d),week=[];for(var j=0;j<7;j++)week=week.concat(scheduleOccurrencesForDate(addDays(wk,j)).filter(function(o){return o.status!=='cancelled'}));opts.push({label:'Add whole week',count:week.length,list:week,file:'coach-week-'+iso(wk)})}sheet.hidden=false;sheetContent.innerHTML='<div class="calendar-sheet"><h3>Add to Calendar</h3><p>Choose what you want to add.</p>'+opts.map(function(o,i){return '<button data-action="calendar-download" data-option="'+i+'"><span><b>'+esc(o.label)+'</b><small>'+o.count+' session'+(o.count===1?'':'s')+'</small></span><span>›</span></button>'}).join('')+'</div>';sheetContent._calendarOptions=opts}
 function closeSheet(){sheet.hidden=true;sheetContent.innerHTML='';sheetContent._calendarOptions=null}
 function toast(t){var e=document.getElementById('toast');e.textContent=t;e.hidden=false;setTimeout(function(){e.hidden=true},1800)}
+/**
+ * Sections are entirely data-driven - there is no fixed list of category
+ * names in the code. A category only appears here because at least one
+ * Active card in Airtable is tagged with it, and section order follows
+ * the cards' own Sort Order (first card seen for a category decides where
+ * that whole section sits). So turning a section off is just switching
+ * off (or deleting) its last card in Airtable, and a brand new section -
+ * one that's never existed before - needs nothing here: type a new
+ * Category value on a card in Airtable and it shows up as its own
+ * section automatically.
+ */
 function publicPagesByCategory(){
- var order=['General','Trials','Academy','Tours','Events'],groups={};
- (state.publicPages||[]).forEach(function(p){var cat=order.indexOf(p.category)>=0?p.category:'General';(groups[cat]=groups[cat]||[]).push(p)});
- return order.filter(function(c){return groups[c]&&groups[c].length}).map(function(c){return {category:c,items:groups[c]}});
+ var groups={},order=[];
+ (state.publicPages||[]).forEach(function(p){
+  var cat=(p.category||'').trim()||'General';
+  if(!groups[cat]){groups[cat]=[];order.push(cat)}
+  groups[cat].push(p);
+ });
+ return order.map(function(c){return {category:c,items:groups[c]}});
 }
 function publicPageCard(p){
  var img=p.image_url?'<div class="public-card-img"><img src="'+esc(p.image_url)+'" alt=""></div>':'';
