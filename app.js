@@ -306,14 +306,14 @@ function publicPageTile(p,i){
  var isLight=validHex&&contrastIsLight(hex);
  var footerStyle=validHex?' style="background:'+(hex.charAt(0)==='#'?hex:'#'+hex)+'"':'';
  var footerCls='public-tile-footer'+(validHex?'':' '+fallback);
- var photo=hasImage?'<div class="public-tile-photo-box"><div class="public-tile-photo" style="background-image:url(\''+esc(p.image_url)+'\')"></div></div>':'';
- return '<button class="card public-tile'+(isLight?' light-bg':'')+'" data-action="public-detail" data-page="'+esc(p.page_id)+'">'+
+ var photo=hasImage?'<div class="public-tile-photo-box" style="background-image:url(\''+esc(p.image_url)+'\')"></div>':'';
+ var cta=esc(p.cta_label||'Register Interest');
+ return '<button class="card public-tile'+(isLight?' light-bg':'')+(hasImage?' has-photo':'')+'" data-action="public-detail" data-page="'+esc(p.page_id)+'">'+
   photo+
   '<div class="'+footerCls+'"'+footerStyle+'>'+
    '<div class="public-tile-ring"></div>'+
    '<span class="public-tile-icon">'+iconForCategory(p.category)+'</span>'+
-   '<span class="public-tile-copy"><h3>'+esc(p.title)+'</h3>'+(p.summary?'<p>'+esc(p.summary)+'</p>':'')+'</span>'+
-   '<span class="public-tile-arrow">→</span>'+
+   '<span class="public-tile-copy"><h3>'+esc(p.title)+'</h3><span class="public-tile-cta">'+cta+' →</span></span>'+
   '</div>'+
  '</button>';
 }
@@ -335,10 +335,9 @@ function publicFeaturedTile(p){
   photo+
   '<div class="'+footerCls+'"'+footerStyle+'>'+
    '<div class="public-tile-ring"></div>'+
-   (p.category?'<span class="public-featured-eyebrow">'+iconForCategory(p.category)+' '+esc(p.category)+'</span>':'')+
    '<h2>'+esc(p.title)+'</h2>'+
    (p.summary?'<p>'+esc(p.summary)+'</p>':'')+
-   '<span class="public-featured-cta">Find out more <span class="public-tile-arrow">→</span></span>'+
+   '<span class="public-featured-enquiry">For general enquiries, click here</span>'+
   '</div>'+
  '</button>';
 }
@@ -357,7 +356,7 @@ function renderPublicHome(){
  var pages=state.publicPages||[];
  var featured=pages[0],rest=pages.slice(1);
  root.innerHTML='<div class="public-page">'+
-  '<section class="public-hero"><span class="public-hero-eyebrow">Welcome to</span><img class="public-hero-logo" src="je-logo.png" alt="'+esc(org.hub_name||'Josh Evans Hub')+'">'+
+  '<section class="public-hero">'+
    '<h1>'+esc(org.hub_name||'Josh Evans Hub')+'</h1>'+
    (org.tagline?'<p class="public-hero-tag">'+esc(org.tagline)+'</p>':'')+
    '<div class="public-hero-actions"><button class="secondary-btn" data-action="show-signin">Sign In</button><button class="primary-btn" data-action="show-signup">Register</button></div>'+
