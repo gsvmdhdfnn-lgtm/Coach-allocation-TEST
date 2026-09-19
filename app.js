@@ -400,12 +400,12 @@ function renderPublicDetail(pageId,submitted){
   '<input type="text" id="ri-hp" name="website" class="hp-field" tabindex="-1" autocomplete="off" aria-hidden="true">'+
   '<p class="auth-error" id="ri-error" hidden></p>'+
   '<button class="primary-btn" data-action="register-interest-submit" data-page="'+esc(page.page_id)+'">Submit</button>';
+ var showForm=page.show_register_form!==false;
  root.innerHTML='<section class="detail-hero public-detail-hero"><button class="back-btn" data-action="show-public">‹ Back</button>'+
-  (page.category?'<span class="detail-status">'+esc(page.category)+'</span>':'')+
   '<h1>'+esc(page.title)+'</h1></section>'+
   '<div class="venue-detail-wrap">'+
   '<section class="card detail-card">'+img+(page.body?'<p>'+esc(page.body)+'</p>':'')+cta+'</section>'+
-  '<section class="card register-interest-card">'+formOrThanks+'</section>'+
+  (showForm?'<section class="card register-interest-card">'+formOrThanks+'</section>':'')+
   '</div>';
  window.scrollTo(0,0);
 }
