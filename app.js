@@ -336,6 +336,7 @@ function renderPublicHome(){
   '</section>'+
   (pages.length?'<section class="public-section"><div class="public-tile-grid">'+pages.map(function(p,i){return publicPageTile(p,i)}).join('')+'</div></section>':'<div class="schedule-empty">More information coming soon.</div>')+
  '</div>';
+ window.scrollTo(0,0);
 }
 /**
  * Age Groups on the Public Pages card is a plain comma-separated list set
@@ -377,6 +378,7 @@ function renderPublicDetail(pageId,submitted){
   '<section class="card detail-card">'+img+(page.body?'<p>'+esc(page.body)+'</p>':'')+cta+'</section>'+
   '<section class="card register-interest-card">'+formOrThanks+'</section>'+
   '</div>';
+ window.scrollTo(0,0);
 }
 function submitRegisterInterest(pageId){
  var page=(state.publicPages||[]).find(function(x){return x.page_id===pageId});
@@ -416,7 +418,7 @@ function loadPublicHome(){
  });
 }
 function renderAuthShell(inner){document.getElementById('app').classList.add('auth-mode');root.innerHTML='<div class="auth-page"><div class="auth-card">'+
- '<img class="auth-logo" src="je-logo.png" alt="Josh Evans Soccer School">'+inner+'</div></div>'}
+ '<img class="auth-logo" src="je-logo.png" alt="Josh Evans Soccer School">'+inner+'</div></div>';window.scrollTo(0,0)}
 function renderAuthMessage(title,body,showLogout,showBack){renderAuthShell('<h1>'+esc(title)+'</h1><p class="auth-sub">'+esc(body)+'</p>'+
  (showLogout?'<button class="secondary-btn" data-action="logout">Log out</button>':'')+
  (showBack?'<button class="auth-switch" data-action="show-public">‹ Back to Josh Evans Soccer School</button>':''))}
