@@ -18,7 +18,7 @@
 .public-hero-logo{position:relative;z-index:1;height:42px;margin-bottom:16px}
 .public-hero h1{position:relative;z-index:1;font-family:Oswald,sans-serif;margin:0 0 10px;font-size:28px;letter-spacing:-.01em;line-height:1.08}
 .public-hero-tag{position:relative;z-index:1;margin:0 auto 24px;max-width:320px;color:#cfe0f4;font-size:12.5px;font-style:italic;line-height:1.5}
-.public-hero-actions{position:relative;z-index:1;display:flex;gap:10px;max-width:320px;margin:0 auto}.public-hero-actions button{flex:1}.public-section{margin:22px 0 0}
+.public-hero-actions{position:relative;z-index:1;display:flex;gap:10px;max-width:320px;margin:0 auto}.public-hero-actions button{flex:1;margin-top:0;height:46px;display:flex;align-items:center;justify-content:center;padding:0 14px}.public-section{margin:22px 0 0}
 .public-tile-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
 .public-tile,.public-featured{transition:transform .15s ease,box-shadow .15s ease}
 .public-tile:hover,.public-featured:hover{transform:translateY(-2px);box-shadow:var(--shadow-strong)}
