@@ -278,17 +278,19 @@ function publicPagesByCategory(){
  });
  return order.map(function(c){return {category:c,items:groups[c]}});
 }
-function publicPageCard(p){
- var img=p.image_url?'<div class="public-card-img"><img src="'+esc(p.image_url)+'" alt=""></div>':'';
- return '<article class="card public-card">'+img+'<div class="public-card-body"><h3>'+esc(p.title)+'</h3>'+
-  (p.body?'<p>'+esc(p.body)+'</p>':'')+
-  (p.cta_label&&p.cta_link?'<a class="secondary-btn sheet-link-btn" href="'+esc(p.cta_link)+'" target="_blank" rel="noopener">'+esc(p.cta_label)+'</a>':'')+
- '</div></article>';
+function publicPageTile(p,i){
+ var img=p.image_url?'<img src="'+esc(p.image_url)+'" alt="">':'';
+ var gradient=['','alt','warm'][i%3];
+ return '<button class="card public-tile" data-action="public-detail" data-page="'+esc(p.page_id)+'">'+
+  '<div class="public-tile-title"><h3>'+esc(p.title)+'</h3></div>'+
+  '<div class="public-tile-media'+(img?' has-image':' '+gradient)+'">'+img+'</div>'+
+ '</button>';
 }
 function renderPublicHome(){
  document.getElementById('app').classList.add('auth-mode');
  var org=(window.HubContent&&HubContent.get()&&HubContent.get().organisation)||{};
  var groups=publicPagesByCategory();
+ var i=0;
  root.innerHTML='<div class="public-page">'+
   '<section class="public-hero"><img class="public-hero-logo" src="je-logo.png" alt="'+esc(org.hub_name||'Josh Evans Hub')+'">'+
    '<h1>'+esc(org.hub_name||'Josh Evans Hub')+'</h1>'+
@@ -296,9 +298,60 @@ function renderPublicHome(){
    '<div class="public-hero-actions"><button class="secondary-btn" data-action="show-signin">Sign In</button><button class="primary-btn" data-action="show-signup">Register</button></div>'+
   '</section>'+
   (groups.length?groups.map(function(g){
-   return '<section class="public-section"><div class="home-section-title"><h2>'+esc(g.category.toUpperCase())+'</h2></div><div class="public-card-list">'+g.items.map(publicPageCard).join('')+'</div></section>';
+   return '<section class="public-section"><div class="home-section-title"><h2>'+esc(g.category.toUpperCase())+'</h2></div><div class="public-tile-grid">'+g.items.map(function(p){return publicPageTile(p,i++)}).join('')+'</div></section>';
   }).join(''):'<div class="schedule-empty">More information coming soon.</div>')+
  '</div>';
+}
+function renderPublicDetail(pageId,submitted){
+ document.getElementById('app').classList.add('auth-mode');
+ state.selectedPublicPage=pageId;
+ var page=(state.publicPages||[]).find(function(x){return x.page_id===pageId});
+ if(!page){renderPublicHome();return}
+ if(!submitted)state.riStartedAt=Date.now();
+ var img=page.image_url?'<div class="public-detail-img"><img src="'+esc(page.image_url)+'" alt=""></div>':'';
+ var cta=(page.cta_label&&page.cta_link)?'<a class="secondary-btn sheet-link-btn" href="'+esc(page.cta_link)+'" target="_blank" rel="noopener">'+esc(page.cta_label)+'</a>':'';
+ var formOrThanks=submitted?
+  '<div class="ri-done"><span class="ri-done-icon">✓</span><h2>Thanks!</h2><p class="auth-sub">We’ve got your details for '+esc(page.title)+' and will be in touch soon.</p></div>':
+  '<h2>Register interest</h2><p class="auth-sub">Leave your details and we’ll be in touch.</p>'+
+  '<label class="auth-field">Name<input id="ri-name" autocomplete="name"></label>'+
+  '<label class="auth-field">Email<input id="ri-email" type="email" autocomplete="email"></label>'+
+  '<label class="auth-field">Phone (optional)<input id="ri-phone" type="tel" autocomplete="tel"></label>'+
+  '<label class="auth-field">Notes (optional)<textarea id="ri-notes" rows="3"></textarea></label>'+
+  '<input type="text" id="ri-hp" name="website" class="hp-field" tabindex="-1" autocomplete="off" aria-hidden="true">'+
+  '<p class="auth-error" id="ri-error" hidden></p>'+
+  '<button class="primary-btn" data-action="register-interest-submit" data-page="'+esc(page.page_id)+'">Submit</button>';
+ root.innerHTML='<section class="detail-hero public-detail-hero"><button class="back-btn" data-action="show-public">‹ Back</button>'+
+  (page.category?'<span class="detail-status">'+esc(page.category)+'</span>':'')+
+  '<h1>'+esc(page.title)+'</h1></section>'+
+  '<div class="venue-detail-wrap">'+
+  '<section class="card detail-card">'+img+(page.body?'<p>'+esc(page.body)+'</p>':'')+cta+'</section>'+
+  '<section class="card register-interest-card">'+formOrThanks+'</section>'+
+  '</div>';
+}
+function submitRegisterInterest(pageId){
+ var page=(state.publicPages||[]).find(function(x){return x.page_id===pageId});
+ if(!page)return;
+ var nameEl=document.getElementById('ri-name'),emailEl=document.getElementById('ri-email'),phoneEl=document.getElementById('ri-phone'),notesEl=document.getElementById('ri-notes'),hpEl=document.getElementById('ri-hp'),errEl=document.getElementById('ri-error');
+ var name=(nameEl&&nameEl.value||'').trim(),email=(emailEl&&emailEl.value||'').trim(),phone=(phoneEl&&phoneEl.value||'').trim(),notes=(notesEl&&notesEl.value||'').trim(),hp=(hpEl&&hpEl.value||'').trim();
+ if(!name||!email){if(errEl){errEl.textContent='Please add your name and email.';errEl.hidden=false}return}
+ if(errEl)errEl.hidden=true;
+ var btn=document.querySelector('[data-action="register-interest-submit"]');
+ if(btn){btn.disabled=true;btn.textContent='Sending…'}
+ var url=(CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/register-interest');
+ fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+  name:name,email:email,phone:phone,notes:notes,
+  page_id:page.page_id,page_title:page.title,
+  website_hp:hp,started_at:state.riStartedAt
+ })})
+ .then(function(r){return r.json().then(function(data){return {ok:r.ok,data:data}})})
+ .then(function(res){
+  if(!res.ok)throw new Error((res.data&&res.data.error)||'Something went wrong. Please try again.');
+  renderPublicDetail(pageId,true);
+ })
+ .catch(function(e){
+  if(btn){btn.disabled=false;btn.textContent='Submit'}
+  if(errEl){errEl.textContent=e.message||'Something went wrong. Please try again.';errEl.hidden=false}
+ });
 }
 function loadPublicHome(){
  document.getElementById('app').classList.add('auth-mode');
@@ -386,7 +439,7 @@ function init(){
   if(event==='SIGNED_OUT'){state.me=null;state.role='coach';state.screen='home';state.authScreen='login';state.authEmail='';state.authError='';state.authAccountType='staff';loadPublicHome()}
  });
 }
-document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;renderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;renderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;renderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);renderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);renderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='show-signin'){state.authScreen='login';state.authError='';renderAuth();return}if(act==='show-signup'){state.authScreen='signup';state.authError='';renderAuth();return}if(act==='show-public'){if(state.publicPages&&state.publicPages.length)renderPublicHome();else loadPublicHome();return}if(act==='logout'){if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}});
+document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;renderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;renderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;renderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);renderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);renderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='show-signin'){state.authScreen='login';state.authError='';renderAuth();return}if(act==='show-signup'){state.authScreen='signup';state.authError='';renderAuth();return}if(act==='show-public'){if(state.publicPages&&state.publicPages.length)renderPublicHome();else loadPublicHome();return}if(act==='public-detail'){renderPublicDetail(a.dataset.page);return}if(act==='register-interest-submit'){submitRegisterInterest(a.dataset.page);return}if(act==='logout'){if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}});
 document.addEventListener('input',function(e){if(e.target&&e.target.id==='venue-search'){state.venueQuery=e.target.value;renderVenues();var i=document.getElementById('venue-search');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}}});
 document.addEventListener('keydown',function(e){if(e.key==='Enter'&&e.target&&(e.target.id==='auth-email'||e.target.id==='auth-password')){e.preventDefault();authSubmit()}});
 init();

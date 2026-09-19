@@ -240,34 +240,39 @@ it rather than waiting — and it's probably the fastest thing here to
 deliver real business value (capturing genuine leads) regardless of how
 the rest of the Hub progresses.
 
-- A public Hub screen, **no login** — name, email, phone, which one
-  (Jets / Academy / the tour we're running), an optional note. Has to stay
-  genuinely public: a prospective parent has never used the Hub before and
-  shouldn't need an account just to ask about a trial.
-- A new Airtable table, **Trial Interest** — Name, Email, Phone,
-  Interested In, Notes, Status (New/Contacted/Booked/Declined), Created
-  time.
-- A small, dedicated Edge Function (separate from `hub-content`, since this
-  is a write) that takes the submission and writes it to Airtable
-  server-side — same pattern as everywhere else: the browser never talks
-  to Airtable directly.
-- **Email notification via an Airtable automation** — "when a record is
-  created in Trial Interest, email the office" — confirmed as the
-  approach: zero code, and the wording or who it goes to can be changed
-  directly in Airtable later without touching anything built here.
-- **Spam protection, without requiring any account** — this is not the
-  same problem as auth, and doesn't need it:
-  - a honeypot field, invisible to a real visitor (hidden with CSS) but
-    filled in by dumb bots that complete every field they see — anything
-    arriving in it means silently discard the submission;
-  - a basic rate limit by IP address — not identifying anyone, just
-    noticing many submissions from one place in a short window isn't a
-    person;
-  - a minimum-time check — reject anything submitted implausibly fast
-    after the form loaded.
-  - If spam still gets through despite that: Cloudflare Turnstile (a
-    modern, mostly invisible CAPTCHA) as the next step up — only added if
-    actually needed, not built in from day one.
+- [x] **Built, on top of the public page (Phase 4) rather than as a
+  separate screen.** The design changed from the original plan below in
+  one real way, per David's steer: no shared form with a "which one?"
+  dropdown. Every public page tile (Trials/Academy/whichever) is its own
+  clickable thing; tapping it opens that item's own page with its own
+  Register Interest form underneath — "interested in" is never a field,
+  it's just which tile you tapped.
+- [x] A new Airtable table, **Trial Interest** — Name, Email, Phone,
+  Interested In, Notes, Status (New/Contacted/Booked/Declined), Source
+  Page ID (which Public Pages card it came from).
+- [x] A dedicated Edge Function, **`register-interest`** (separate from
+  `hub-content`, since this is a write, `verify_jwt: false` since it's
+  genuinely public) — validates, then writes to Airtable server-side. The
+  browser never talks to Airtable directly, same as everywhere else.
+- [x] **Email notification via an Airtable automation** —
+  "New Trial Interest → email the office", looks up Organisation &
+  Branding's Support Email each time rather than a hardcoded address (so
+  changing who it goes to is one field edit in Airtable, not touching
+  this automation at all). **Built but off by default** — Airtable saves
+  a new automation as a draft; open it
+  (airtable.com/apprptFotQuVL1mhs/wflA9iy4w69ChZ7gH), review it and
+  switch it on when ready.
+- [x] **Spam protection, without requiring any account**:
+  - a honeypot field, positioned off-screen with CSS (not just
+    `display:none`, in case a bot checks for that) — anything arriving in
+    it is silently discarded, no error shown to the bot;
+  - a minimum-time check — the Edge Function rejects a submission if less
+    than 3 seconds passed between the form rendering and the submit
+    arriving.
+  - **Not yet built**: a per-IP rate limit. Skipped for now in the same
+    spirit as the plan below — add it only if real spam shows up, not
+    speculatively. Cloudflare Turnstile is the step after that, same
+    condition.
 
 ### Phase 1 — Coach submissions
 
@@ -378,11 +383,10 @@ fill-in-the-gaps work, not a blocker to anything else.
     straight into the app on the first click — they hit the check-email
     screen first. That's a toggle in the Supabase dashboard, not
     something set here.
-- [ ] Trial Interest capture form (see the parallel track below) isn't
-  wired into these cards yet — today "Find out more" is just a plain
-  link (blank until a real `CTA Link` is added in Airtable). Hooking a
-  register-interest form to a specific card is natural follow-up work
-  once that track is built.
+- [x] Trial Interest capture (see the parallel track below) is wired to
+  every card: `CTA Link` is still available as an optional external link
+  ("Find out more"), and every card also gets its own Register Interest
+  form on its own page.
 
 ### Phase 5 — Productisation
 
