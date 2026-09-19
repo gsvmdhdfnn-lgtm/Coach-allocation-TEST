@@ -291,6 +291,19 @@ shape (coach submits something, it lands in Airtable, sits pending review):
      the session as "needs a phone call" instead of looping forever.
      Automation stops where it should, not where it's forced to.
 
+  **Build this as a reusable pattern, not a holiday-only one-off** — strip
+  "holiday" out and it's a general shape: *assign someone to something →
+  they confirm or decline → decline loops back to picking someone else →
+  escape hatch if nobody accepts.* Nothing above is actually specific to
+  holidays. Likely future reuses: same-day sickness cover, one-off session
+  swaps, staffing a trial or tour. Build it for holiday cover first,
+  exactly as scoped — but keep the Airtable table and Edge Function
+  worded generically (an "assignment" with a reason, not a table literally
+  called "Holiday Cover") so pointing the same mechanism at a different
+  trigger later is reuse, not a rebuild. Same discipline as the standing
+  rule about not hardcoding anything organisation-specific, applied to
+  features instead of branding.
+
 ### Phase 4 — Public pages
 
 Programmes, Locations, Trials & Events, General info — no login needed,
