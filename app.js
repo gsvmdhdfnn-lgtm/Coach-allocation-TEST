@@ -186,7 +186,7 @@ function ensureTabShell(){
 }
 function renderIntoPane(name,fn){var saved=root;root=panes[name];fn();root=saved}
 function reRenderSchedule(){renderIntoPane('schedule',renderSchedule)}
-function render(){document.getElementById('app').classList.remove('auth-mode');setNav(state.screen);if(state.role!=='coach'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();syncBackButton()}
+function render(){document.getElementById('app').classList.remove('auth-mode');setNav(state.screen);if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();syncBackButton()}
 function renderHome(){
  var now=new Date(),n=nextOccurrence(now),today=todaysOccurrences(now),ns=n&&n.session;
  root.innerHTML='<div class="coach-home">'+
@@ -316,6 +316,7 @@ function openProfileSheet(){
  */
 function openMoreSheet(){
  var rows=[['●','My Profile',(state.me&&state.me.email)||'Update your details','','profile'],['◉','Notifications','Manage alerts','','coming-soon'],['£','Management & Financials','Restricted access','management',''],['●','Feedback','Share ideas or report an issue','','coming-soon'],['☎','Contact the Office','Get in touch','','coming-soon'],['↪','Log Out','','','logout']];
+ if(state.role==='management')rows.splice(3,0,['✓','Coach Management','Approve pending staff sign-ups','coach-management','']);
  sheet.hidden=false;
  sheetContent.innerHTML='<div class="calendar-sheet"><h3>More</h3><div class="card more-list" style="margin-top:6px">'+rows.map(function(r){return '<button class="more-row" '+(r[3]?'data-nav="'+r[3]+'"':'')+(r[4]?' data-action="'+r[4]+'"':'')+'><span class="support-icon">'+r[0]+'</span><span><b>'+r[1]+'</b><small>'+esc(r[2])+'</small></span><span>›</span></button>'}).join('')+'</div></div>';
 }
@@ -337,6 +338,69 @@ function renderMyPlayers(){
 }
 function renderManagement(){state.screen='management';setNav('management');if(state.unlocked){renderManagementDashboard();return}root.innerHTML='<section class="locked"><div class="page-title"><h1>Management Access</h1><p>Financials & administration. Restricted to authorised users.</p></div><div class="management-card"><h2>🔒 Enter password</h2><p style="color:var(--muted);font-size:12px">This uses the same protected Financials connection as the existing Hub.</p><div class="pw"><input id="pw" type="password" placeholder="Password"><button data-action="unlock">Access</button></div><p id="pw-error" style="color:var(--red);font-size:12px"></p></div><div class="card support-list" style="margin-top:14px;background:rgba(255,255,255,.98);color:var(--ink)"><div class="support-row"><span class="support-icon">▣</span><span><b>Full schedule view</b><small>All coaches, all sessions</small></span><span>›</span></div><div class="support-row"><span class="support-icon">▤</span><span><b>Financial dashboard</b><small>Live and historical data</small></span><span>›</span></div><div class="support-row"><span class="support-icon">●</span><span><b>Coach management</b><small>Hours, rates and costs</small></span><span>›</span></div></div></section>'}
 function renderManagementDashboard(){var fs=state.financials||{};var rows=Object.values(fs),rev=rows.reduce(function(a,r){return a+(+r.revenue_net||0)},0),profit=rows.reduce(function(a,r){return a+(+r.profit||0)},0);root.innerHTML='<section class="locked"><div class="page-title"><h1>Management Dashboard</h1><p>Schedules, financials and administration.</p></div><div class="kpi-grid"><div class="kpi"><small>Sessions</small><b>'+state.sessions.length+'</b></div><div class="kpi"><small>Revenue</small><b>'+money(rev)+'</b></div><div class="kpi"><small>Profit</small><b>'+money(profit)+'</b></div><div class="kpi"><small>Coaches</small><b>'+new Set(state.sessions.flatMap(function(s){return s.coaches})).size+'</b></div></div><div class="card support-list" style="color:var(--ink)"><div class="support-row"><span class="support-icon">▣</span><span><b>Full schedule view</b><small>All coaches, all sessions</small></span><span>›</span></div><div class="support-row"><span class="support-icon">£</span><span><b>Financial dashboard</b><small>Baseline, actual and archive</small></span><span>›</span></div><div class="support-row"><span class="support-icon">●</span><span><b>Coach management</b><small>Hours, rates and costs</small></span><span>›</span></div><div class="support-row"><span class="support-icon">▧</span><span><b>Reports & exports</b><small>P&L, attendance and more</small></span><span>›</span></div></div></section>'}
+/**
+ * approve-coach is a separate Edge Function/authorisation boundary from the
+ * financials password above: it checks the signed-in user's own Supabase
+ * profile role==='management' server-side, not this screen's client-side
+ * gate (which only saves a management user a wasted trip).
+ */
+function approveCoachUrl(){return (CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/approve-coach')}
+function withAccessToken(){
+ if(!supabaseClient)return Promise.reject(new Error('Sign-in is not configured.'));
+ return supabaseClient.auth.getSession().then(function(res){
+  var token=res&&res.data&&res.data.session&&res.data.session.access_token;
+  if(!token)throw new Error('Your session has expired — sign in again.');
+  return token;
+ });
+}
+function renderCoachManagement(){
+ state.screen='coach-management';setNav('coach-management');
+ if(state.role!=='management'){root.innerHTML='<section class="locked"><div class="page-title"><h1>Coach Management</h1><p>Restricted to management accounts.</p></div><div class="card" style="padding:16px;color:var(--ink);font-size:12px">Your account isn’t set up for management access.</div></section>';return}
+ root.innerHTML='<section class="locked"><div class="page-title"><h1>Coach Management</h1><p>Approve staff sign-ups. Approving links or creates their Coach record automatically.</p></div><div id="pending-coach-list"><div class="loading">Loading pending sign-ups…</div></div></section>';
+ loadPendingCoaches();
+}
+function loadPendingCoaches(){
+ var listEl=document.getElementById('pending-coach-list');
+ withAccessToken().then(function(token){
+  return fetch(approveCoachUrl()+'/pending',{headers:{Authorization:'Bearer '+token}});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not load pending sign-ups.');return body});
+ }).then(function(list){
+  if(document.getElementById('pending-coach-list'))renderPendingCoachList(list);
+ }).catch(function(e){
+  if(listEl)listEl.innerHTML='<div class="error"><b>Couldn’t load pending sign-ups.</b><br>'+esc(e.message||'')+'</div>';
+ });
+}
+function renderPendingCoachList(list){
+ var listEl=document.getElementById('pending-coach-list');
+ if(!listEl)return;
+ if(!list||!list.length){listEl.innerHTML='<div class="schedule-empty">No staff sign-ups waiting for approval.</div>';return}
+ listEl.innerHTML='<div class="card pending-list">'+list.map(function(u){
+  var when=u.created_at?new Date(u.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'';
+  return '<div class="pending-row" data-pending-row="'+esc(u.user_id)+'">'+
+   '<span><b>'+esc(u.email||'(no email on file)')+'</b><small>Signed up '+esc(when)+'</small><small class="pending-error" hidden></small></span>'+
+   '<button class="primary-btn approve-btn" data-action="approve-coach" data-user-id="'+esc(u.user_id)+'">Approve</button>'+
+  '</div>';
+ }).join('')+'</div>';
+}
+function approveCoach(userId,btn){
+ var row=btn.closest('.pending-row'),errEl=row&&row.querySelector('.pending-error');
+ btn.disabled=true;btn.textContent='Approving…';
+ if(errEl){errEl.hidden=true;errEl.textContent=''}
+ withAccessToken().then(function(token){
+  return fetch(approveCoachUrl(),{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({user_id:userId})});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not approve this coach.');return body});
+ }).then(function(){
+  toast('Coach approved');
+  if(row)row.remove();
+  var list=document.querySelector('.pending-list');
+  if(list&&!list.children.length)renderPendingCoachList([]);
+ }).catch(function(e){
+  btn.disabled=false;btn.textContent='Approve';
+  if(errEl){errEl.hidden=false;errEl.textContent=e.message||'Could not approve this coach.'}
+ });
+}
 function b64(b){var bin=atob(String(b).replace(/\s+/g,'')),o=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)o[i]=bin.charCodeAt(i);return o}
 function unlock(pw){if(DEMO){state.unlocked=true;renderManagementDashboard();return}var f=CFG.financials;if(!f||!f.ciphertext){document.getElementById('pw-error').textContent='Financial connection is not configured.';return}crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']).then(function(base){return crypto.subtle.deriveKey({name:'PBKDF2',salt:b64(f.salt),iterations:f.iterations||250000,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['decrypt'])}).then(function(key){return crypto.subtle.decrypt({name:'AES-GCM',iv:b64(f.iv)},key,b64(f.ciphertext))}).then(function(buf){return fetchCsv(new TextDecoder().decode(buf).trim())}).then(function(rows){state.financials={};rows.forEach(function(r){if(r.session_id)state.financials[r.session_id]=r});state.unlocked=true;renderManagementDashboard()}).catch(function(){document.getElementById('pw-error').textContent='Incorrect password.'})}
 function icsStamp(d){return d.getFullYear()+pad2(d.getMonth()+1)+pad2(d.getDate())+'T'+pad2(d.getHours())+pad2(d.getMinutes())+'00'}
@@ -597,7 +661,7 @@ function init(){
   if(event==='SIGNED_OUT'){state.me=null;state.role='coach';state.screen='home';state.authScreen='login';state.authEmail='';state.authError='';state.authAccountType='staff';loadPublicHome()}
  });
 }
-document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;closeSheet();navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;reRenderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;reRenderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;reRenderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);reRenderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);reRenderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='open-more'){openMoreSheet();return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='show-signin'){state.authScreen='login';state.authError='';renderAuth();return}if(act==='show-signup'){state.authScreen='signup';state.authError='';renderAuth();return}if(act==='show-public'){if(state.publicPages&&state.publicPages.length)renderPublicHome();else loadPublicHome();return}if(act==='public-detail'){renderPublicDetail(a.dataset.page);return}if(act==='register-interest-submit'){submitRegisterInterest(a.dataset.page);return}if(act==='logout'){closeSheet();if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}if(act==='retry-load'){load();return}});
+document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;closeSheet();navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;reRenderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;reRenderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;reRenderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);reRenderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);reRenderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='open-more'){openMoreSheet();return}if(act==='approve-coach'){approveCoach(a.dataset.userId,a);return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='show-signin'){state.authScreen='login';state.authError='';renderAuth();return}if(act==='show-signup'){state.authScreen='signup';state.authError='';renderAuth();return}if(act==='show-public'){if(state.publicPages&&state.publicPages.length)renderPublicHome();else loadPublicHome();return}if(act==='public-detail'){renderPublicDetail(a.dataset.page);return}if(act==='register-interest-submit'){submitRegisterInterest(a.dataset.page);return}if(act==='logout'){closeSheet();if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}if(act==='retry-load'){load();return}});
 document.addEventListener('input',function(e){if(e.target&&e.target.id==='venue-search'){state.venueQuery=e.target.value;renderVenues();var i=document.getElementById('venue-search');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}}});
 document.addEventListener('keydown',function(e){if(e.key==='Enter'&&e.target&&(e.target.id==='auth-email'||e.target.id==='auth-password')){e.preventDefault();authSubmit()}});
 init();
