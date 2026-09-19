@@ -318,23 +318,53 @@ function publicPageTile(p,i){
  '</button>';
 }
 /**
+ * The first card (by Sort Order - normally the General "Welcome" one, but
+ * driven purely by order, not by category name) gets a wider, richer
+ * treatment above the grid rather than sitting in it as just another
+ * tile - it's the one bit of copy every visitor should actually read.
+ */
+function publicFeaturedTile(p){
+ var hex=window.HubContent&&HubContent.resolveColour?HubContent.resolveColour(p.colour,p.colour_preset):'';
+ var validHex=!!hex;
+ var hasImage=!!p.image_url;
+ var isLight=validHex&&contrastIsLight(hex);
+ var footerStyle=validHex?' style="background:'+(hex.charAt(0)==='#'?hex:'#'+hex)+'"':'';
+ var footerCls='public-featured-footer'+(validHex?'':' fallback');
+ var photo=hasImage?'<div class="public-featured-photo" style="background-image:url(\''+esc(p.image_url)+'\')"></div>':'';
+ return '<button class="card public-featured'+(isLight?' light-bg':'')+(hasImage?' has-photo':'')+'" data-action="public-detail" data-page="'+esc(p.page_id)+'">'+
+  photo+
+  '<div class="'+footerCls+'"'+footerStyle+'>'+
+   '<div class="public-tile-ring"></div>'+
+   (p.category?'<span class="public-featured-eyebrow">'+iconForCategory(p.category)+' '+esc(p.category)+'</span>':'')+
+   '<h2>'+esc(p.title)+'</h2>'+
+   (p.summary?'<p>'+esc(p.summary)+'</p>':'')+
+   '<span class="public-featured-cta">Find out more <span class="public-tile-arrow">→</span></span>'+
+  '</div>'+
+ '</button>';
+}
+/**
  * One flat 2-column grid, no per-category headers - matches the reference
  * David shared (a clean 2x2/2x3 menu, not a stack of one-item sections).
  * Cards already arrive from hub-content sorted by their own Sort Order, so
  * that's the only thing controlling the grid's order; category still
- * decides the icon, nothing else.
+ * decides the icon, nothing else. The first card is pulled out to run
+ * wide above the grid (see publicFeaturedTile) - everything after it
+ * fills the grid below.
  */
 function renderPublicHome(){
  document.getElementById('app').classList.add('auth-mode');
  var org=(window.HubContent&&HubContent.get()&&HubContent.get().organisation)||{};
  var pages=state.publicPages||[];
+ var featured=pages[0],rest=pages.slice(1);
  root.innerHTML='<div class="public-page">'+
-  '<section class="public-hero"><img class="public-hero-logo" src="je-logo.png" alt="'+esc(org.hub_name||'Josh Evans Hub')+'">'+
+  '<section class="public-hero"><span class="public-hero-eyebrow">Welcome to</span><img class="public-hero-logo" src="je-logo.png" alt="'+esc(org.hub_name||'Josh Evans Hub')+'">'+
    '<h1>'+esc(org.hub_name||'Josh Evans Hub')+'</h1>'+
    (org.tagline?'<p class="public-hero-tag">'+esc(org.tagline)+'</p>':'')+
    '<div class="public-hero-actions"><button class="secondary-btn" data-action="show-signin">Sign In</button><button class="primary-btn" data-action="show-signup">Register</button></div>'+
   '</section>'+
-  (pages.length?'<section class="public-section"><div class="public-tile-grid">'+pages.map(function(p,i){return publicPageTile(p,i)}).join('')+'</div></section>':'<div class="schedule-empty">More information coming soon.</div>')+
+  (featured?'<section class="public-section">'+publicFeaturedTile(featured)+'</section>':'')+
+  (rest.length?'<section class="public-section"><div class="public-tile-grid">'+rest.map(function(p,i){return publicPageTile(p,i)}).join('')+'</div></section>':'')+
+  (pages.length?'':'<div class="schedule-empty">More information coming soon.</div>')+
  '</div>';
  window.scrollTo(0,0);
 }
