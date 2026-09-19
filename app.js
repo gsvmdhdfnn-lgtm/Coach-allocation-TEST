@@ -240,11 +240,14 @@ function renderResources(){
 }
 function renderSupport(){
  var list=state.coachSupport||[];
- root.innerHTML='<div class="page-title"><h1>Coach Support Centre</h1><p>Everything you need to be the best version of yourself as a coach.</p></div><div class="card support-list">'+
+ var org=(window.HubContent&&HubContent.get()&&HubContent.get().organisation)||{};
+ var title=(window.HubContent&&HubContent.label('coach_support_title','Coach Support Centre'))||'Coach Support Centre';
+ var subtitle=(window.HubContent&&HubContent.label('coach_support_subtitle','Everything you need to be the best version of yourself as a coach.'))||'Everything you need to be the best version of yourself as a coach.';
+ root.innerHTML='<div class="page-title"><h1>'+esc(title)+'</h1><p>'+esc(subtitle)+'</p></div><div class="card support-list">'+
   (list.length?list.map(function(s){
    return '<button class="support-row" data-action="support-detail" data-support="'+esc(s.support_id)+'"><span class="support-icon">'+icons.book+'</span><span><b>'+esc(s.title)+'</b>'+(s.section?'<small>'+esc(s.section)+'</small>':'')+'</span><span>›</span></button>';
   }).join(''):'<div class="schedule-empty">Nothing here yet — add an item to the Coach Support table in Airtable.</div>')+
- '</div><div class="quote-card card" style="margin-top:14px"><strong>“Better people make better players.”</strong></div>';
+ '</div>'+(org.tagline?'<div class="quote-card card" style="margin-top:14px"><strong>“'+esc(org.tagline)+'”</strong></div>':'');
 }
 function openSupportDetail(id){
  var s=(state.coachSupport||[]).find(function(x){return x.support_id===id});
