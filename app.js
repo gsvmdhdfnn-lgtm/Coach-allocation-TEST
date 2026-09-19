@@ -268,13 +268,13 @@ function renderAuth(){
  var err=state.authError?'<p class="auth-error">'+esc(state.authError)+'</p>':'';
  var typePicker=mode!=='signup'?'':(
   '<div class="auth-field"><span>I am a…</span><div class="segmented auth-type-picker">'+
-   '<button data-action="auth-account-type" data-type="staff" class="'+(type==='staff'?'is-active':'')+'">Coach / Management</button>'+
+   '<button data-action="auth-account-type" data-type="staff" class="'+(type==='staff'?'is-active':'')+'">Coach</button>'+
    '<button data-action="auth-account-type" data-type="parent" class="'+(type==='parent'?'is-active':'')+'">Parent</button>'+
   '</div></div>'
  );
  var typeNote=mode!=='signup'?'':(type==='parent'?
   '<p class="auth-note">Parent accounts get in straight away — you’ll be matched to your child once that’s set up.</p>':
-  '<p class="auth-note">Coach and management accounts need to be approved by Josh or David before you can sign in.</p>');
+  '<p class="auth-note">Coach accounts need to be approved by Josh or David before you can sign in.</p>');
  renderAuthShell(
   '<h1>'+(mode==='signup'?'Create your account':'Sign in')+'</h1>'+
   '<p class="auth-sub">'+(mode==='signup'?'For coaches, parents and management at Josh Evans Soccer School.':'Welcome back to the Josh Evans Hub.')+'</p>'+
