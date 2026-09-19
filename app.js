@@ -278,12 +278,34 @@ function publicPagesByCategory(){
  });
  return order.map(function(c){return {category:c,items:groups[c]}});
 }
+/**
+ * Colour is a plain hex string set per-record in Airtable (Public Pages ->
+ * Colour). Text automatically switches to dark when that colour is light,
+ * so nobody has to also pick a matching text colour - one field, not two.
+ */
+function contrastIsLight(hex){
+ var h=String(hex||'').trim().replace(/^#/,'');
+ if(h.length===3)h=h.split('').map(function(c){return c+c}).join('');
+ if(!/^[0-9a-f]{6}$/i.test(h))return false;
+ var r=parseInt(h.slice(0,2),16),g=parseInt(h.slice(2,4),16),b=parseInt(h.slice(4,6),16);
+ return (0.299*r+0.587*g+0.114*b)/255>0.6;
+}
+var CATEGORY_ICON={general:'⌂',trials:'▣',academy:'●',tours:'◎',events:'◆',resources:'▧'};
+function iconForCategory(cat){return CATEGORY_ICON[String(cat||'').trim().toLowerCase()]||'✦'}
 function publicPageTile(p,i){
- var img=p.image_url?'<img src="'+esc(p.image_url)+'" alt="">':'';
- var gradient=['','alt','warm'][i%3];
- return '<button class="card public-tile" data-action="public-detail" data-page="'+esc(p.page_id)+'">'+
-  '<div class="public-tile-title"><h3>'+esc(p.title)+'</h3></div>'+
-  '<div class="public-tile-media'+(img?' has-image':' '+gradient)+'">'+img+'</div>'+
+ var hex=(p.colour||'').trim();
+ var validHex=/^#?[0-9a-f]{3}([0-9a-f]{3})?$/i.test(hex);
+ var hasImage=!!p.image_url;
+ var fallback=['','alt','warm'][i%3];
+ var isLight=!hasImage&&validHex&&contrastIsLight(hex);
+ var style=(!hasImage&&validHex)?' style="background:'+(hex.charAt(0)==='#'?hex:'#'+hex)+'"':'';
+ var cls='public-tile'+(hasImage?'':(validHex?'':' '+fallback))+(isLight?' light-bg':'');
+ var photo=hasImage?'<div class="public-tile-photo" style="background-image:url(\''+esc(p.image_url)+'\')"></div><div class="public-tile-photo-overlay"></div>':'';
+ return '<button class="card '+cls+'" data-action="public-detail" data-page="'+esc(p.page_id)+'"'+style+'>'+
+  photo+'<div class="public-tile-ring"></div>'+
+  '<span class="public-tile-icon">'+iconForCategory(p.category)+'</span>'+
+  '<span class="public-tile-copy"><h3>'+esc(p.title)+'</h3>'+(p.summary?'<p>'+esc(p.summary)+'</p>':'')+'</span>'+
+  '<span class="public-tile-arrow">→</span>'+
  '</button>';
 }
 function renderPublicHome(){

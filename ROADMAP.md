@@ -254,14 +254,24 @@ the rest of the Hub progresses.
   `hub-content`, since this is a write, `verify_jwt: false` since it's
   genuinely public) — validates, then writes to Airtable server-side. The
   browser never talks to Airtable directly, same as everywhere else.
-- [x] **Email notification via an Airtable automation** —
+- [x] **Write path confirmed working for real** — David tested the live
+  form (before the email piece was on), and both submissions landed in
+  Trial Interest with every field correct. The Hub → Edge Function →
+  Airtable path is genuinely proven, not just tested against a mock.
+- [~] **Email notification via an Airtable automation** —
   "New Trial Interest → email the office", looks up Organisation &
   Branding's Support Email each time rather than a hardcoded address (so
   changing who it goes to is one field edit in Airtable, not touching
-  this automation at all). **Built but off by default** — Airtable saves
-  a new automation as a draft; open it
-  (airtable.com/apprptFotQuVL1mhs/wflA9iy4w69ChZ7gH), review it and
-  switch it on when ready.
+  this automation at all). Turned on, but its first two real runs failed
+  with `NON_COLLABORATOR_RECIPIENTS` — Airtable's built-in "Send an
+  email" action will only deliver to people who are actual collaborators
+  on the base, not an arbitrary address read from a text field.
+  `David@joshevans.co.uk` (the current Support Email) isn't one. **Fix
+  needed from David**: invite that address as a base collaborator
+  (Share → Invite, Read-only is enough) — nothing else changes, and the
+  next submission should go through. If it should go to a different
+  Airtable login than the Support Email, invite whichever one actually
+  needs the notification.
 - [x] **Spam protection, without requiring any account**:
   - a honeypot field, positioned off-screen with CSS (not just
     `display:none`, in case a bot checks for that) — anything arriving in
@@ -364,11 +374,22 @@ fill-in-the-gaps work, not a blocker to anything else.
   Hub URL with no session lands on a **public home page**, no login at
   all — org name/logo/tagline, then Trials/Academy/Tours/Events/General
   cards, each from a new Airtable table (**Public Pages** — Title, Page
-  ID, Category, Body, CTA Label, CTA Link, Image, Active, Sort Order),
-  seeded with placeholder rows David can replace directly in Airtable
-  whenever real copy is ready. A new public `hub-content` route
-  (`public-pages`) serves it, same trust level and same `verify_jwt:
-  false` as Resources/Venues/Coach Support already had.
+  ID, Category, Summary, Body, Colour, CTA Label, CTA Link, Image,
+  Active, Sort Order), seeded with placeholder rows David can replace
+  directly in Airtable whenever real copy is ready. A new public
+  `hub-content` route (`public-pages`) serves it, same trust level and
+  same `verify_jwt: false` as Resources/Venues/Coach Support already had.
+  - **Grid redesigned to match a reference David shared** — a boxed grid
+    of colour cards (icon, uppercase title, one-line Summary, circular
+    arrow), not the original photo-strip layout. Each card's `Colour` is
+    a plain hex string set per-record in Airtable; text automatically
+    switches dark-on-light or light-on-dark based on that colour's
+    brightness, so nobody has to also pick a matching text colour. If a
+    card's `Image` is set instead, the photo fills the card with a dark
+    gradient overlay (same treatment, always legible) rather than the
+    flat colour. Everything - colour, photo, summary, sort order,
+    on/off - is a Public Pages field; none of it needs touching this
+    code again.
   - **Sign In** and **Register** buttons on that page are the only way
     into the account flow — Register goes straight to the existing
     Coach/Parent picker from Phase 0. Every auth screen (including the
