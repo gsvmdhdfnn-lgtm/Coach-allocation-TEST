@@ -141,9 +141,9 @@ button,input{font:inherit}button{cursor:pointer}
 @media(min-width:760px){.coach-schedule{padding-bottom:48px}.schedule-session{grid-template-columns:4px 64px minmax(0,1fr) 18px}.calendar-card{padding:18px}}
 
 /* v1.1 navigation/time/calendar refinements */
-.app-back{font-size:30px;line-height:1;padding-bottom:4px}
 .topbar-spacer{width:40px;height:40px;display:block}
 .app-back:not([hidden]) + .topbar-spacer{display:none}
+.topbar-back{margin-bottom:0;border-color:var(--navy);color:var(--navy)}
 .schedule-time{min-width:112px}
 .schedule-time b{font-size:10px;line-height:1.25;white-space:normal}
 .today-time{font-size:10px;line-height:1.28}
