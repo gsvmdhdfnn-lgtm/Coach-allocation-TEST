@@ -143,6 +143,42 @@ would mean redoing it once real content lands anyway.
 - Fix the Changes silent-failure risk.
 - Delete the orphaned `style.css`.
 
+### Parallel track — Trial interest / enquiries
+
+Doesn't depend on Phase 0's auth work at all, so it can be built alongside
+it rather than waiting — and it's probably the fastest thing here to
+deliver real business value (capturing genuine leads) regardless of how
+the rest of the Hub progresses.
+
+- A public Hub screen, **no login** — name, email, phone, which one
+  (Jets / Academy / the tour we're running), an optional note. Has to stay
+  genuinely public: a prospective parent has never used the Hub before and
+  shouldn't need an account just to ask about a trial.
+- A new Airtable table, **Trial Interest** — Name, Email, Phone,
+  Interested In, Notes, Status (New/Contacted/Booked/Declined), Created
+  time.
+- A small, dedicated Edge Function (separate from `hub-content`, since this
+  is a write) that takes the submission and writes it to Airtable
+  server-side — same pattern as everywhere else: the browser never talks
+  to Airtable directly.
+- **Email notification via an Airtable automation** — "when a record is
+  created in Trial Interest, email the office" — confirmed as the
+  approach: zero code, and the wording or who it goes to can be changed
+  directly in Airtable later without touching anything built here.
+- **Spam protection, without requiring any account** — this is not the
+  same problem as auth, and doesn't need it:
+  - a honeypot field, invisible to a real visitor (hidden with CSS) but
+    filled in by dumb bots that complete every field they see — anything
+    arriving in it means silently discard the submission;
+  - a basic rate limit by IP address — not identifying anyone, just
+    noticing many submissions from one place in a short window isn't a
+    person;
+  - a minimum-time check — reject anything submitted implausibly fast
+    after the form loaded.
+  - If spam still gets through despite that: Cloudflare Turnstile (a
+    modern, mostly invisible CAPTCHA) as the next step up — only added if
+    actually needed, not built in from day one.
+
 ### Phase 1 — Coach submissions
 
 The first real write path: proves the Hub → Edge Function → Airtable
