@@ -318,6 +318,20 @@ function renderPublicHome(){
   (pages.length?'<section class="public-section"><div class="public-tile-grid">'+pages.map(function(p,i){return publicPageTile(p,i)}).join('')+'</div></section>':'<div class="schedule-empty">More information coming soon.</div>')+
  '</div>';
 }
+/**
+ * Age Groups on the Public Pages card is a plain comma-separated list set
+ * in Airtable, e.g. "U7, U8, U9/10". If it's set, the form offers exactly
+ * those as a dropdown - different cards can offer different age bands
+ * with no code change. If it's blank, the form just asks for age as free
+ * text instead, so this still works before anyone's filled that in.
+ */
+function ageGroupField(page){
+ var options=String(page.age_groups||'').split(',').map(function(s){return s.trim()}).filter(Boolean);
+ if(!options.length)return '<label class="auth-field">Age group<input id="ri-age" placeholder="e.g. 9" autocomplete="off"></label>';
+ return '<label class="auth-field">Age group<select id="ri-age"><option value="">Choose one…</option>'+
+  options.map(function(o){return '<option value="'+esc(o)+'">'+esc(o)+'</option>'}).join('')+
+  '</select></label>';
+}
 function renderPublicDetail(pageId,submitted){
  document.getElementById('app').classList.add('auth-mode');
  state.selectedPublicPage=pageId;
@@ -332,6 +346,7 @@ function renderPublicDetail(pageId,submitted){
   '<label class="auth-field">Name<input id="ri-name" autocomplete="name"></label>'+
   '<label class="auth-field">Email<input id="ri-email" type="email" autocomplete="email"></label>'+
   '<label class="auth-field">Phone (optional)<input id="ri-phone" type="tel" autocomplete="tel"></label>'+
+  ageGroupField(page)+
   '<label class="auth-field">Notes (optional)<textarea id="ri-notes" rows="3"></textarea></label>'+
   '<input type="text" id="ri-hp" name="website" class="hp-field" tabindex="-1" autocomplete="off" aria-hidden="true">'+
   '<p class="auth-error" id="ri-error" hidden></p>'+
@@ -347,15 +362,16 @@ function renderPublicDetail(pageId,submitted){
 function submitRegisterInterest(pageId){
  var page=(state.publicPages||[]).find(function(x){return x.page_id===pageId});
  if(!page)return;
- var nameEl=document.getElementById('ri-name'),emailEl=document.getElementById('ri-email'),phoneEl=document.getElementById('ri-phone'),notesEl=document.getElementById('ri-notes'),hpEl=document.getElementById('ri-hp'),errEl=document.getElementById('ri-error');
- var name=(nameEl&&nameEl.value||'').trim(),email=(emailEl&&emailEl.value||'').trim(),phone=(phoneEl&&phoneEl.value||'').trim(),notes=(notesEl&&notesEl.value||'').trim(),hp=(hpEl&&hpEl.value||'').trim();
+ var nameEl=document.getElementById('ri-name'),emailEl=document.getElementById('ri-email'),phoneEl=document.getElementById('ri-phone'),ageEl=document.getElementById('ri-age'),notesEl=document.getElementById('ri-notes'),hpEl=document.getElementById('ri-hp'),errEl=document.getElementById('ri-error');
+ var name=(nameEl&&nameEl.value||'').trim(),email=(emailEl&&emailEl.value||'').trim(),phone=(phoneEl&&phoneEl.value||'').trim(),ageGroup=(ageEl&&ageEl.value||'').trim(),notes=(notesEl&&notesEl.value||'').trim(),hp=(hpEl&&hpEl.value||'').trim();
  if(!name||!email){if(errEl){errEl.textContent='Please add your name and email.';errEl.hidden=false}return}
+ if(!ageGroup){if(errEl){errEl.textContent='Please choose an age group.';errEl.hidden=false}return}
  if(errEl)errEl.hidden=true;
  var btn=document.querySelector('[data-action="register-interest-submit"]');
  if(btn){btn.disabled=true;btn.textContent='Sending…'}
  var url=(CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/register-interest');
  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-  name:name,email:email,phone:phone,notes:notes,
+  name:name,email:email,phone:phone,age_group:ageGroup,notes:notes,
   page_id:page.page_id,page_title:page.title,
   website_hp:hp,started_at:state.riStartedAt
  })})

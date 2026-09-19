@@ -247,9 +247,18 @@ the rest of the Hub progresses.
   clickable thing; tapping it opens that item's own page with its own
   Register Interest form underneath — "interested in" is never a field,
   it's just which tile you tapped.
-- [x] A new Airtable table, **Trial Interest** — Name, Email, Phone,
-  Interested In, Notes, Status (New/Contacted/Booked/Declined), Source
-  Page ID (which Public Pages card it came from).
+- [x] A new Airtable table, **Trial Interest** — Name, Email, Phone, Age
+  Group, Interested In, Notes, Status (New/Contacted/Booked/Declined),
+  Source Page ID (which Public Pages card it came from).
+- [x] **Age Group added, per David's real need** ("when they send the
+  form we want to know what age group they want to trial for") — a new
+  Public Pages field, Age Groups (comma-separated, e.g. "U7, U8, U9/10,
+  U11/12, U13/14"), turns into a dropdown of exactly those options on
+  that card's form; a card that hasn't set it falls back to a plain text
+  box, so this works immediately with nothing filled in yet. Different
+  cards can offer different age bands without touching this code —
+  same "customisable through Airtable" pattern as Colour/Summary/Image.
+  Required field; also added to the office notification email.
 - [x] A dedicated Edge Function, **`register-interest`** (separate from
   `hub-content`, since this is a write, `verify_jwt: false` since it's
   genuinely public) — validates, then writes to Airtable server-side. The
@@ -271,7 +280,10 @@ the rest of the Hub progresses.
   (Share → Invite, Read-only is enough) — nothing else changes, and the
   next submission should go through. If it should go to a different
   Airtable login than the Support Email, invite whichever one actually
-  needs the notification.
+  needs the notification. Also updated to include Age Group in the
+  email body — since the automation is already turned on, that change
+  sits as an unpublished draft until David opens it and applies the
+  update in the Airtable UI.
 - [x] **Spam protection, without requiring any account**:
   - a honeypot field, positioned off-screen with CSS (not just
     `display:none`, in case a bot checks for that) — anything arriving in
