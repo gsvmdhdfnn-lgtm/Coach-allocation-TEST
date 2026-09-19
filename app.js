@@ -243,9 +243,10 @@ function renderSupport(){
  var org=(window.HubContent&&HubContent.get()&&HubContent.get().organisation)||{};
  var title=(window.HubContent&&HubContent.label('coach_support_title','Coach Support Centre'))||'Coach Support Centre';
  var subtitle=(window.HubContent&&HubContent.label('coach_support_subtitle','Everything you need to be the best version of yourself as a coach.'))||'Everything you need to be the best version of yourself as a coach.';
- root.innerHTML='<div class="page-title"><h1>'+esc(title)+'</h1><p>'+esc(subtitle)+'</p></div><div class="card support-list">'+
-  (list.length?list.map(function(s){
-   return '<button class="support-row" data-action="support-detail" data-support="'+esc(s.support_id)+'"><span class="support-icon">'+icons.book+'</span><span><b>'+esc(s.title)+'</b>'+(s.section?'<small>'+esc(s.section)+'</small>':'')+'</span><span>›</span></button>';
+ root.innerHTML='<div class="page-title"><h1>'+esc(title)+'</h1><p>'+esc(subtitle)+'</p></div><div class="resource-grid">'+
+  (list.length?list.map(function(s,i){
+   var gradient=['','alt','warm'][i%3];
+   return '<button class="card resource-card" data-action="support-detail" data-support="'+esc(s.support_id)+'"><div class="resource-img icon-only '+gradient+'">'+icons.doc+'</div><div class="resource-body">'+(s.section?'<span class="pill blue">'+esc(s.section)+'</span>':'')+'<h3>'+esc(s.title)+'</h3></div></button>';
   }).join(''):'<div class="schedule-empty">Nothing here yet — add an item to the Coach Support table in Airtable.</div>')+
  '</div>'+(org.tagline?'<div class="quote-card card" style="margin-top:14px"><strong>“'+esc(org.tagline)+'”</strong></div>':'');
 }
