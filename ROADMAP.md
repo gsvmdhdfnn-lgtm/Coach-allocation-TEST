@@ -42,14 +42,55 @@ because it explains a few design choices below:
   lever for changing the Hub's content; the code should not need touching
   for that.
 
-## Standing rule
+## Standing rules — the backend contract
 
-**Nothing organisation-specific gets hardcoded.** If it's not obviously
-reusable for a second customer, it belongs in Airtable/Supabase config, not
-in code. This is the difference between "duplicate this for a new customer
-in a day" and "rewrite it." Every phase below gets checked against this,
-the same way the live Coaches Hub holds itself to "no Sheets API" and
-"changing the schedule means editing the sheet."
+Reviewed against a separate written review (19 Sept) and agreed as a
+rulebook every phase follows, not a phase of its own. This is what makes
+**"nail the Coach UI first" safe rather than risky** — the reason it
+won't cost extra work later is that every phase, starting with Phase 0,
+is built on top of these rules from day one, not bolted on after:
+
+- **Nothing organisation-specific gets hardcoded.** If it's not obviously
+  reusable for a second customer, it belongs in Airtable/Supabase config,
+  not in code — the difference between "duplicate this for a new customer
+  in a day" and "rewrite it."
+- **The frontend never talks to Airtable directly** — always through a
+  secure Edge Function.
+- **The frontend never decides permissions from hidden buttons, URL
+  parameters or a user-supplied role.** This is the precise, permanent fix
+  for the `?role=`/`?coach=` hack — not just replacing it once, but the
+  rule that stops anything like it coming back.
+- **Supabase Auth, RLS and secure Edge Functions are the only authority
+  for access.** Airtable stores operational people, relationships and
+  content — never passwords or security decisions.
+- **Google Sheets stays the source of truth for schedule and financials**
+  unless deliberately migrated later.
+- **Every private endpoint identifies the user from the authenticated
+  Supabase session.** The browser never supplies a trusted `user_id`,
+  coach name or role — the server always checks, every time.
+- **Every organisation-scoped request resolves `organisation_id` on the
+  backend**, never from anything the client sends — matters directly for
+  the sellable-product goal.
+- **Stable IDs are permanent once linked.** Never reused, never repurposed.
+- **Parent access requires a verified Parent–Player relationship** (the
+  `Link Status` field on Parent–Player Links is where that gets confirmed).
+- **Parent-visible feedback and development plans must be `Published`
+  before they can be returned** — enforced by the API itself, not just
+  hidden in the UI, so a parent can never see a draft by asking the
+  backend directly.
+- **Every write carries an audit trail**: `created_by_user_id`,
+  `created_by_role`, `created_at`, `last_updated_at`. Cheap to add from day
+  one, expensive to retrofit once real records exist — starts applying the
+  moment Phase 1 begins writing.
+- **Test-first, always.** Backend, auth and permission changes are tried in
+  the TEST environment first; schema changes are recorded as migrations
+  where possible; a security check runs after any RLS change; a new
+  endpoint is tested for both the correct role *and* that the wrong role
+  is denied; live code doesn't change until TEST behaviour is confirmed.
+- **Failures fail visibly, never silently** — the same fix already applied
+  to the Changes tab's silent-failure risk, generalised: an important
+  schedule or permission failure should never quietly show incomplete or
+  wrong data.
 
 ## Done so far
 
@@ -138,6 +179,11 @@ would mean redoing it once real content lands anyway.
 - Real Supabase Auth: login screens for Coach/Parent/Management, replacing
   `?role=`/`?coach=` as the source of truth. Login screens get the same UI
   care as everything else — a coach will actually see this screen.
+- A `/me` endpoint with a defined shape, the single clean answer to "who is
+  logged in, what organisation, what role": authenticated user (from the
+  Supabase session, never the client), `organisation_id`, `role`, `status`
+  (active/inactive), `airtable_person_id`. Everything role-gated later
+  reads from this instead of re-checking identity in multiple places.
 - A way to approve a `pending` signup — manual for now (flipped in
   Supabase/Airtable directly), just needs to not be a dead end.
 - Fix the Changes silent-failure risk.
@@ -196,7 +242,17 @@ shape (coach submits something, it lands in Airtable, sits pending review):
 
 - Signup → enter child's name + DOB → backend returns **MATCHED / CREATED /
   NEEDS_REVIEW**, never matched on name alone (exactly what the `Date of
-  Birth` field on Players was already designed for).
+  Birth` field on Players was already designed for). The exact rule for
+  each result, so the matching logic stays predictable rather than growing
+  ad-hoc exceptions:
+  | Result | Rule |
+  | --- | --- |
+  | `MATCHED` | Exact name + exact DOB + exactly one active matching player |
+  | `CREATED` | No existing player matches the supplied name and DOB |
+  | `NEEDS_REVIEW` | More than one possible match, conflicting data, or an ambiguous existing record |
+
+  Normal signups should be automatic; only genuinely unusual cases get
+  surfaced to Management, rather than risking a wrong parent-to-child link.
 - `Parent–Player Links`' `Link Status` field is where a `NEEDS_REVIEW` match
   gets approved before that parent gets access to that child's records.
 - Parent sees only **published** feedback and development plans — never
@@ -222,6 +278,26 @@ Programmes, Locations, Trials & Events, General info — no login needed,
 for people who aren't signed up yet. Nothing above depends on this; good
 fill-in-the-gaps work, not a blocker to anything else.
 
+### Phase 5 — Productisation
+
+Promoted from a vague "open question" to a real final milestone: the
+explicit point where the Hub can be considered genuinely reusable for a
+second organisation, not just hoped to be. Checklist:
+
+- A new Supabase project can be created cleanly for a new customer.
+- A new Airtable base can be provisioned from the same structure.
+- Organisation branding and settings can be swapped without touching code.
+- Secrets and keys are organisation-specific, never shared between
+  customers.
+- The same frontend code runs unmodified for another organisation.
+- No Josh Evans-specific names, IDs or assumptions remain hardcoded
+  anywhere in the reusable app logic.
+
+Deliberately not building shared multi-tenant infrastructure ahead of this
+— the practical near-term path stays "duplicate the instance," per
+"Where this came from" above — but this is the checklist that decides
+when that duplication is actually clean rather than a scramble.
+
 ## Open questions
 
 - **Custom domain and hosting** (`JoshEvansHub.com`, possibly Hostinger) —
@@ -229,6 +305,3 @@ fill-in-the-gaps work, not a blocker to anything else.
 - **How a `pending` signup actually gets approved** long-term — manual in
   Phase 0, could reasonably become part of Management's review queue in
   Phase 3 rather than staying a direct database edit forever.
-- **Multi-tenancy** — deliberately not building shared infrastructure for
-  it yet (see "Where this came from" above), but worth revisiting once
-  there's a genuine second customer rather than a hypothetical one.
