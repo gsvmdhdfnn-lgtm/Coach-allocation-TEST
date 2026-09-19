@@ -215,6 +215,20 @@ function applyBrandColours(){
     root.setProperty('--secondary-ink',bestInk(secondary));
   }
 }
+/**
+ * Every logo image in the Hub (top bar, auth screens) ships as a bundled
+ * je-logo.png in the markup so the app never shows a broken image before
+ * data loads. Once Organisation & Branding's own Logo attachment resolves,
+ * swap every one of those images over to it - a blank Logo field leaves
+ * je-logo.png exactly as it was, so this is purely additive.
+ */
+function applyLogo(){
+  var url=current.organisation&&current.organisation.logo_url;
+  if(!url)return;
+  document.querySelectorAll('.brand-lockup img, .auth-logo').forEach(function(img){
+    if(img.src!==url)img.src=url;
+  });
+}
 function applyVisibleLabels(){
   var map=[
     ['Resources',label('resources_label','Resources')],
@@ -231,6 +245,7 @@ if(
 ){
   document.title=current.organisation.hub_name;
 }
+  applyLogo();
 }
 
 function notify(){
