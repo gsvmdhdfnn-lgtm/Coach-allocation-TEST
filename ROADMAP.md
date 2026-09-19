@@ -267,23 +267,29 @@ the rest of the Hub progresses.
   form (before the email piece was on), and both submissions landed in
   Trial Interest with every field correct. The Hub → Edge Function →
   Airtable path is genuinely proven, not just tested against a mock.
-- [~] **Email notification via an Airtable automation** —
-  "New Trial Interest → email the office", looks up Organisation &
-  Branding's Support Email each time rather than a hardcoded address (so
-  changing who it goes to is one field edit in Airtable, not touching
-  this automation at all). Turned on, but its first two real runs failed
-  with `NON_COLLABORATOR_RECIPIENTS` — Airtable's built-in "Send an
-  email" action will only deliver to people who are actual collaborators
-  on the base, not an arbitrary address read from a text field.
-  `David@joshevans.co.uk` (the current Support Email) isn't one. **Fix
-  needed from David**: invite that address as a base collaborator
-  (Share → Invite, Read-only is enough) — nothing else changes, and the
-  next submission should go through. If it should go to a different
-  Airtable login than the Support Email, invite whichever one actually
-  needs the notification. Also updated to include Age Group in the
-  email body — since the automation is already turned on, that change
-  sits as an unpublished draft until David opens it and applies the
-  update in the Airtable UI.
+- [x] **Email notification via an Airtable automation — confirmed working
+  end to end.** "New Trial Interest → email the office", looks up
+  Organisation & Branding's Support Email each time rather than a
+  hardcoded address (so changing who it goes to is one field edit in
+  Airtable, not touching this automation at all). Its first three real
+  runs failed with `NON_COLLABORATOR_RECIPIENTS` — Airtable's built-in
+  "Send an email" action will only deliver to people who are actual
+  base collaborators, not an arbitrary address read from a text field,
+  and `David@joshevans.co.uk` (the Support Email) wasn't one yet. Fixed
+  by David properly inviting and accepting that address as a base
+  collaborator (the first invite attempt hadn't actually registered —
+  confirmed nothing had gone through by checking Share → Collaborators
+  directly). Run at 2026-09-19 09:22:59 succeeded with no failure — a
+  real Hub submission now reaches a real inbox. Age Group is included
+  in the email body.
+  - **Known limitation, deliberately parked**: every enquiry currently
+    goes to one fixed address (Support Email). David wants per-age-group
+    routing eventually (e.g. U8 enquiries to one inbox, U7 to another) —
+    real future work (a routing table plus conditional logic in the
+    automation, and likely a real mailbox connection like Outlook rather
+    than Airtable's collaborator-only send, since routed recipients
+    won't all be base collaborators). Not built — deliberately deferred
+    until the single-recipient path was proven solid, which it now is.
 - [x] **Spam protection, without requiring any account**:
   - a honeypot field, positioned off-screen with CSS (not just
     `display:none`, in case a bot checks for that) — anything arriving in
