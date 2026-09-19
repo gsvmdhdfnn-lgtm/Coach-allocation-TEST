@@ -259,26 +259,6 @@ function openCalendarOptions(scope,dateIso){var d=parseDate(dateIso)||new Date()
 function closeSheet(){sheet.hidden=true;sheetContent.innerHTML='';sheetContent._calendarOptions=null}
 function toast(t){var e=document.getElementById('toast');e.textContent=t;e.hidden=false;setTimeout(function(){e.hidden=true},1800)}
 /**
- * Sections are entirely data-driven - there is no fixed list of category
- * names in the code. A category only appears here because at least one
- * Active card in Airtable is tagged with it, and section order follows
- * the cards' own Sort Order (first card seen for a category decides where
- * that whole section sits). So turning a section off is just switching
- * off (or deleting) its last card in Airtable, and a brand new section -
- * one that's never existed before - needs nothing here: type a new
- * Category value on a card in Airtable and it shows up as its own
- * section automatically.
- */
-function publicPagesByCategory(){
- var groups={},order=[];
- (state.publicPages||[]).forEach(function(p){
-  var cat=(p.category||'').trim()||'General';
-  if(!groups[cat]){groups[cat]=[];order.push(cat)}
-  groups[cat].push(p);
- });
- return order.map(function(c){return {category:c,items:groups[c]}});
-}
-/**
  * Colour is a plain hex string set per-record in Airtable (Public Pages ->
  * Colour). Text automatically switches to dark when that colour is light,
  * so nobody has to also pick a matching text colour - one field, not two.
@@ -292,36 +272,50 @@ function contrastIsLight(hex){
 }
 var CATEGORY_ICON={general:'⌂',trials:'▣',academy:'●',tours:'◎',events:'◆',resources:'▧'};
 function iconForCategory(cat){return CATEGORY_ICON[String(cat||'').trim().toLowerCase()]||'✦'}
+/**
+ * Any image, whatever size it was uploaded at in Airtable, is shown in a
+ * fixed-height box and auto-cropped to fill it (background-size: cover) -
+ * nobody ever needs to resize a photo to "fit" before uploading it. The
+ * photo sits in its own contained strip rather than behind the text, so
+ * a busy photo never fights with the title for legibility.
+ */
 function publicPageTile(p,i){
  var hex=(p.colour||'').trim();
  var validHex=/^#?[0-9a-f]{3}([0-9a-f]{3})?$/i.test(hex);
  var hasImage=!!p.image_url;
  var fallback=['','alt','warm'][i%3];
- var isLight=!hasImage&&validHex&&contrastIsLight(hex);
- var style=(!hasImage&&validHex)?' style="background:'+(hex.charAt(0)==='#'?hex:'#'+hex)+'"':'';
- var cls='public-tile'+(hasImage?'':(validHex?'':' '+fallback))+(isLight?' light-bg':'');
- var photo=hasImage?'<div class="public-tile-photo" style="background-image:url(\''+esc(p.image_url)+'\')"></div><div class="public-tile-photo-overlay"></div>':'';
- return '<button class="card '+cls+'" data-action="public-detail" data-page="'+esc(p.page_id)+'"'+style+'>'+
-  photo+'<div class="public-tile-ring"></div>'+
-  '<span class="public-tile-icon">'+iconForCategory(p.category)+'</span>'+
-  '<span class="public-tile-copy"><h3>'+esc(p.title)+'</h3>'+(p.summary?'<p>'+esc(p.summary)+'</p>':'')+'</span>'+
-  '<span class="public-tile-arrow">→</span>'+
+ var isLight=validHex&&contrastIsLight(hex);
+ var footerStyle=validHex?' style="background:'+(hex.charAt(0)==='#'?hex:'#'+hex)+'"':'';
+ var footerCls='public-tile-footer'+(validHex?'':' '+fallback);
+ var photo=hasImage?'<div class="public-tile-photo-box"><div class="public-tile-photo" style="background-image:url(\''+esc(p.image_url)+'\')"></div></div>':'';
+ return '<button class="card public-tile'+(isLight?' light-bg':'')+'" data-action="public-detail" data-page="'+esc(p.page_id)+'">'+
+  photo+
+  '<div class="'+footerCls+'"'+footerStyle+'>'+
+   '<div class="public-tile-ring"></div>'+
+   '<span class="public-tile-icon">'+iconForCategory(p.category)+'</span>'+
+   '<span class="public-tile-copy"><h3>'+esc(p.title)+'</h3>'+(p.summary?'<p>'+esc(p.summary)+'</p>':'')+'</span>'+
+   '<span class="public-tile-arrow">→</span>'+
+  '</div>'+
  '</button>';
 }
+/**
+ * One flat 2-column grid, no per-category headers - matches the reference
+ * David shared (a clean 2x2/2x3 menu, not a stack of one-item sections).
+ * Cards already arrive from hub-content sorted by their own Sort Order, so
+ * that's the only thing controlling the grid's order; category still
+ * decides the icon, nothing else.
+ */
 function renderPublicHome(){
  document.getElementById('app').classList.add('auth-mode');
  var org=(window.HubContent&&HubContent.get()&&HubContent.get().organisation)||{};
- var groups=publicPagesByCategory();
- var i=0;
+ var pages=state.publicPages||[];
  root.innerHTML='<div class="public-page">'+
   '<section class="public-hero"><img class="public-hero-logo" src="je-logo.png" alt="'+esc(org.hub_name||'Josh Evans Hub')+'">'+
    '<h1>'+esc(org.hub_name||'Josh Evans Hub')+'</h1>'+
    (org.tagline?'<p class="public-hero-tag">'+esc(org.tagline)+'</p>':'')+
    '<div class="public-hero-actions"><button class="secondary-btn" data-action="show-signin">Sign In</button><button class="primary-btn" data-action="show-signup">Register</button></div>'+
   '</section>'+
-  (groups.length?groups.map(function(g){
-   return '<section class="public-section"><div class="home-section-title"><h2>'+esc(g.category.toUpperCase())+'</h2></div><div class="public-tile-grid">'+g.items.map(function(p){return publicPageTile(p,i++)}).join('')+'</div></section>';
-  }).join(''):'<div class="schedule-empty">More information coming soon.</div>')+
+  (pages.length?'<section class="public-section"><div class="public-tile-grid">'+pages.map(function(p,i){return publicPageTile(p,i)}).join('')+'</div></section>':'<div class="schedule-empty">More information coming soon.</div>')+
  '</div>';
 }
 function renderPublicDetail(pageId,submitted){

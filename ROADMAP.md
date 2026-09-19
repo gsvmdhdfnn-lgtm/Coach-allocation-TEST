@@ -379,17 +379,22 @@ fill-in-the-gaps work, not a blocker to anything else.
   directly in Airtable whenever real copy is ready. A new public
   `hub-content` route (`public-pages`) serves it, same trust level and
   same `verify_jwt: false` as Resources/Venues/Coach Support already had.
-  - **Grid redesigned to match a reference David shared** — a boxed grid
-    of colour cards (icon, uppercase title, one-line Summary, circular
-    arrow), not the original photo-strip layout. Each card's `Colour` is
-    a plain hex string set per-record in Airtable; text automatically
-    switches dark-on-light or light-on-dark based on that colour's
-    brightness, so nobody has to also pick a matching text colour. If a
-    card's `Image` is set instead, the photo fills the card with a dark
-    gradient overlay (same treatment, always legible) rather than the
-    flat colour. Everything - colour, photo, summary, sort order,
-    on/off - is a Public Pages field; none of it needs touching this
-    code again.
+  - **Grid redesigned to match a reference David shared** — one flat
+    2-column grid (2x2, 2x3, however many cards are Active), no
+    per-category headers breaking it into lopsided one-item rows. Each
+    card: icon, uppercase title, one-line Summary, circular arrow.
+    `Colour` is a plain hex string set per-record in Airtable; text
+    automatically switches dark-on-light or light-on-dark based on that
+    colour's brightness, so nobody has to also pick a matching text
+    colour. Everything - colour, photo, summary, sort order, on/off - is
+    a Public Pages field; none of it needs touching this code again.
+  - **Images auto-fit, whatever size they're uploaded at.** A card's
+    `Image` shows in its own fixed-height box, auto-cropped to fill it
+    (the same `object-fit: cover` behaviour every modern app uses) -
+    nobody needs to resize a photo before uploading it. The photo sits in
+    its own contained strip above the coloured title/summary footer,
+    rather than behind the text, so a busy photo never fights with the
+    title for legibility.
   - **Sign In** and **Register** buttons on that page are the only way
     into the account flow — Register goes straight to the existing
     Coach/Parent picker from Phase 0. Every auth screen (including the

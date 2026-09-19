@@ -13,22 +13,23 @@
 .calendar-sheet>p.support-sheet-body{white-space:pre-wrap;color:var(--ink);font-size:12px;line-height:1.55}.sheet-link-btn{display:flex;align-items:center;justify-content:center;text-decoration:none;margin-top:10px}
 .public-page{padding-bottom:20px}.public-hero{margin:0 -14px;padding:34px 20px 28px;background:linear-gradient(165deg,#082e5b,#061d3d 74%);color:#fff;text-align:center}.public-hero-logo{height:40px;margin-bottom:14px}.public-hero h1{font-family:Oswald,sans-serif;margin:0 0 8px;font-size:26px}.public-hero-tag{margin:0 0 20px;color:#cfe0f4;font-size:12px;font-style:italic}.public-hero-actions{display:flex;gap:10px;max-width:320px;margin:0 auto}.public-hero-actions button{flex:1}.public-section{margin:22px 0 0}
 .public-tile-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
-.public-tile{position:relative;overflow:hidden;text-align:left;border:0;padding:16px 14px;min-height:150px;display:flex;flex-direction:column;justify-content:space-between;background:linear-gradient(150deg,#123f71,#092b52)}
-.public-tile.alt{background:linear-gradient(150deg,#1688d3,#0a467f)}
-.public-tile.warm{background:linear-gradient(150deg,#5e7f37,#1d4a39)}
+.public-tile{position:relative;overflow:hidden;text-align:left;border:0;padding:0;display:flex;flex-direction:column}
 .public-tile.light-bg{border:1px solid var(--line)}
+.public-tile-photo-box{height:84px;overflow:hidden}
+.public-tile-photo{width:100%;height:100%;background-size:cover;background-position:center}
+.public-tile-footer{position:relative;flex:1;min-height:104px;padding:12px 12px 14px;display:flex;flex-direction:column;justify-content:space-between;background:linear-gradient(150deg,#123f71,#092b52)}
+.public-tile-footer.alt{background:linear-gradient(150deg,#1688d3,#0a467f)}
+.public-tile-footer.warm{background:linear-gradient(150deg,#5e7f37,#1d4a39)}
 .public-tile-ring{position:absolute;right:-18px;bottom:-18px;width:74px;height:74px;border:12px solid rgba(255,255,255,.14);border-radius:50%;pointer-events:none}
 .public-tile.light-bg .public-tile-ring{border-color:rgba(6,42,89,.06)}
-.public-tile-photo{position:absolute;inset:0;background-size:cover;background-position:center}
-.public-tile-photo-overlay{position:absolute;inset:0;background:linear-gradient(200deg,rgba(6,20,45,.18),rgba(4,14,32,.74))}
-.public-tile-icon{position:relative;z-index:1;align-self:flex-end;font-size:17px;color:rgba(255,255,255,.85);line-height:1}
+.public-tile-icon{position:relative;z-index:1;align-self:flex-end;font-size:16px;color:rgba(255,255,255,.85);line-height:1}
 .public-tile.light-bg .public-tile-icon{color:var(--navy);opacity:.8}
 .public-tile-copy{position:relative;z-index:1}
-.public-tile-copy h3{margin:0 0 4px;font-family:Oswald,sans-serif;font-size:15.5px;letter-spacing:.01em;text-transform:uppercase;color:#fff;line-height:1.18}
+.public-tile-copy h3{margin:0 0 4px;font-family:Oswald,sans-serif;font-size:14px;letter-spacing:.01em;text-transform:uppercase;color:#fff;line-height:1.18}
 .public-tile.light-bg .public-tile-copy h3{color:var(--navy)}
-.public-tile-copy p{margin:0;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.78)}
+.public-tile-copy p{margin:0;font-size:10px;line-height:1.35;color:rgba(255,255,255,.78)}
 .public-tile.light-bg .public-tile-copy p{color:var(--muted)}
-.public-tile-arrow{position:relative;z-index:1;width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,.16);color:#fff;display:grid;place-items:center;font-size:14px;margin-top:10px}
+.public-tile-arrow{position:relative;z-index:1;width:27px;height:27px;border-radius:50%;background:rgba(255,255,255,.16);color:#fff;display:grid;place-items:center;font-size:13px;margin-top:8px}
 .public-tile.light-bg .public-tile-arrow{background:#eef6ff;color:var(--blue)}
 .public-detail-hero{padding-bottom:26px}.public-detail-img{margin:-14px -14px 12px;height:160px;overflow:hidden;border-radius:16px 16px 0 0}.public-detail-img img{width:100%;height:100%;object-fit:cover;display:block}.detail-card p{margin:0;color:#5f7189;font-size:12px;line-height:1.5}.detail-card .sheet-link-btn{margin-top:14px}
 .register-interest-card{padding:18px;margin-top:12px}.register-interest-card h2{margin:0 0 4px;font-size:17px;color:var(--navy);font-family:Oswald,sans-serif}.register-interest-card textarea{display:block;width:100%;margin-top:6px;border:1px solid var(--line);border-radius:11px;padding:11px 12px;font-size:13px;color:var(--ink);background:#fbfdff;font-family:inherit;resize:vertical}.register-interest-card textarea:focus{outline:none;border-color:#a8cef1;box-shadow:0 0 0 3px rgba(17,135,238,.08)}.register-interest-card .auth-field{margin-bottom:14px}.hp-field{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
