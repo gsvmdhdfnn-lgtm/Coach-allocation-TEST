@@ -3,7 +3,7 @@
 'use strict';
 var CFG=window.APP_CONFIG||{};
 var DEMO=new URLSearchParams(location.search).get('demo')==='1';
-var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false};
+var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff'};
 var supabaseClient=(!DEMO&&window.supabase&&CFG.supabaseUrl&&CFG.supabasePublishableKey)?window.supabase.createClient(CFG.supabaseUrl,CFG.supabasePublishableKey):null;
 var root=document.getElementById('screen-root');
 var sheet=document.getElementById('sheet'),sheetContent=document.getElementById('sheet-content');
@@ -254,15 +254,27 @@ function renderAuthMessage(title,body,showLogout){renderAuthShell('<h1>'+esc(tit
  (showLogout?'<button class="secondary-btn" data-action="logout">Log out</button>':''))}
 function renderAuth(){
  var mode=state.authScreen==='signup'?'signup':'login';
+ var type=state.authAccountType==='parent'?'parent':'staff';
  var err=state.authError?'<p class="auth-error">'+esc(state.authError)+'</p>':'';
+ var typePicker=mode!=='signup'?'':(
+  '<div class="auth-field"><span>I am a…</span><div class="segmented auth-type-picker">'+
+   '<button data-action="auth-account-type" data-type="staff" class="'+(type==='staff'?'is-active':'')+'">Coach / Management</button>'+
+   '<button data-action="auth-account-type" data-type="parent" class="'+(type==='parent'?'is-active':'')+'">Parent</button>'+
+  '</div></div>'
+ );
+ var typeNote=mode!=='signup'?'':(type==='parent'?
+  '<p class="auth-note">Parent accounts get in straight away — you’ll be matched to your child once that’s set up.</p>':
+  '<p class="auth-note">Coach and management accounts need to be approved by Josh or David before you can sign in.</p>');
  renderAuthShell(
   '<h1>'+(mode==='signup'?'Create your account':'Sign in')+'</h1>'+
   '<p class="auth-sub">'+(mode==='signup'?'For coaches, parents and management at Josh Evans Soccer School.':'Welcome back to the Josh Evans Hub.')+'</p>'+
+  typePicker+
   '<label class="auth-field">Email<input id="auth-email" type="email" autocomplete="email" value="'+esc(state.authEmail||'')+'"></label>'+
   '<label class="auth-field">Password<input id="auth-password" type="password" autocomplete="'+(mode==='signup'?'new-password':'current-password')+'"></label>'+
   err+
   '<button class="primary-btn" data-action="auth-submit" '+(state.authBusy?'disabled':'')+'>'+(state.authBusy?'Please wait…':(mode==='signup'?'Create account':'Sign in'))+'</button>'+
-  '<button class="auth-switch" data-action="auth-switch">'+(mode==='signup'?'Already have an account? Sign in':'New here? Create an account')+'</button>'
+  '<button class="auth-switch" data-action="auth-switch">'+(mode==='signup'?'Already have an account? Sign in':'New here? Create an account')+'</button>'+
+  typeNote
  );
  var first=document.getElementById(state.authEmail?'auth-password':'auth-email');if(first)first.focus()
 }
@@ -274,7 +286,7 @@ function authSubmit(){
  if(!supabaseClient){state.authError='Sign-in is not configured.';renderAuth();return}
  state.authBusy=true;state.authError='';renderAuth();
  var mode=state.authScreen==='signup'?'signup':'login';
- var op=mode==='signup'?supabaseClient.auth.signUp({email:email,password:password}):supabaseClient.auth.signInWithPassword({email:email,password:password});
+ var op=mode==='signup'?supabaseClient.auth.signUp({email:email,password:password,options:{data:{account_type:state.authAccountType==='parent'?'parent':'staff'}}}):supabaseClient.auth.signInWithPassword({email:email,password:password});
  op.then(function(res){
   state.authBusy=false;
   if(res.error){state.authError=res.error.message||'Something went wrong. Please try again.';renderAuth();return}
@@ -306,10 +318,10 @@ function init(){
   if(session)onSignedIn(session);else renderAuth()
  });
  supabaseClient.auth.onAuthStateChange(function(event){
-  if(event==='SIGNED_OUT'){state.me=null;state.role='coach';state.screen='home';state.authScreen='login';state.authEmail='';state.authError='';renderAuth()}
+  if(event==='SIGNED_OUT'){state.me=null;state.role='coach';state.screen='home';state.authScreen='login';state.authEmail='';state.authError='';state.authAccountType='staff';renderAuth()}
  });
 }
-document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;renderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;renderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;renderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);renderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);renderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='logout'){if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}});
+document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;renderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;renderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;renderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);renderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);renderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='logout'){if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}});
 document.addEventListener('input',function(e){if(e.target&&e.target.id==='venue-search'){state.venueQuery=e.target.value;renderVenues();var i=document.getElementById('venue-search');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}}});
 document.addEventListener('keydown',function(e){if(e.key==='Enter'&&e.target&&(e.target.id==='auth-email'||e.target.id==='auth-password')){e.preventDefault();authSubmit()}});
 init();

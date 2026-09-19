@@ -192,6 +192,16 @@ would mean redoing it once real content lands anyway.
   `display_name` set directly in the Supabase table editor), just needs to
   not be a dead end. A `pending` user who signs in sees a plain "waiting
   for approval" screen.
+- [x] Only coach and management signups sit in the `pending` queue. The
+  signup screen asks "I am a… Coach/Management or Parent"; picking Parent
+  activates the account immediately, no approval step. Safe to let someone
+  self-declare this because a bare `parent` role carries no standing
+  access today (same placeholder shell as everyone else), and real child
+  data will later be gated by the separate verified Parent–Player match
+  (Phase 2), not by this step. The signup's own claim is only ever trusted
+  for that one, least-privileged outcome — `handle_new_user()` allowlists
+  literally the value `'parent'` and anything else (including a tampered
+  claim of `'management'`) still falls through to `pending`.
 - [ ] Go through every Coach screen against that real data and tighten it
   to the same bar as Financials/Schedule on the live Coaches Hub — proof
   positive of what "done" already looks like, not a vague "make it nicer."
