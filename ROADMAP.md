@@ -94,6 +94,19 @@ is built on top of these rules from day one, not bolted on after:
 
 ## Done so far
 
+- **Whole-app brand colours are Airtable-driven, not just individual
+  cards.** Organisation & Branding already had Primary/Secondary/Accent
+  Colour fields (plain hex) and `hub-content` already returned them, but
+  nothing read them — every colour in `styles.css` is a CSS custom
+  property, so `content-provider.js` now applies these three straight
+  onto `:root` (plus the mobile browser's `theme-color` meta tag) the
+  moment settings load. Top bar, buttons, hero backgrounds, nav
+  highlights, everything re-themes from three fields. Darker/lighter
+  shades needed for gradients are derived automatically from the one hex
+  each, so nobody has to pick five shades of navy by hand. Along the way,
+  found and fixed three hero backgrounds (auth screen, public home,
+  Management) that were still hardcoded hex rather than the colour
+  variable — would have silently not re-themed otherwise.
 - **Coach experience UI built** — Home, Schedule (Today/This Week/Calendar
   tabs), Venues, session detail, Coach Support, Resources, More, and a
   Management sub-screen. A genuine native-app-feeling shell: sticky top

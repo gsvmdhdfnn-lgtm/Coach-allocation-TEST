@@ -108,6 +108,52 @@ function replaceExact(root,from,to){
   }
 }
 
+/**
+ * Whole-app brand colours, from Organisation & Branding -> Primary/
+ * Secondary/Accent Colour (plain hex, same fields the app already reads
+ * for the org name/logo). Every colour in styles.css is a CSS custom
+ * property already, so setting these three on :root re-themes the whole
+ * Hub - top bar, buttons, hero backgrounds, nav highlights - with no
+ * extra fields to keep in sync. A lighter shade for each is derived
+ * automatically so gradients still have depth from one hex each.
+ */
+function hexToRgb(hex){
+  var h=String(hex||'').trim().replace(/^#/,'');
+  if(h.length===3)h=h.split('').map(function(c){return c+c}).join('');
+  if(!/^[0-9a-f]{6}$/i.test(h))return null;
+  return {r:parseInt(h.slice(0,2),16),g:parseInt(h.slice(2,4),16),b:parseInt(h.slice(4,6),16)};
+}
+function lighten(hex,amount){
+  var c=hexToRgb(hex);
+  if(!c)return hex;
+  var mix=function(v){return Math.round(v+(255-v)*amount)};
+  return 'rgb('+mix(c.r)+','+mix(c.g)+','+mix(c.b)+')';
+}
+function darken(hex,amount){
+  var c=hexToRgb(hex);
+  if(!c)return hex;
+  var mix=function(v){return Math.round(v*(1-amount))};
+  return 'rgb('+mix(c.r)+','+mix(c.g)+','+mix(c.b)+')';
+}
+function applyBrandColours(){
+  var org=current.organisation||{};
+  var root=document.documentElement.style;
+  if(hexToRgb(org.primary_colour)){
+    root.setProperty('--navy',org.primary_colour);
+    root.setProperty('--navy-2',lighten(org.primary_colour,0.22));
+    root.setProperty('--navy-deep',darken(org.primary_colour,0.12));
+    root.setProperty('--navy-deepest',darken(org.primary_colour,0.4));
+    var themeMeta=document.querySelector('meta[name="theme-color"]');
+    if(themeMeta)themeMeta.setAttribute('content',org.primary_colour);
+  }
+  if(hexToRgb(org.accent_colour)){
+    root.setProperty('--blue',org.accent_colour);
+    root.setProperty('--blue-2',lighten(org.accent_colour,0.28));
+  }
+  if(hexToRgb(org.secondary_colour)){
+    root.setProperty('--lime',org.secondary_colour);
+  }
+}
 function applyVisibleLabels(){
   var map=[
     ['Resources',label('resources_label','Resources')],
@@ -130,6 +176,7 @@ function notify(){
   listeners.slice().forEach(function(fn){
     try{fn(current)}catch(e){}
   });
+  applyBrandColours();
   applyVisibleLabels();
 }
 
