@@ -3,7 +3,8 @@
 'use strict';
 var CFG=window.APP_CONFIG||{};
 var DEMO=new URLSearchParams(location.search).get('demo')==='1';
-var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[]};
+var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false};
+var supabaseClient=(!DEMO&&window.supabase&&CFG.supabaseUrl&&CFG.supabasePublishableKey)?window.supabase.createClient(CFG.supabaseUrl,CFG.supabasePublishableKey):null;
 var root=document.getElementById('screen-root');
 var sheet=document.getElementById('sheet'),sheetContent=document.getElementById('sheet-content');
 var DAY_ORDER=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
@@ -91,7 +92,6 @@ function load(){
 ]).then(function(all){
 
   var ss=all[0];state.sessions=ss.map(function(r){return {id:r.session_id,name:r.session_name,programme:r.programme,category:r.category,ageGroup:r.age_group,day:r.day,time:r.time,venue:r.venue,address:r.address,coaches:splitCoaches(r.coaches),client:r.client,hours:r.hours}});
-  var names={};state.sessions.forEach(function(s){s.coaches.forEach(function(c){names[c]=true})});var qs=new URLSearchParams(location.search);var coach=qs.get('coach');state.role=(qs.get('role')||'coach').toLowerCase();state.me={name:coach&&names[coach]?coach:(names.David?'David':Object.keys(names)[0]||'Coach'),owner:false};
   all[1].forEach(function(r){var d=parseDate(r.week_commencing);if(d)state.calendar[iso(mondayOf(d))]={label:r.label||'',weekNo:r.week_no||'',running:!/^(no|n|0|false)$/i.test(r.running||'yes')}});
   state.changes=all[2];state.terms=all[3];all[4].forEach(function(r){var d=parseDate(r.week_commencing);if(!d)return;var k=iso(mondayOf(d));state.themes[k]=state.themes[k]||{};state.themes[k][nameKey(r.category)]=r.theme||''});
   state.resources=all[5]||[];
@@ -237,7 +237,7 @@ function openSupportDetail(id){
   (s.attachment_url?'<a class="secondary-btn" href="'+esc(s.attachment_url)+'" target="_blank" rel="noopener" style="display:block;text-align:center;text-decoration:none;margin-top:10px">Open attachment</a>':'')+
  '</div>';
 }
-function renderMore(){var rows=[['●','My Profile','Update your details',''],['◉','Notifications','Manage alerts',''],['£','Management & Financials','Restricted access','management'],['●','Feedback','Share ideas or report an issue',''],['☎','Contact the Office','Get in touch',''],['↪','Log Out','','']];root.innerHTML='<div class="page-title"><h1>More</h1><p>Your account, support and management access.</p></div><div class="card more-list">'+rows.map(function(r){return '<button class="more-row" '+(r[3]?'data-nav="'+r[3]+'"':'')+'><span class="support-icon">'+r[0]+'</span><span><b>'+r[1]+'</b><small>'+r[2]+'</small></span><span>›</span></button>'}).join('')+'</div>'}
+function renderMore(){var rows=[['●','My Profile',(state.me&&state.me.email)||'Update your details',''],['◉','Notifications','Manage alerts',''],['£','Management & Financials','Restricted access','management'],['●','Feedback','Share ideas or report an issue',''],['☎','Contact the Office','Get in touch',''],['↪','Log Out','','','logout']];root.innerHTML='<div class="page-title"><h1>More</h1><p>Your account, support and management access.</p></div><div class="card more-list">'+rows.map(function(r){return '<button class="more-row" '+(r[3]?'data-nav="'+r[3]+'"':'')+(r[4]?' data-action="'+r[4]+'"':'')+'><span class="support-icon">'+r[0]+'</span><span><b>'+r[1]+'</b><small>'+esc(r[2])+'</small></span><span>›</span></button>'}).join('')+'</div>'}
 function renderManagement(){state.screen='management';setNav('more');if(state.unlocked){renderManagementDashboard();return}root.innerHTML='<section class="locked"><div class="page-title"><h1 style="color:white">Management Access</h1><p style="color:#cfe0f4">Financials & administration. Restricted to authorised users.</p></div><div class="management-card"><h2>🔒 Enter password</h2><p style="color:var(--muted);font-size:12px">This uses the same protected Financials connection as the existing Hub.</p><div class="pw"><input id="pw" type="password" placeholder="Password"><button data-action="unlock">Access</button></div><p id="pw-error" style="color:var(--red);font-size:12px"></p></div><div class="card support-list" style="margin-top:14px;background:rgba(255,255,255,.98);color:var(--ink)"><div class="support-row"><span class="support-icon">▣</span><span><b>Full schedule view</b><small>All coaches, all sessions</small></span><span>›</span></div><div class="support-row"><span class="support-icon">▤</span><span><b>Financial dashboard</b><small>Live and historical data</small></span><span>›</span></div><div class="support-row"><span class="support-icon">●</span><span><b>Coach management</b><small>Hours, rates and costs</small></span><span>›</span></div></div></section>'}
 function renderManagementDashboard(){var fs=state.financials||{};var rows=Object.values(fs),rev=rows.reduce(function(a,r){return a+(+r.revenue_net||0)},0),profit=rows.reduce(function(a,r){return a+(+r.profit||0)},0);root.innerHTML='<section class="locked"><div class="page-title"><h1 style="color:white">Management Dashboard</h1><p style="color:#cfe0f4">Schedules, financials and administration.</p></div><div class="kpi-grid"><div class="kpi"><small>Sessions</small><b>'+state.sessions.length+'</b></div><div class="kpi"><small>Revenue</small><b>'+money(rev)+'</b></div><div class="kpi"><small>Profit</small><b>'+money(profit)+'</b></div><div class="kpi"><small>Coaches</small><b>'+new Set(state.sessions.flatMap(function(s){return s.coaches})).size+'</b></div></div><div class="card support-list" style="color:var(--ink)"><div class="support-row"><span class="support-icon">▣</span><span><b>Full schedule view</b><small>All coaches, all sessions</small></span><span>›</span></div><div class="support-row"><span class="support-icon">£</span><span><b>Financial dashboard</b><small>Baseline, actual and archive</small></span><span>›</span></div><div class="support-row"><span class="support-icon">●</span><span><b>Coach management</b><small>Hours, rates and costs</small></span><span>›</span></div><div class="support-row"><span class="support-icon">▧</span><span><b>Reports & exports</b><small>P&L, attendance and more</small></span><span>›</span></div></div></section>'}
 function b64(b){var bin=atob(String(b).replace(/\s+/g,'')),o=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)o[i]=bin.charCodeAt(i);return o}
@@ -248,7 +248,69 @@ function occurrenceByIdDate(id,dateIso){var d=parseDate(dateIso),s=findSession(i
 function openCalendarOptions(scope,dateIso){var d=parseDate(dateIso)||new Date(),opts=[];if(scope==='week'){var list=[];for(var i=0;i<7;i++)list=list.concat(scheduleOccurrencesForDate(addDays(d,i)).filter(function(o){return o.status!=='cancelled'}));opts.push({label:'Add this visible week',count:list.length,list:list,file:'coach-week-'+iso(d)})}else{var day=scheduleOccurrencesForDate(d).filter(function(o){return o.status!=='cancelled'});opts.push({label:'Add selected day',count:day.length,list:day,file:'coach-day-'+iso(d)});var wk=mondayOf(d),week=[];for(var j=0;j<7;j++)week=week.concat(scheduleOccurrencesForDate(addDays(wk,j)).filter(function(o){return o.status!=='cancelled'}));opts.push({label:'Add whole week',count:week.length,list:week,file:'coach-week-'+iso(wk)})}sheet.hidden=false;sheetContent.innerHTML='<div class="calendar-sheet"><h3>Add to Calendar</h3><p>Choose what you want to add.</p>'+opts.map(function(o,i){return '<button data-action="calendar-download" data-option="'+i+'"><span><b>'+esc(o.label)+'</b><small>'+o.count+' session'+(o.count===1?'':'s')+'</small></span><span>›</span></button>'}).join('')+'</div>';sheetContent._calendarOptions=opts}
 function closeSheet(){sheet.hidden=true;sheetContent.innerHTML='';sheetContent._calendarOptions=null}
 function toast(t){var e=document.getElementById('toast');e.textContent=t;e.hidden=false;setTimeout(function(){e.hidden=true},1800)}
-document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;renderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;renderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;renderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);renderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);renderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet')});
+function renderAuthShell(inner){root.innerHTML='<div class="auth-page"><div class="auth-card">'+
+ '<img class="auth-logo" src="je-logo.png" alt="Josh Evans Soccer School">'+inner+'</div></div>'}
+function renderAuthMessage(title,body,showLogout){renderAuthShell('<h1>'+esc(title)+'</h1><p class="auth-sub">'+esc(body)+'</p>'+
+ (showLogout?'<button class="secondary-btn" data-action="logout">Log out</button>':''))}
+function renderAuth(){
+ var mode=state.authScreen==='signup'?'signup':'login';
+ var err=state.authError?'<p class="auth-error">'+esc(state.authError)+'</p>':'';
+ renderAuthShell(
+  '<h1>'+(mode==='signup'?'Create your account':'Sign in')+'</h1>'+
+  '<p class="auth-sub">'+(mode==='signup'?'For coaches, parents and management at Josh Evans Soccer School.':'Welcome back to the Josh Evans Hub.')+'</p>'+
+  '<label class="auth-field">Email<input id="auth-email" type="email" autocomplete="email" value="'+esc(state.authEmail||'')+'"></label>'+
+  '<label class="auth-field">Password<input id="auth-password" type="password" autocomplete="'+(mode==='signup'?'new-password':'current-password')+'"></label>'+
+  err+
+  '<button class="primary-btn" data-action="auth-submit" '+(state.authBusy?'disabled':'')+'>'+(state.authBusy?'Please wait…':(mode==='signup'?'Create account':'Sign in'))+'</button>'+
+  '<button class="auth-switch" data-action="auth-switch">'+(mode==='signup'?'Already have an account? Sign in':'New here? Create an account')+'</button>'
+ );
+ var first=document.getElementById(state.authEmail?'auth-password':'auth-email');if(first)first.focus()
+}
+function authSubmit(){
+ var emailEl=document.getElementById('auth-email'),pwEl=document.getElementById('auth-password');
+ var email=(emailEl&&emailEl.value||'').trim(),password=pwEl&&pwEl.value||'';
+ state.authEmail=email;
+ if(!email||!password){state.authError='Enter your email and password.';renderAuth();return}
+ if(!supabaseClient){state.authError='Sign-in is not configured.';renderAuth();return}
+ state.authBusy=true;state.authError='';renderAuth();
+ var mode=state.authScreen==='signup'?'signup':'login';
+ var op=mode==='signup'?supabaseClient.auth.signUp({email:email,password:password}):supabaseClient.auth.signInWithPassword({email:email,password:password});
+ op.then(function(res){
+  state.authBusy=false;
+  if(res.error){state.authError=res.error.message||'Something went wrong. Please try again.';renderAuth();return}
+  var session=res.data&&res.data.session;
+  if(session){onSignedIn(session);return}
+  if(mode==='signup'){renderAuthMessage('Check your email','We’ve sent a confirmation link to '+email+'. Follow it, then come back here and sign in.',false);return}
+  state.authError='Could not sign you in. Please try again.';renderAuth();
+ }).catch(function(){state.authBusy=false;state.authError='Something went wrong. Please try again.';renderAuth()});
+}
+function onSignedIn(session){
+ renderAuthMessage('Loading your hub','One moment…',false);
+ var meUrl=(CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/me');
+ fetch(meUrl,{headers:{Authorization:'Bearer '+session.access_token},cache:'no-store'})
+  .then(function(r){if(!r.ok)throw new Error('Could not load your profile ('+r.status+').');return r.json()})
+  .then(function(me){
+   state.role=(me.role||'pending').toLowerCase();
+   state.me={name:me.display_name||'',email:me.email||'',userId:me.user_id,airtablePersonId:me.airtable_person_id};
+   if(state.role==='pending'){renderAuthMessage('Waiting for approval','Thanks for signing up. Josh or David will approve your account shortly — come back and refresh once you’ve heard from them.',true);return}
+   load();
+  })
+  .catch(function(e){renderAuthMessage('Could not load your profile',e.message||'Please try again.',true)});
+}
+function init(){
+ if(DEMO){demoData();render();return}
+ if(!supabaseClient){renderAuthMessage('Sign-in is not configured','Add supabaseUrl and supabasePublishableKey to config.js.',false);return}
+ renderAuthMessage('Loading','One moment…',false);
+ supabaseClient.auth.getSession().then(function(res){
+  var session=res.data&&res.data.session;
+  if(session)onSignedIn(session);else renderAuth()
+ });
+ supabaseClient.auth.onAuthStateChange(function(event){
+  if(event==='SIGNED_OUT'){state.me=null;state.role='coach';state.screen='home';state.authScreen='login';state.authEmail='';state.authError='';renderAuth()}
+ });
+}
+document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;renderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;renderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;renderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);renderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);renderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='logout'){if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}});
 document.addEventListener('input',function(e){if(e.target&&e.target.id==='venue-search'){state.venueQuery=e.target.value;renderVenues();var i=document.getElementById('venue-search');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}}});
-load();
+document.addEventListener('keydown',function(e){if(e.key==='Enter'&&e.target&&(e.target.id==='auth-email'||e.target.id==='auth-password')){e.preventDefault();authSubmit()}});
+init();
 })();

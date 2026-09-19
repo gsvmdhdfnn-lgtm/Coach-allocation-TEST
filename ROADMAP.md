@@ -129,33 +129,34 @@ is built on top of these rules from day one, not bolted on after:
   Also does live label substitution (an Airtable `idp_label` row can rename
   "IDP" to "Targets" everywhere in the Hub, no code change) — this is
   already the config-driven pattern the standing rule above asks for.
+- **`hub-content` extended** to also serve Resources, Venues and Coach
+  Support from Airtable (with an empty-primary-field guard after a stray
+  blank Venues row was found live). Resources/Venues/Coach Support screens
+  now read real Airtable data instead of hardcoded sample arrays or the old
+  Sheets CSV. Changes now fails visibly (a banner), not silently. Orphaned
+  `style.css` deleted.
+- **Real Supabase Auth is live**: one shared email + password screen
+  (sign in / create account, no role picker — role is never user-chosen)
+  replaces `?role=`/`?coach=` as the source of truth. A new `me` Edge
+  Function (`verify_jwt: true`) resolves the authenticated session's own
+  `profiles` row — never a client-supplied user id — into
+  `{ user_id, email, organisation_id, role, status, airtable_person_id,
+  display_name }`. `profiles` gained a `display_name` column: the coach's
+  name exactly as it appears on the Sessions tab, set manually by whoever
+  approves a `pending` signup (not self-service — a wrong or self-chosen
+  name could expose another coach's sessions). It's what `mine()` matches
+  against, since schedule filtering is Sheets-name-based, not
+  Airtable-ID-based. A signed-in `pending` user sees a plain "waiting for
+  approval" screen with a log-out button, nothing else.
 
 ## Known gaps (confirmed by reading the actual code, not guessed)
 
-- Coach identity comes from `?role=`/`?coach=` in the URL — no real login.
-- `hub-content` doesn't yet serve Resources/Venues/Coach Support/Players/
-  Feedback — only organisation/settings/features. `content-provider.js`'s
-  `loadResources()` etc. would hit routes that don't exist yet.
-- Resources and Coach Support screens are hardcoded sample arrays sitting
-  directly in `app.js`, not reading from the Resources/Coach Support tables
-  that already exist in Airtable.
-- Venues still reads the old Google Sheets CSV (`venueInfoCsvUrl`), not the
-  new Airtable Venues table (which has richer fields — Hero Image, Parking
-  Image, Site Map — that aren't used anywhere yet).
-- Two CSS files: `style.css` (1,174 lines, the old Coach Schedule
-  stylesheet, unused) and `styles.css` (138 lines, what's actually loaded).
-  Harmless, but exactly the sort of clutter that causes someone to edit the
-  wrong file later.
-- Calendar/Changes/Terms/Themes/Venue info are all fetched as "optional" —
-  if the request fails, the app carries on silently. For Terms that's the
-  safe default (unrestricted). For **Changes specifically it's a real
-  risk**: a failed fetch means a cancellation or cover silently doesn't
-  apply, so a coach could be shown a session as normal when it's actually
-  covered or cancelled.
-- No way to promote a `pending` signup today short of editing the Supabase
-  table directly.
+- No way to promote a `pending` signup, or set their `display_name`, today
+  short of editing the Supabase table directly. Works, isn't a dead end,
+  but is still a manual step for David/Josh every time.
 - Parent, real Management (as a role, not the shared-password sub-screen),
-  and Player have no screens at all yet.
+  and Player have no screens at all yet — they land on a generic "X Hub"
+  placeholder after signing in.
 - Only Supabase's global "leaked password protection" advisory is
   outstanding — everything else security-wise came back clean on review.
 
@@ -170,24 +171,35 @@ what actually stress-tests a layout (a resource card with no thumbnail, a
 long title, an empty category); polishing against hardcoded sample arrays
 would mean redoing it once real content lands anyway.
 
-- Extend `hub-content` to serve Resources, Venues and Coach Support from
+- [x] Extend `hub-content` to serve Resources, Venues and Coach Support from
   Airtable; point those screens at it instead of the hardcoded arrays / old
   Sheets CSV.
-- Go through every Coach screen against that real data and tighten it to
-  the same bar as Financials/Schedule on the live Coaches Hub — proof
-  positive of what "done" already looks like, not a vague "make it nicer."
-- Real Supabase Auth: login screens for Coach/Parent/Management, replacing
-  `?role=`/`?coach=` as the source of truth. Login screens get the same UI
-  care as everything else — a coach will actually see this screen.
-- A `/me` endpoint with a defined shape, the single clean answer to "who is
-  logged in, what organisation, what role": authenticated user (from the
-  Supabase session, never the client), `organisation_id`, `role`, `status`
-  (active/inactive), `airtable_person_id`. Everything role-gated later
+- [x] Fix the Changes silent-failure risk.
+- [x] Delete the orphaned `style.css`.
+- [x] Real Supabase Auth: one shared email + password screen (sign in /
+  create account), replacing `?role=`/`?coach=` as the source of truth.
+  Deliberately *not* three role-specific logins — the backend contract
+  says role is never user-chosen, it's always resolved server-side after
+  authentication.
+- [x] A `/me` endpoint (Edge Function `me`, `verify_jwt: true`) — the
+  single clean answer to "who is logged in, what organisation, what
+  role": authenticated user (from the Supabase session, never the
+  client), `organisation_id`, `role`, `status` (active/inactive),
+  `airtable_person_id`, and `display_name` (added once real integration
+  showed `/me` needed it — see "Done so far"). Everything role-gated later
   reads from this instead of re-checking identity in multiple places.
-- A way to approve a `pending` signup — manual for now (flipped in
-  Supabase/Airtable directly), just needs to not be a dead end.
-- Fix the Changes silent-failure risk.
-- Delete the orphaned `style.css`.
+- [x] A way to approve a `pending` signup — manual for now (role and
+  `display_name` set directly in the Supabase table editor), just needs to
+  not be a dead end. A `pending` user who signs in sees a plain "waiting
+  for approval" screen.
+- [ ] Go through every Coach screen against that real data and tighten it
+  to the same bar as Financials/Schedule on the live Coaches Hub — proof
+  positive of what "done" already looks like, not a vague "make it nicer."
+- [ ] A full Playwright pass over the real login flow (signup, wrong
+  password, pending, approved coach, log out) — done so far against a
+  local mock; needs a real pass once Supabase is reachable from wherever
+  this gets tested next (this sandbox can't reach `*.supabase.co`
+  directly).
 
 ### Parallel track — Trial interest / enquiries
 
