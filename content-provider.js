@@ -135,23 +135,47 @@ function darken(hex,amount){
   var mix=function(v){return Math.round(v*(1-amount))};
   return 'rgb('+mix(c.r)+','+mix(c.g)+','+mix(c.b)+')';
 }
+/**
+ * The easy-picker palette behind every Colour Preset dropdown in Airtable
+ * (Public Pages, Organisation & Branding). Defined here rather than taken
+ * from Airtable's own swatch colours, because Airtable's API only exposes
+ * a colour NAME per choice (e.g. "blueBright"), not its hex - and that
+ * native palette has no true white/black anyway. A Custom Colour (hex)
+ * field always wins over the preset when both are set, everywhere this
+ * is used - resolveColour() is the one place that rule lives.
+ */
+var COLOUR_PRESETS={
+  'Navy':'#062a59','Royal Blue':'#1187ee','Sky Blue':'#52b9ef','Teal':'#0f8a82',
+  'Forest Green':'#1d4a39','Grass Green':'#3d7a34','Lime':'#c8ed21','Sunshine Yellow':'#f5c518',
+  'Amber':'#e6841f','Red':'#d94b5c','Pink':'#e0559c','Purple':'#7a4fd6',
+  'Charcoal':'#1c2733','Slate Grey':'#55637a','White':'#ffffff','Black':'#000000'
+};
+function resolveColour(customHex,presetName){
+  var hex=String(customHex||'').trim();
+  if(hexToRgb(hex))return hex.charAt(0)==='#'?hex:'#'+hex;
+  if(presetName&&COLOUR_PRESETS[presetName])return COLOUR_PRESETS[presetName];
+  return '';
+}
 function applyBrandColours(){
   var org=current.organisation||{};
   var root=document.documentElement.style;
-  if(hexToRgb(org.primary_colour)){
-    root.setProperty('--navy',org.primary_colour);
-    root.setProperty('--navy-2',lighten(org.primary_colour,0.22));
-    root.setProperty('--navy-deep',darken(org.primary_colour,0.12));
-    root.setProperty('--navy-deepest',darken(org.primary_colour,0.4));
+  var primary=resolveColour(org.primary_colour,org.primary_colour_preset);
+  var accent=resolveColour(org.accent_colour,org.accent_colour_preset);
+  var secondary=resolveColour(org.secondary_colour,org.secondary_colour_preset);
+  if(hexToRgb(primary)){
+    root.setProperty('--navy',primary);
+    root.setProperty('--navy-2',lighten(primary,0.22));
+    root.setProperty('--navy-deep',darken(primary,0.12));
+    root.setProperty('--navy-deepest',darken(primary,0.4));
     var themeMeta=document.querySelector('meta[name="theme-color"]');
-    if(themeMeta)themeMeta.setAttribute('content',org.primary_colour);
+    if(themeMeta)themeMeta.setAttribute('content',primary);
   }
-  if(hexToRgb(org.accent_colour)){
-    root.setProperty('--blue',org.accent_colour);
-    root.setProperty('--blue-2',lighten(org.accent_colour,0.28));
+  if(hexToRgb(accent)){
+    root.setProperty('--blue',accent);
+    root.setProperty('--blue-2',lighten(accent,0.28));
   }
-  if(hexToRgb(org.secondary_colour)){
-    root.setProperty('--lime',org.secondary_colour);
+  if(hexToRgb(secondary)){
+    root.setProperty('--lime',secondary);
   }
 }
 function applyVisibleLabels(){
@@ -233,7 +257,8 @@ window.HubContent={
   loadPublicPages:function(){return apiCollection('public-pages')},
   loadPlayers:function(){return apiCollection('players')},
   loadFeedback:function(){return apiCollection('feedback')},
-  loadDevelopmentPlans:function(){return apiCollection('development-plans')}
+  loadDevelopmentPlans:function(){return apiCollection('development-plans')},
+  resolveColour:resolveColour
 };
 
 var observer=new MutationObserver(function(){applyVisibleLabels()});

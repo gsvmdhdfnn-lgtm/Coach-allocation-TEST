@@ -107,6 +107,26 @@ is built on top of these rules from day one, not bolted on after:
   found and fixed three hero backgrounds (auth screen, public home,
   Management) that were still hardcoded hex rather than the colour
   variable — would have silently not re-themed otherwise.
+  - **Colour Preset dropdowns added, "like everything else" per David's
+    ask** — typing an exact hex isn't how most people want to set a
+    colour day to day. Every colour field (Public Pages' card Colour,
+    and all three Organisation & Branding brand colours) now has a
+    matching `X Colour Preset` singleSelect alongside it — pick a named
+    swatch (Navy, Sky Blue, Forest Green, White, Black, 16 in total)
+    instead of typing anything. The original hex field stays too,
+    relabelled "Custom X Colour (hex)", and wins whenever it's set — the
+    escape hatch for an exact/precise colour a preset can't match (there
+    is no true white/black in Airtable's own native swatch palette,
+    which is why this uses a hand-defined palette with real hex values
+    rather than Airtable's internal swatch colours — those are only
+    exposed as opaque names like `blueBright` via the API, not hex, and
+    couldn't be fetched/verified from this sandbox anyway).
+    `content-provider.js` exposes the shared resolver
+    (`HubContent.resolveColour`) so both the public page tiles and the
+    whole-app theming use exactly the same custom-wins-over-preset rule.
+    David's existing Primary Colour value ("Light blue", plain text —
+    never a valid hex, so silently had zero effect until now) migrated
+    to the Sky Blue preset as part of this.
 - **Coach experience UI built** — Home, Schedule (Today/This Week/Calendar
   tabs), Venues, session detail, Coach Support, Resources, More, and a
   Management sub-screen. A genuine native-app-feeling shell: sticky top

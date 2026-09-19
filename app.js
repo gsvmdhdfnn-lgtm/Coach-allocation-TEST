@@ -280,8 +280,8 @@ function iconForCategory(cat){return CATEGORY_ICON[String(cat||'').trim().toLowe
  * a busy photo never fights with the title for legibility.
  */
 function publicPageTile(p,i){
- var hex=(p.colour||'').trim();
- var validHex=/^#?[0-9a-f]{3}([0-9a-f]{3})?$/i.test(hex);
+ var hex=window.HubContent&&HubContent.resolveColour?HubContent.resolveColour(p.colour,p.colour_preset):'';
+ var validHex=!!hex;
  var hasImage=!!p.image_url;
  var fallback=['','alt','warm'][i%3];
  var isLight=validHex&&contrastIsLight(hex);
