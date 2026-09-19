@@ -3,7 +3,7 @@
 'use strict';
 var CFG=window.APP_CONFIG||{};
 var DEMO=new URLSearchParams(location.search).get('demo')==='1';
-var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[]};
+var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[]};
 var supabaseClient=(!DEMO&&window.supabase&&CFG.supabaseUrl&&CFG.supabasePublishableKey)?window.supabase.createClient(CFG.supabaseUrl,CFG.supabasePublishableKey):null;
 var root=document.getElementById('screen-root');
 var sheet=document.getElementById('sheet'),sheetContent=document.getElementById('sheet-content');
@@ -96,7 +96,8 @@ function load(){
  fetchCsv(CFG.themesCsvUrl,false),
  HubContent.loadResources().catch(function(){return []}),
  HubContent.loadVenues().catch(function(){return []}),
- HubContent.loadCoachSupport().catch(function(){return []})
+ HubContent.loadCoachSupport().catch(function(){return []}),
+ HubContent.loadPlayers().catch(function(){return []})
 ]).then(function(all){
 
   var ss=all[0];state.sessions=ss.map(function(r){return {id:r.session_id,name:r.session_name,programme:r.programme,category:r.category,ageGroup:r.age_group,day:r.day,time:r.time,venue:r.venue,address:r.address,coaches:splitCoaches(r.coaches),client:r.client,hours:r.hours}});
@@ -105,6 +106,7 @@ function load(){
   state.resources=all[5]||[];
   (all[6]||[]).forEach(function(v){if(!v.name)return;state.venueInfo[venueKey(v.name)]={venue:v.name,address:v.address||'',postcode:v.postcode||'',parking:v.parking||'',meetingPoint:v.meeting_point||'',access:v.access||'',notes:v.notes||'',heroImageUrl:v.hero_image_url||'',parkingImageUrl:v.parking_image_url||'',siteMapUrl:v.site_map_url||''}});
   state.coachSupport=all[7]||[];
+  state.players=all[8]||[];
   state.week=iso(mondayOf(new Date()));render();
  }).catch(function(e){root.innerHTML='<div class="error"><b>Couldn’t load your Hub.</b><br>This is usually just a weak connection - check your signal and try again.<br>'+
   '<button class="primary-btn error-retry" data-action="retry-load">Try again</button>'+
@@ -156,7 +158,14 @@ function setNav(screen){document.querySelectorAll('[data-nav]').forEach(function
 function navSnapshot(){return {screen:state.screen,scheduleView:state.scheduleView,scheduleWeekOffset:state.scheduleWeekOffset,calendarCursor:state.calendarCursor?iso(state.calendarCursor):null,calendarSelected:state.calendarSelected?iso(state.calendarSelected):null,expandedDay:state.expandedDay}}
 function pushNavState(){state.navStack.push(navSnapshot());if(state.navStack.length>20)state.navStack.shift()}
 function syncBackButton(){var b=document.getElementById('app-back');if(b)b.hidden=!state.navStack.length}
-function navigateTo(screen){if(screen!==state.screen){pushNavState();state.screen=screen}render()}
+/**
+ * Switching between the four main tabs is lateral, not a drill-down - it
+ * never needs a way "back" since the tabs are always one tap away from
+ * each other. Only push nav state when landing on a screen that isn't
+ * one of the tabs (Venues/Coach Support reached from a Home shortcut),
+ * which is what the back button is actually for.
+ */
+function navigateTo(screen){if(screen!==state.screen){if(!TAB_SCREENS[screen])pushNavState();state.screen=screen}render()}
 function goBack(){var p=state.navStack.pop();if(!p){state.screen='home';render();return}state.screen=p.screen;state.scheduleView=p.scheduleView||state.scheduleView;state.scheduleWeekOffset=p.scheduleWeekOffset||0;state.calendarCursor=p.calendarCursor?parseDate(p.calendarCursor):state.calendarCursor;state.calendarSelected=p.calendarSelected?parseDate(p.calendarSelected):state.calendarSelected;state.expandedDay=p.expandedDay||null;render()}
 /**
  * The four tab-bar screens stay permanently built in the DOM, one pane
@@ -310,7 +319,22 @@ function openMoreSheet(){
  sheet.hidden=false;
  sheetContent.innerHTML='<div class="calendar-sheet"><h3>More</h3><div class="card more-list" style="margin-top:6px">'+rows.map(function(r){return '<button class="more-row" '+(r[3]?'data-nav="'+r[3]+'"':'')+(r[4]?' data-action="'+r[4]+'"':'')+'><span class="support-icon">'+r[0]+'</span><span><b>'+r[1]+'</b><small>'+esc(r[2])+'</small></span><span>›</span></button>'}).join('')+'</div></div>';
 }
-function renderMyPlayers(){root.innerHTML='<div class="page-title"><h1>My Players</h1><p>Player profiles, feedback and development plans.</p></div><div class="schedule-empty">Coming soon.</div>'}
+function playerInitials(name){var parts=String(name||'').trim().split(/\s+/);return (((parts[0]||'')[0]||'')+((parts[1]||'')[0]||'')).toUpperCase()}
+/**
+ * A player is "mine" if the signed-in coach's name appears in the
+ * server-resolved assigned_coach_names for that Players record - same
+ * name-matching convention as sessions (nameKey), so it needs nothing new
+ * set up beyond what the Players table's Assigned Coaches link already
+ * gives Airtable: no separate coach-ID linking system to maintain.
+ */
+function renderMyPlayers(){
+ var mine=(state.players||[]).filter(function(p){return (p.assigned_coach_names||[]).some(function(c){return nameKey(c)===nameKey(state.me?state.me.name:'')})});
+ root.innerHTML='<div class="page-title"><h1>My Players</h1><p>Players assigned to you.</p></div>'+
+  (mine.length?'<div class="card player-list">'+mine.map(function(p){
+    var avatar=p.photo_url?'<img src="'+esc(p.photo_url)+'" alt="">':'<span>'+esc(playerInitials(p.name))+'</span>';
+    return '<div class="player-row"><span class="player-avatar'+(p.photo_url?' has-photo':'')+'">'+avatar+'</span><span><b>'+esc(p.name)+'</b>'+(p.team_session?'<small>'+esc(p.team_session)+'</small>':'')+'</span></div>';
+  }).join('')+'</div>':'<div class="schedule-empty">No players assigned to you yet — add yourself as their coach on the Players table in Airtable.</div>');
+}
 function renderManagement(){state.screen='management';setNav('management');if(state.unlocked){renderManagementDashboard();return}root.innerHTML='<section class="locked"><div class="page-title"><h1>Management Access</h1><p>Financials & administration. Restricted to authorised users.</p></div><div class="management-card"><h2>🔒 Enter password</h2><p style="color:var(--muted);font-size:12px">This uses the same protected Financials connection as the existing Hub.</p><div class="pw"><input id="pw" type="password" placeholder="Password"><button data-action="unlock">Access</button></div><p id="pw-error" style="color:var(--red);font-size:12px"></p></div><div class="card support-list" style="margin-top:14px;background:rgba(255,255,255,.98);color:var(--ink)"><div class="support-row"><span class="support-icon">▣</span><span><b>Full schedule view</b><small>All coaches, all sessions</small></span><span>›</span></div><div class="support-row"><span class="support-icon">▤</span><span><b>Financial dashboard</b><small>Live and historical data</small></span><span>›</span></div><div class="support-row"><span class="support-icon">●</span><span><b>Coach management</b><small>Hours, rates and costs</small></span><span>›</span></div></div></section>'}
 function renderManagementDashboard(){var fs=state.financials||{};var rows=Object.values(fs),rev=rows.reduce(function(a,r){return a+(+r.revenue_net||0)},0),profit=rows.reduce(function(a,r){return a+(+r.profit||0)},0);root.innerHTML='<section class="locked"><div class="page-title"><h1>Management Dashboard</h1><p>Schedules, financials and administration.</p></div><div class="kpi-grid"><div class="kpi"><small>Sessions</small><b>'+state.sessions.length+'</b></div><div class="kpi"><small>Revenue</small><b>'+money(rev)+'</b></div><div class="kpi"><small>Profit</small><b>'+money(profit)+'</b></div><div class="kpi"><small>Coaches</small><b>'+new Set(state.sessions.flatMap(function(s){return s.coaches})).size+'</b></div></div><div class="card support-list" style="color:var(--ink)"><div class="support-row"><span class="support-icon">▣</span><span><b>Full schedule view</b><small>All coaches, all sessions</small></span><span>›</span></div><div class="support-row"><span class="support-icon">£</span><span><b>Financial dashboard</b><small>Baseline, actual and archive</small></span><span>›</span></div><div class="support-row"><span class="support-icon">●</span><span><b>Coach management</b><small>Hours, rates and costs</small></span><span>›</span></div><div class="support-row"><span class="support-icon">▧</span><span><b>Reports & exports</b><small>P&L, attendance and more</small></span><span>›</span></div></div></section>'}
 function b64(b){var bin=atob(String(b).replace(/\s+/g,'')),o=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)o[i]=bin.charCodeAt(i);return o}
