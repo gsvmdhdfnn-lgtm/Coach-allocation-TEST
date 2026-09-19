@@ -235,8 +235,9 @@ shape (coach submits something, it lands in Airtable, sits pending review):
   a new Feedback record via the Edge Function. Respects `Published`
   (defaults to unpublished/draft — a coach's rough notes never leak to a
   parent before review).
-- **Holiday requests** — same write pattern, new table. A coach requests
-  time off; it sits pending until Management acts on it (Phase 3).
+- **Holiday requests** — same write pattern, new table (coach, dates,
+  status). A coach requests time off; it sits pending until Management
+  acts on it — the full cover flow is worked out under Phase 3 below.
 
 ### Phase 2 — Parent login + matching
 
@@ -271,6 +272,24 @@ shape (coach submits something, it lands in Airtable, sits pending review):
   approved/actioned. This is the piece that actually delivers "mostly used
   Hub-side" — approving something in the Hub is what keeps David and Josh
   out of Airtable day to day for routine decisions.
+- **Holiday cover, fully worked out (agreed 19 Sept)** — deliberately never
+  writes to Google Sheets, on purpose, not as a limitation:
+  1. Approve a holiday request → the Hub works out exactly which sessions
+     it affects and suggests who's free to cover each one — the fiddly
+     part, not the typing.
+  2. Pick a coach for a session → they get emailed an Accept/Decline
+     link — no calling, no texting, the thing this was built to remove.
+  3. **They accept** → Management is notified it's confirmed → types the
+     one row into the Changes tab by hand, ~20 seconds. Deliberately
+     manual: the alternative is a new write-path into the live schedule
+     for a step that costs almost nothing to do by hand, in exchange for
+     breaking the rule that only David/Josh ever edit Google Sheets,
+     directly, with zero exceptions.
+  4. **They decline** → Management is notified → that session goes back
+     to "needs cover" → pick someone else, same email loop.
+  5. **Escape hatch** — if nobody accepts after a couple of tries, mark
+     the session as "needs a phone call" instead of looping forever.
+     Automation stops where it should, not where it's forced to.
 
 ### Phase 4 — Public pages
 
