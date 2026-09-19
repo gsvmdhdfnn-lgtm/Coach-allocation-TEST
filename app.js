@@ -3,7 +3,7 @@
 'use strict';
 var CFG=window.APP_CONFIG||{};
 var DEMO=new URLSearchParams(location.search).get('demo')==='1';
-var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[]};
+var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,expandedPlayerSession:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[]};
 var supabaseClient=(!DEMO&&window.supabase&&CFG.supabaseUrl&&CFG.supabasePublishableKey)?window.supabase.createClient(CFG.supabaseUrl,CFG.supabasePublishableKey):null;
 var root=document.getElementById('screen-root');
 var sheet=document.getElementById('sheet'),sheetContent=document.getElementById('sheet-content');
@@ -88,7 +88,7 @@ function demoData(){
 function load(){
  if(DEMO){demoData();render();return}
  root.innerHTML='<div class="loading">Loading your hub…</div>';
- Promise.all([
+ accessToken().then(function(token){return Promise.all([
  fetchCsv(CFG.sessionsCsvUrl,true),
  fetchCsv(CFG.calendarCsvUrl,false),
  fetchChanges(),
@@ -97,8 +97,8 @@ function load(){
  HubContent.loadResources().catch(function(){return []}),
  HubContent.loadVenues().catch(function(){return []}),
  HubContent.loadCoachSupport().catch(function(){return []}),
- HubContent.loadPlayers().catch(function(){return []})
-]).then(function(all){
+ HubContent.loadPlayers(token).catch(function(){return []})
+])}).then(function(all){
 
   var ss=all[0];state.sessions=ss.map(function(r){return {id:r.session_id,name:r.session_name,programme:r.programme,category:r.category,ageGroup:r.age_group,day:r.day,time:r.time,venue:r.venue,address:r.address,coaches:splitCoaches(r.coaches),client:r.client,hours:r.hours}});
   all[1].forEach(function(r){var d=parseDate(r.week_commencing);if(d)state.calendar[iso(mondayOf(d))]={label:r.label||'',weekNo:r.week_no||'',running:!/^(no|n|0|false)$/i.test(r.running||'yes')}});
@@ -186,7 +186,8 @@ function ensureTabShell(){
 }
 function renderIntoPane(name,fn){var saved=root;root=panes[name];fn();root=saved}
 function reRenderSchedule(){renderIntoPane('schedule',renderSchedule)}
-function render(){document.getElementById('app').classList.remove('auth-mode');setNav(state.screen);if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();syncBackButton()}
+function reRenderMyPlayers(){renderIntoPane('players',renderMyPlayers)}
+function render(){document.getElementById('app').classList.remove('auth-mode');setNav(state.screen);if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();else if(state.screen==='session-requests')renderSessionRequests();syncBackButton()}
 function renderHome(){
  var now=new Date(),n=nextOccurrence(now),today=todaysOccurrences(now),ns=n&&n.session;
  root.innerHTML='<div class="coach-home">'+
@@ -316,25 +317,47 @@ function openProfileSheet(){
  */
 function openMoreSheet(){
  var rows=[['●','My Profile',(state.me&&state.me.email)||'Update your details','','profile'],['◉','Notifications','Manage alerts','','coming-soon'],['£','Management & Financials','Restricted access','management',''],['●','Feedback','Share ideas or report an issue','','coming-soon'],['☎','Contact the Office','Get in touch','','coming-soon'],['↪','Log Out','','','logout']];
- if(state.role==='management')rows.splice(3,0,['✓','Coach Management','Approve pending staff sign-ups','coach-management','']);
+ if(state.role==='management')rows.splice(3,0,['✓','Coach Management','Approve pending staff sign-ups','coach-management',''],['◉','Session Requests','Approve player session requests','session-requests','']);
  sheet.hidden=false;
  sheetContent.innerHTML='<div class="calendar-sheet"><h3>More</h3><div class="card more-list" style="margin-top:6px">'+rows.map(function(r){return '<button class="more-row" '+(r[3]?'data-nav="'+r[3]+'"':'')+(r[4]?' data-action="'+r[4]+'"':'')+'><span class="support-icon">'+r[0]+'</span><span><b>'+r[1]+'</b><small>'+esc(r[2])+'</small></span><span>›</span></button>'}).join('')+'</div></div>';
 }
 function playerInitials(name){var parts=String(name||'').trim().split(/\s+/);return (((parts[0]||'')[0]||'')+((parts[1]||'')[0]||'')).toUpperCase()}
+function playerTierBadge(p){
+ if(p.tier==='cover')return '<small class="player-tier is-cover">Cover</small>';
+ if(p.tier==='former')return '<small class="player-tier is-former">Former coach'+(p.access_until?' · access until '+esc(p.access_until):'')+'</small>';
+ return '';
+}
+function playerRowHtml(p){
+ var avatar=p.photo_url?'<img src="'+esc(p.photo_url)+'" alt="">':'<span>'+esc(playerInitials(p.name))+'</span>';
+ return '<div class="player-row"><span class="player-avatar'+(p.photo_url?' has-photo':'')+'">'+avatar+'</span><span><b>'+esc(p.name)+'</b>'+playerTierBadge(p)+'</span></div>';
+}
 /**
- * A player is "mine" if the signed-in coach's name appears in the
- * server-resolved assigned_coach_names for that Players record - same
- * name-matching convention as sessions (nameKey), so it needs nothing new
- * set up beyond what the Players table's Assigned Coaches link already
- * gives Airtable: no separate coach-ID linking system to maintain.
+ * Grouped by session, not one flat list - each row from the players API
+ * already carries its session_id/session_name/tier (resolved server-side
+ * by the centralised player-access logic: Player Session Links + a
+ * session's Permanent Coaches + this week's cover, with the legacy
+ * Assigned Coaches link only as a fallback for anything not yet migrated
+ * onto the new system). A player linked to two sessions appears once per
+ * session, so grouping by session_record_id (falling back to session_name
+ * for a legacy/unmigrated row, which has no session id) is exactly right.
  */
 function renderMyPlayers(){
- var mine=(state.players||[]).filter(function(p){return (p.assigned_coach_names||[]).some(function(c){return nameKey(c)===nameKey(state.me?state.me.name:'')})});
- root.innerHTML='<div class="page-title"><h1>My Players</h1><p>Players assigned to you.</p></div>'+
-  (mine.length?'<div class="card player-list">'+mine.map(function(p){
-    var avatar=p.photo_url?'<img src="'+esc(p.photo_url)+'" alt="">':'<span>'+esc(playerInitials(p.name))+'</span>';
-    return '<div class="player-row"><span class="player-avatar'+(p.photo_url?' has-photo':'')+'">'+avatar+'</span><span><b>'+esc(p.name)+'</b>'+(p.team_session?'<small>'+esc(p.team_session)+'</small>':'')+'</span></div>';
-  }).join('')+'</div>':'<div class="schedule-empty">No players assigned to you yet — add yourself as their coach on the Players table in Airtable.</div>');
+ var rows=state.players||[];
+ var groups={},order=[];
+ rows.forEach(function(p){
+  var key=p.session_record_id||('legacy:'+p.session_name);
+  if(!groups[key]){groups[key]={name:p.session_name||'Session',players:[]};order.push(key)}
+  groups[key].players.push(p);
+ });
+ order.sort(function(a,b){return groups[a].name.localeCompare(groups[b].name)});
+ root.innerHTML='<div class="page-title"><h1>My Players</h1><p>Players linked to your sessions.</p></div>'+
+  (order.length?'<div class="card player-session-list">'+order.map(function(key){
+    var g=groups[key],open=state.expandedPlayerSession===key;
+    return '<div class="player-session-group">'+
+     '<button class="player-session-head" data-action="toggle-player-session" data-key="'+esc(key)+'"><span>'+esc(g.name)+'</span><span class="player-session-count">'+g.players.length+(open?' ▾':' ▸')+'</span></button>'+
+     (open?g.players.map(playerRowHtml).join(''):'')+
+    '</div>';
+   }).join('')+'</div>':'<div class="schedule-empty">No players linked to your sessions yet.</div>');
 }
 function renderManagement(){state.screen='management';setNav('management');if(state.unlocked){renderManagementDashboard();return}root.innerHTML='<section class="locked"><div class="page-title"><h1>Management Access</h1><p>Financials & administration. Restricted to authorised users.</p></div><div class="management-card"><h2>🔒 Enter password</h2><p style="color:var(--muted);font-size:12px">This uses the same protected Financials connection as the existing Hub.</p><div class="pw"><input id="pw" type="password" placeholder="Password"><button data-action="unlock">Access</button></div><p id="pw-error" style="color:var(--red);font-size:12px"></p></div><div class="card support-list" style="margin-top:14px;background:rgba(255,255,255,.98);color:var(--ink)"><div class="support-row"><span class="support-icon">▣</span><span><b>Full schedule view</b><small>All coaches, all sessions</small></span><span>›</span></div><div class="support-row"><span class="support-icon">▤</span><span><b>Financial dashboard</b><small>Live and historical data</small></span><span>›</span></div><div class="support-row"><span class="support-icon">●</span><span><b>Coach management</b><small>Hours, rates and costs</small></span><span>›</span></div></div></section>'}
 function renderManagementDashboard(){var fs=state.financials||{};var rows=Object.values(fs),rev=rows.reduce(function(a,r){return a+(+r.revenue_net||0)},0),profit=rows.reduce(function(a,r){return a+(+r.profit||0)},0);root.innerHTML='<section class="locked"><div class="page-title"><h1>Management Dashboard</h1><p>Schedules, financials and administration.</p></div><div class="kpi-grid"><div class="kpi"><small>Sessions</small><b>'+state.sessions.length+'</b></div><div class="kpi"><small>Revenue</small><b>'+money(rev)+'</b></div><div class="kpi"><small>Profit</small><b>'+money(profit)+'</b></div><div class="kpi"><small>Coaches</small><b>'+new Set(state.sessions.flatMap(function(s){return s.coaches})).size+'</b></div></div><div class="card support-list" style="color:var(--ink)"><div class="support-row"><span class="support-icon">▣</span><span><b>Full schedule view</b><small>All coaches, all sessions</small></span><span>›</span></div><div class="support-row"><span class="support-icon">£</span><span><b>Financial dashboard</b><small>Baseline, actual and archive</small></span><span>›</span></div><div class="support-row"><span class="support-icon">●</span><span><b>Coach management</b><small>Hours, rates and costs</small></span><span>›</span></div><div class="support-row"><span class="support-icon">▧</span><span><b>Reports & exports</b><small>P&L, attendance and more</small></span><span>›</span></div></div></section>'}
@@ -345,10 +368,14 @@ function renderManagementDashboard(){var fs=state.financials||{};var rows=Object
  * gate (which only saves a management user a wasted trip).
  */
 function approveCoachUrl(){return (CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/approve-coach')}
+function playerSessionsUrl(){return (CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/player-sessions')}
+/** Resolves to the current Supabase access token, or null if signed out/unconfigured. Never rejects. */
+function accessToken(){
+ if(!supabaseClient)return Promise.resolve(null);
+ return supabaseClient.auth.getSession().then(function(res){return (res&&res.data&&res.data.session&&res.data.session.access_token)||null},function(){return null});
+}
 function withAccessToken(){
- if(!supabaseClient)return Promise.reject(new Error('Sign-in is not configured.'));
- return supabaseClient.auth.getSession().then(function(res){
-  var token=res&&res.data&&res.data.session&&res.data.session.access_token;
+ return accessToken().then(function(token){
   if(!token)throw new Error('Your session has expired — sign in again.');
   return token;
  });
@@ -399,6 +426,107 @@ function approveCoach(userId,btn){
  }).catch(function(e){
   btn.disabled=false;btn.textContent='Approve';
   if(errEl){errEl.hidden=false;errEl.textContent=e.message||'Could not approve this coach.'}
+ });
+}
+/**
+ * Management-only: review Pending Player Session Requests (created by a
+ * parent choosing sessions for their child - Phase 2, not built yet; for
+ * now these are created directly in Airtable for testing). Approving
+ * creates the real Active Player Session Link; nothing here ever writes
+ * one directly - see the player-sessions Edge Function.
+ */
+function renderSessionRequests(){
+ state.screen='session-requests';setNav('session-requests');
+ if(state.role!=='management'){root.innerHTML='<section class="locked"><div class="page-title"><h1>Session Requests</h1><p>Restricted to management accounts.</p></div><div class="card" style="padding:16px;color:var(--ink);font-size:12px">Your account isn’t set up for management access.</div></section>';return}
+ root.innerHTML='<section class="locked"><div class="page-title"><h1>Session Requests</h1><p>Approve, reject or amend which session a player has requested.</p></div>'+
+  '<button class="secondary-btn" data-action="sync-sessions" style="margin-bottom:12px">Sync Sessions from schedule</button>'+
+  '<div id="session-requests-list"><div class="loading">Loading requests…</div></div></section>';
+ loadSessionRequests();
+}
+function loadSessionRequests(){
+ var listEl=document.getElementById('session-requests-list');
+ withAccessToken().then(function(token){
+  return fetch(playerSessionsUrl()+'/requests',{headers:{Authorization:'Bearer '+token}});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not load session requests.');return body});
+ }).then(function(body){
+  if(document.getElementById('session-requests-list'))renderSessionRequestsList(body.pending||[],body.sessions||[]);
+ }).catch(function(e){
+  if(listEl)listEl.innerHTML='<div class="error"><b>Couldn’t load session requests.</b><br>'+esc(e.message||'')+'</div>';
+ });
+}
+function renderSessionRequestsList(pending,sessions){
+ var listEl=document.getElementById('session-requests-list');
+ if(!listEl)return;
+ if(!pending.length){listEl.innerHTML='<div class="schedule-empty">No session requests waiting for review.</div>';return}
+ var options=sessions.map(function(s){return '<option value="'+esc(s.session_record_id)+'">'+esc(s.session_name)+'</option>'}).join('');
+ listEl.innerHTML='<div class="card request-list">'+pending.map(function(req){
+  var when=req.requested_date?new Date(req.requested_date).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'';
+  return '<div class="request-row" data-request-row="'+esc(req.request_id)+'">'+
+   '<div><b>'+esc(req.player_name)+'</b><small>Requested '+esc(when)+'</small><small class="request-error" hidden></small></div>'+
+   '<select class="request-session-select">'+options.replace('value="'+esc(req.session_record_id)+'"','value="'+esc(req.session_record_id)+'" selected')+'</select>'+
+   '<div class="request-actions">'+
+    '<button class="primary-btn approve-btn" data-action="approve-session-request" data-request-id="'+esc(req.request_id)+'">Approve</button>'+
+    '<button class="secondary-btn reject-btn" data-action="reject-session-request" data-request-id="'+esc(req.request_id)+'">Reject</button>'+
+   '</div>'+
+  '</div>';
+ }).join('')+'</div>';
+}
+function approveSessionRequest(requestId,btn){
+ var row=btn.closest('.request-row'),errEl=row&&row.querySelector('.request-error'),select=row&&row.querySelector('.request-session-select');
+ var sessionId=select?select.value:'';
+ row.querySelectorAll('button').forEach(function(b){b.disabled=true});
+ btn.textContent='Approving…';
+ if(errEl){errEl.hidden=true;errEl.textContent=''}
+ withAccessToken().then(function(token){
+  return fetch(playerSessionsUrl()+'/requests/'+encodeURIComponent(requestId)+'/approve',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({session_record_id:sessionId})});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not approve this request.');return body});
+ }).then(function(){
+  toast('Session request approved');
+  if(row)row.remove();
+  var list=document.querySelector('.request-list');
+  if(list&&!list.children.length)renderSessionRequestsList([],[]);
+ }).catch(function(e){
+  row.querySelectorAll('button').forEach(function(b){b.disabled=false});
+  btn.textContent='Approve';
+  if(errEl){errEl.hidden=false;errEl.textContent=e.message||'Could not approve this request.'}
+ });
+}
+function rejectSessionRequest(requestId,btn){
+ var row=btn.closest('.request-row'),errEl=row&&row.querySelector('.request-error');
+ row.querySelectorAll('button').forEach(function(b){b.disabled=true});
+ btn.textContent='Rejecting…';
+ if(errEl){errEl.hidden=true;errEl.textContent=''}
+ withAccessToken().then(function(token){
+  return fetch(playerSessionsUrl()+'/requests/'+encodeURIComponent(requestId)+'/reject',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({})});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not reject this request.');return body});
+ }).then(function(){
+  toast('Session request rejected');
+  if(row)row.remove();
+  var list=document.querySelector('.request-list');
+  if(list&&!list.children.length)renderSessionRequestsList([],[]);
+ }).catch(function(e){
+  row.querySelectorAll('button').forEach(function(b){b.disabled=false});
+  btn.textContent='Reject';
+  if(errEl){errEl.hidden=false;errEl.textContent=e.message||'Could not reject this request.'}
+ });
+}
+function syncSessions(btn){
+ var originalText=btn.textContent;
+ btn.disabled=true;btn.textContent='Syncing…';
+ withAccessToken().then(function(token){
+  return fetch(playerSessionsUrl()+'/sync',{method:'POST',headers:{Authorization:'Bearer '+token}});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Sync failed.');return body});
+ }).then(function(body){
+  toast('Synced — '+(body.created||0)+' new, '+(body.updated||0)+' updated, '+(body.archived||0)+' archived');
+  loadSessionRequests();
+ }).catch(function(e){
+  toast(e.message||'Sync failed');
+ }).finally(function(){
+  btn.disabled=false;btn.textContent=originalText;
  });
 }
 function b64(b){var bin=atob(String(b).replace(/\s+/g,'')),o=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)o[i]=bin.charCodeAt(i);return o}
@@ -661,7 +789,7 @@ function init(){
   if(event==='SIGNED_OUT'){state.me=null;state.role='coach';state.screen='home';state.authScreen='login';state.authEmail='';state.authError='';state.authAccountType='staff';loadPublicHome()}
  });
 }
-document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;closeSheet();navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;reRenderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;reRenderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;reRenderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);reRenderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);reRenderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='open-more'){openMoreSheet();return}if(act==='approve-coach'){approveCoach(a.dataset.userId,a);return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='show-signin'){state.authScreen='login';state.authError='';renderAuth();return}if(act==='show-signup'){state.authScreen='signup';state.authError='';renderAuth();return}if(act==='show-public'){if(state.publicPages&&state.publicPages.length)renderPublicHome();else loadPublicHome();return}if(act==='public-detail'){renderPublicDetail(a.dataset.page);return}if(act==='register-interest-submit'){submitRegisterInterest(a.dataset.page);return}if(act==='logout'){closeSheet();if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}if(act==='retry-load'){load();return}});
+document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;closeSheet();navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;reRenderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;reRenderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;reRenderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);reRenderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);reRenderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='open-more'){openMoreSheet();return}if(act==='approve-coach'){approveCoach(a.dataset.userId,a);return}if(act==='toggle-player-session'){state.expandedPlayerSession=state.expandedPlayerSession===a.dataset.key?null:a.dataset.key;reRenderMyPlayers();return}if(act==='approve-session-request'){approveSessionRequest(a.dataset.requestId,a);return}if(act==='reject-session-request'){rejectSessionRequest(a.dataset.requestId,a);return}if(act==='sync-sessions'){syncSessions(a);return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='show-signin'){state.authScreen='login';state.authError='';renderAuth();return}if(act==='show-signup'){state.authScreen='signup';state.authError='';renderAuth();return}if(act==='show-public'){if(state.publicPages&&state.publicPages.length)renderPublicHome();else loadPublicHome();return}if(act==='public-detail'){renderPublicDetail(a.dataset.page);return}if(act==='register-interest-submit'){submitRegisterInterest(a.dataset.page);return}if(act==='logout'){closeSheet();if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}if(act==='retry-load'){load();return}});
 document.addEventListener('input',function(e){if(e.target&&e.target.id==='venue-search'){state.venueQuery=e.target.value;renderVenues();var i=document.getElementById('venue-search');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}}});
 document.addEventListener('keydown',function(e){if(e.key==='Enter'&&e.target&&(e.target.id==='auth-email'||e.target.id==='auth-password')){e.preventDefault();authSubmit()}});
 init();

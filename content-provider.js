@@ -286,11 +286,13 @@ function load(){
   As Resources, Venues, Players and Feedback are connected, app.js can call
   these names rather than talking directly to Airtable.
 */
-function apiCollection(path){
+function apiCollection(path,token){
   var base=String(CFG.contentApiUrl||'').trim();
   if(!base)return Promise.resolve([]);
   var url=base.replace(/\/$/,'')+'/'+path.replace(/^\//,'');
-  return fetch(url,{cache:'no-store',credentials:'omit'})
+  var headers={};
+  if(token)headers.Authorization='Bearer '+token;
+  return fetch(url,{cache:'no-store',credentials:'omit',headers:headers})
     .then(function(r){
       if(!r.ok)throw new Error('Content API returned '+r.status);
       return r.json();
@@ -307,7 +309,7 @@ window.HubContent={
   loadVenues:function(){return apiCollection('venues')},
   loadCoachSupport:function(){return apiCollection('coach-support')},
   loadPublicPages:function(){return apiCollection('public-pages')},
-  loadPlayers:function(){return apiCollection('players')},
+  loadPlayers:function(token){return apiCollection('players',token)},
   loadFeedback:function(){return apiCollection('feedback')},
   loadDevelopmentPlans:function(){return apiCollection('development-plans')},
   resolveColour:resolveColour
