@@ -202,14 +202,36 @@ would mean redoing it once real content lands anyway.
   for that one, least-privileged outcome — `handle_new_user()` allowlists
   literally the value `'parent'` and anything else (including a tampered
   claim of `'management'`) still falls through to `pending`.
-- [ ] Go through every Coach screen against that real data and tighten it
-  to the same bar as Financials/Schedule on the live Coaches Hub — proof
-  positive of what "done" already looks like, not a vague "make it nicer."
-- [ ] A full Playwright pass over the real login flow (signup, wrong
-  password, pending, approved coach, log out) — done so far against a
-  local mock; needs a real pass once Supabase is reachable from wherever
-  this gets tested next (this sandbox can't reach `*.supabase.co`
-  directly).
+- [x] Go through every Coach screen against that real data and tighten it
+  to the same bar as Financials/Schedule on the live Coaches Hub. Found and
+  fixed while doing this:
+  - The bottom nav and profile icon sat visibly underneath the login
+    screen the whole time, and were still clickable — tapping the logo
+    while logged out called straight into the coach home screen with no
+    data loaded, skipping the login gate entirely. Now hidden (CSS) *and*
+    blocked (the nav click handler checks auth state before doing
+    anything), so a future stray nav element can't reopen the same hole.
+  - The Coach Support detail sheet and its "Open link"/"Open attachment"
+    buttons were styled with inline `style=` attributes instead of real
+    classes — exactly the kind of patchwork that reads as unfinished.
+    Moved to proper CSS.
+  - "My Profile", "Notifications", "Feedback" and "Contact the Office" on
+    the More screen did nothing when tapped. My Profile now opens a real
+    sheet (name/email/role, straight from `/me`); the other three give a
+    "Coming soon" toast instead of a dead tap, until Phase 1 gives them
+    something real to do.
+  - The data-loading and error states (shown while fetching Sessions/
+    Airtable data) were unstyled browser-default text. Given a proper
+    spinner and an error card matching the rest of the Hub.
+  - Resource cards without a thumbnail all used the same blue gradient;
+    now cycle through the three gradients that already existed in CSS but
+    were only ever used by the old hardcoded sample data.
+- [x] A full Playwright pass over the real login flow (signup — both
+  account types, wrong password, pending, approved coach, log out, My
+  Profile, the nav-bypass fix) — 33 checks passing against a local mock
+  that mirrors the real Edge Functions' response shapes. Still needs a
+  real pass once this is running somewhere that can reach
+  `*.supabase.co` (this sandbox can't reach it directly).
 
 ### Parallel track — Trial interest / enquiries
 
