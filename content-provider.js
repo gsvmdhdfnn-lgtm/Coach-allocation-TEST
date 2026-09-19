@@ -156,6 +156,39 @@ function resolveColour(customHex,presetName){
   if(presetName&&COLOUR_PRESETS[presetName])return COLOUR_PRESETS[presetName];
   return '';
 }
+/**
+ * Whatever colour ends up as the hero background or a hero button's fill,
+ * its own text needs to stay readable against it - two Airtable presets
+ * that happen to land on the same or a very light colour (Primary and
+ * Secondary both "Sky Blue" did this for real, making the Register
+ * button's text invisible against its own background) must never
+ * produce invisible text. Same relative-luminance check the tiles
+ * already use via contrastIsLight() in app.js, kept local here since
+ * this file loads before app.js and the two aren't wired to share
+ * helpers.
+ */
+function relLuminance(hex){
+  var rgb=hexToRgb(hex);
+  if(!rgb)return 1;
+  var c=[rgb.r,rgb.g,rgb.b].map(function(v){v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4)});
+  return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];
+}
+function contrastRatio(hexA,hexB){
+  var la=relLuminance(hexA)+0.05,lb=relLuminance(hexB)+0.05;
+  return la>lb?la/lb:lb/la;
+}
+/**
+ * Picking "dark ink on light bg, light ink on dark bg" from a single
+ * luminance cutoff got a real mid-tone colour (Sky Blue, #52b9ef) wrong -
+ * it read as "dark" by that test but still only gave cream text a 1.89:1
+ * contrast ratio against it. Comparing the two candidates' actual
+ * contrast ratios and picking the winner is correct regardless of where
+ * a colour falls on the light/dark spectrum.
+ */
+function bestInk(hex){
+  var dark='#0a2050',light='#f0f0c8';
+  return contrastRatio(hex,dark)>=contrastRatio(hex,light)?dark:light;
+}
 function applyBrandColours(){
   var org=current.organisation||{};
   var root=document.documentElement.style;
@@ -173,9 +206,13 @@ function applyBrandColours(){
   if(hexToRgb(accent)){
     root.setProperty('--blue',accent);
     root.setProperty('--blue-2',lighten(accent,0.28));
+    var heroInk=bestInk(accent);
+    root.setProperty('--hero-ink',heroInk);
+    root.setProperty('--hero-shadow',heroInk==='#0a2050'?'rgba(255,255,255,.6)':'#061d3d');
   }
   if(hexToRgb(secondary)){
     root.setProperty('--lime',secondary);
+    root.setProperty('--secondary-ink',bestInk(secondary));
   }
 }
 function applyVisibleLabels(){

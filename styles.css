@@ -13,11 +13,11 @@
 .error{margin:40px 14px;padding:20px 18px;background:#fff3f3;border:1px solid #f3c8cb;border-radius:16px;color:#8a2a33;text-align:center;font-size:12px;line-height:1.5}.error b{display:block;margin-bottom:6px;font-size:14px}
 .calendar-sheet>p.support-sheet-body{white-space:pre-wrap;color:var(--ink);font-size:12px;line-height:1.55}.sheet-link-btn{display:flex;align-items:center;justify-content:center;text-decoration:none;margin-top:10px}
 .public-page{padding-bottom:20px}.public-hero{position:relative;overflow:hidden;margin:0 -14px;padding:44px 20px 36px;background:var(--blue);color:#fff;text-align:center}
-.public-hero h1{position:relative;z-index:1;font-family:Anton,sans-serif;text-transform:uppercase;margin:0;font-size:38px;line-height:.98;letter-spacing:.005em;color:var(--cream);text-shadow:3px 3px 0 var(--navy-deepest)}
-.public-hero-tag{position:relative;z-index:1;display:inline-block;margin:20px 0 22px;padding:9px 16px;border:2px dotted var(--cream);border-radius:9px;color:var(--cream);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;line-height:1.4}
+.public-hero h1{position:relative;z-index:1;font-family:Anton,sans-serif;text-transform:uppercase;margin:0;font-size:38px;line-height:.98;letter-spacing:.005em;color:var(--hero-ink,var(--cream));text-shadow:3px 3px 0 var(--hero-shadow,var(--navy-deepest))}
+.public-hero-tag{position:relative;z-index:1;display:inline-block;margin:20px 0 22px;padding:9px 16px;border:2px dotted var(--hero-ink,var(--cream));border-radius:9px;color:var(--hero-ink,var(--cream));font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;line-height:1.4}
 .public-hero-actions{position:relative;z-index:1;display:flex;gap:10px;max-width:320px;margin:0 auto}.public-hero-actions button{flex:1;margin-top:0;height:46px;display:flex;align-items:center;justify-content:center;padding:0 14px;font-family:Inter,sans-serif}
-.public-hero-actions .primary-btn{background:var(--lime);color:var(--navy);box-shadow:none}
-.public-hero-actions .secondary-btn{background:transparent;border:2px solid var(--cream);color:var(--cream)}
+.public-hero-actions .primary-btn{background:var(--lime);color:var(--secondary-ink,var(--navy));box-shadow:none}
+.public-hero-actions .secondary-btn{background:transparent;border:2px solid var(--hero-ink,var(--cream));color:var(--hero-ink,var(--cream))}
 .public-section{margin:22px 0 0}
 .public-tile-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
 .public-tile,.public-featured{transition:transform .15s ease,box-shadow .15s ease}
