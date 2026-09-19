@@ -401,10 +401,18 @@ function renderPublicDetail(pageId,submitted){
   '<p class="auth-error" id="ri-error" hidden></p>'+
   '<button class="primary-btn" data-action="register-interest-submit" data-page="'+esc(page.page_id)+'">Submit</button>';
  var showForm=page.show_register_form!==false;
+ var events=(page.events||[]).filter(function(e){return e.photo_url||e.description});
+ var eventsHtml=events.length?'<section class="event-list">'+events.map(function(e){
+   return '<div class="event-item">'+
+    (e.photo_url?'<div class="event-item-photo"><img src="'+esc(e.photo_url)+'" alt=""></div>':'')+
+    (e.description?'<p class="event-item-desc">'+esc(e.description)+'</p>':'')+
+   '</div>';
+  }).join('')+'</section>':'';
  root.innerHTML='<section class="detail-hero public-detail-hero"><button class="back-btn" data-action="show-public">‹ Back</button>'+
   '<h1>'+esc(page.title)+'</h1></section>'+
   '<div class="venue-detail-wrap">'+
   '<section class="card detail-card">'+img+(page.body?'<p>'+esc(page.body)+'</p>':'')+cta+'</section>'+
+  eventsHtml+
   (showForm?'<section class="card register-interest-card">'+formOrThanks+'</section>':'')+
   '</div>';
  window.scrollTo(0,0);
