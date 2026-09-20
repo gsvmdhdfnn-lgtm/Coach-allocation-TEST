@@ -13,7 +13,7 @@ async function signUp(page, email, type) {
   await page.fill('#auth-email', email);
   await page.fill('#auth-password', 'password123');
   await page.click('[data-action="auth-submit"]');
-  await page.waitForSelector('.page-title, .coach-home', { timeout: 8000 });
+  await page.waitForSelector('.page-title, .coach-home, .ph-hero', { timeout: 8000 });
 }
 async function logOut(page) {
   await page.click('.icon-btn[data-action="open-more"]');
@@ -28,7 +28,7 @@ async function signIn(page, email) {
   await page.fill('#auth-email', email);
   await page.fill('#auth-password', 'password123');
   await page.click('[data-action="auth-submit"]');
-  await page.waitForSelector('.page-title, .coach-home', { timeout: 8000 });
+  await page.waitForSelector('.page-title, .coach-home, .ph-hero', { timeout: 8000 });
 }
 
 (async () => {
@@ -44,10 +44,11 @@ async function signIn(page, email) {
 
   // --- Parent signs up, lands directly on the Parent Hub ---
   await signUp(page, 'parent1@test.com', 'parent');
-  ck('Parent lands on the Parent Hub after signup (no approval wait)', await page.locator('.parent-children-list').count() > 0);
-  ck('Main nav (4-pill tab bar) is hidden for parent role', await page.locator('.main-nav').isHidden());
+  ck('Parent lands on the Parent Hub after signup (no approval wait)', await page.locator('.ph-hero').count() > 0);
+  ck('Coach tab bar is hidden for parent role', await page.locator('.coach-nav').isHidden());
+  ck('Parent tab bar is shown for parent role', await page.locator('.parent-nav').isVisible());
   ck('Hamburger (top-actions) stays visible for parent role', await page.locator('.top-actions').isVisible());
-  ck('Empty state shown before any child is linked', (await page.locator('.parent-children-list').innerText()).includes('No children linked'));
+  ck('Empty state shown before any child is linked', (await page.locator('#screen-root').innerText()).includes('No children linked'));
 
   // --- Claim a matched child (Alfie Test) ---
   await page.click('[data-action="open-claim-child"]');
@@ -59,7 +60,7 @@ async function signIn(page, email) {
   await page.waitForTimeout(400);
   let pendingText = await page.locator('.parent-pending-list').innerText();
   ck('Matched claim (Alfie Test) shows as Pending, not auto-verified', pendingText.includes('Alfie Test') && pendingText.includes('Pending'));
-  ck('No "Request a session" button exists yet (zero access while pending)', await page.locator('[data-action="open-request-session"]').count() === 0);
+  ck('No session-request route exists yet (zero access while pending)', await page.locator('[data-action="open-request-session"], [data-action="parent-find-session"]').count() === 0);
 
   // --- Claim an ambiguous child (Sam Test - two Player records match name+DOB) ---
   await page.click('[data-action="open-claim-child"]');
@@ -86,7 +87,7 @@ async function signIn(page, email) {
   // --- Switch to a management account and review claims ---
   await logOut(page);
   await signUp(page, 'mgmt1@test.com', 'staff');
-  ck('Management account lands on the coach/management shell', await page.locator('.main-nav').isVisible());
+  ck('Management account lands on the coach/management shell', await page.locator('.coach-nav').isVisible());
 
   await page.click('.icon-btn[data-action="open-more"]');
   await page.click('[data-nav="parent-claims"]');
@@ -128,15 +129,22 @@ async function signIn(page, email) {
   await page.fill('#auth-email', 'parent1@test.com');
   await page.fill('#auth-password', 'password123');
   await page.click('[data-action="auth-submit"]');
+  // The children list now lives on More -> Children & Access rather than
+  // the old flat parent hub screen.
+  await page.waitForSelector('.ph-hero', { timeout: 8000 });
+  await page.click('.parent-nav [data-nav="parent-more"]');
+  await page.waitForSelector('.ph-menu-row[data-action="parent-children"]', { timeout: 8000 });
+  await page.click('.ph-menu-row[data-action="parent-children"]');
   await page.waitForSelector('.parent-children-list', { timeout: 8000 });
   const childrenText = await page.locator('.parent-children-list').innerText();
   ck('Verified child (Alfie Test) now appears under children', childrenText.includes('Alfie Test'));
-  const pendingAfter = await page.locator('.parent-pending-list').innerText().catch(() => '');
   ck('Sam Test moved out of pending into children too', childrenText.includes('Sam Test'));
   ck('Rejected/removed claim (Nobody Real) is gone entirely, not lingering', !((await page.locator('body').innerText()).includes('Nobody Real')));
 
   // --- Request a session for the now-verified child ---
-  await page.locator('.player-row', { hasText: 'Alfie Test' }).locator('[data-action="open-request-session"]').click();
+  await page.click('.parent-nav [data-nav="parent-sessions"]');
+  await page.waitForSelector('[data-action="parent-find-session"]', { timeout: 8000 });
+  await page.click('[data-action="parent-find-session"]');
   await page.waitForSelector('#request-session-select');
   await page.selectOption('#request-session-select', { index: 1 });
   await page.click('[data-action="submit-session-request"]');
@@ -223,8 +231,12 @@ async function signIn(page, email) {
   await page.fill('#auth-email', 'parent2@test.com');
   await page.fill('#auth-password', 'password123');
   await page.click('[data-action="auth-submit"]');
-  await page.waitForSelector('.parent-children-list', { timeout: 8000 });
-  await page.locator('.player-row', { hasText: 'Bea Test' }).locator('[data-action="open-request-session"]').click();
+  await page.waitForSelector('.ph-hero', { timeout: 8000 });
+  // Session requests now start from the Sessions tab's "Find Another
+  // Session", rather than a per-child button on the old flat hub screen.
+  await page.click('.parent-nav [data-nav="parent-sessions"]');
+  await page.waitForSelector('[data-action="parent-find-session"]', { timeout: 8000 });
+  await page.click('[data-action="parent-find-session"]');
   await page.waitForSelector('.calendar-sheet');
   const sheetHtml = await page.locator('#sheet-content').innerHTML();
   ck('Active session (U9/10 Development) is not offered as an option at all', !sheetHtml.includes('U9/10 Development'));

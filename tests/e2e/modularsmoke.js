@@ -96,7 +96,7 @@ async function freshCtx(b) {
     ck('no console/module errors through the management flow', errs.length === 0, errs.join(' | '));
   }
 
-  // --- Parent smoke: Parent Hub loads, main-nav hidden ---
+  // --- Parent smoke: Parent Hub loads with its own nav, Coach nav hidden ---
   {
     const { p, errs } = await freshCtx(b);
     await p.goto(`http://localhost:${PORT}/index.html`, { waitUntil: 'networkidle' });
@@ -107,9 +107,10 @@ async function freshCtx(b) {
     await p.fill('#auth-email', 'parent1@test.com');
     await p.fill('#auth-password', 'password123');
     await p.click('[data-action="auth-submit"]');
-    await p.waitForSelector('.parent-children-list', { timeout: 8000 });
+    await p.waitForSelector('.ph-hero', { timeout: 8000 });
     ck('Parent signup lands on the Parent Hub', true);
-    ck('Main nav hidden for parent role', await p.locator('.main-nav').isHidden());
+    ck('Coach nav hidden for parent role', await p.locator('.coach-nav').isHidden());
+    ck('Parent nav shown for parent role', await p.locator('.parent-nav').isVisible());
     ck('no console/module errors through the parent flow', errs.length === 0, errs.join(' | '));
   }
 

@@ -93,9 +93,9 @@ async function gotoRegister(p) {
     await p.fill('#auth-email', 'parent-jane@test.com');
     await p.fill('#auth-password', 'password123');
     await p.click('[data-action="auth-submit"]');
-    await p.waitForSelector('.page-title', { timeout: 8000 });
+    await p.waitForSelector('.ph-hero', { timeout: 8000 });
     ck('signUp was called with account_type: parent', await p.evaluate(() => window.__lastSignUpAccountType) === 'parent');
-    ck('Parent signup lands straight in on the real Parent Hub (no waiting-for-approval screen, no generic role placeholder)', await p.locator('.parent-children-list').count() === 1);
+    ck('Parent signup lands straight in on the real Parent Hub (no waiting-for-approval screen, no generic role placeholder)', /Parent & Player Hub/i.test(await p.locator('#screen-root').innerText()));
     ck('no console/page errors (parent signup)', errs.length === 0, errs.join(' | '));
     await ctx.close();
   }

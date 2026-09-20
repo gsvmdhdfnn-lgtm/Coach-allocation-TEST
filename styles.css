@@ -77,7 +77,12 @@
 .register-interest-card{padding:18px;margin-top:12px}.register-interest-card h2{margin:0 0 4px;font-size:17px;color:var(--navy);font-family:Anton,sans-serif}.register-interest-card textarea{display:block;width:100%;margin-top:6px;border:1px solid var(--line);border-radius:11px;padding:11px 12px;font-size:13px;color:var(--ink);background:#fbfdff;font-family:inherit;resize:vertical}.register-interest-card textarea:focus{outline:none;border-color:#a8cef1;box-shadow:0 0 0 3px rgba(17,135,238,.08)}.register-interest-card .auth-field{margin-bottom:14px}.hp-field{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
 .ri-done{text-align:center;padding:6px 0}.ri-done-icon{display:inline-flex;width:44px;height:44px;border-radius:50%;background:#e9fff4;color:#087f4d;align-items:center;justify-content:center;font-size:22px;margin-bottom:10px}.ri-done h2{margin:0 0 6px;font-family:Anton,sans-serif;color:var(--navy)}
 .app-shell.auth-mode{padding-bottom:0}.app-shell.auth-mode .main-nav,.app-shell.auth-mode .top-actions{display:none}
-.app-shell.role-parent .main-nav{display:none}
+/* .main-nav{display:flex} is declared later in this file at the same
+   specificity, so the parent bar's default-hidden rule has to out-specify
+   it (.main-nav.parent-nav) rather than rely on source order. */
+.main-nav.parent-nav{display:none}
+.app-shell.role-parent .main-nav.coach-nav{display:none}
+.app-shell.role-parent .main-nav.parent-nav{display:flex}
 html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
 body{overscroll-behavior-y:none}
 button,input{font:inherit}button{cursor:pointer}
@@ -334,3 +339,87 @@ button,input{font:inherit}button{cursor:pointer}
 .fb-textCard{padding:14px;margin-top:10px}.fb-textCard label{display:block;font-size:11px;font-weight:850;color:var(--navy);margin-bottom:7px}.fb-textCard small{display:block;font-size:9.5px;color:var(--muted);margin-bottom:7px}.fb-textCard textarea{width:100%;min-height:92px;resize:vertical;border:1px solid var(--line);border-radius:11px;padding:11px;background:#fbfdff;color:var(--ink)}.fb-textCard.fb-short textarea{min-height:72px}
 .fb-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:16px}.fb-secondary,.fb-primary{border-radius:12px;padding:12px 14px;font-weight:850;margin:0}.fb-secondary{background:#fff;border:1px solid #d8e5f2;color:var(--blue)}.fb-primary{border:0;background:var(--lime);color:var(--secondary-ink,var(--navy))}
 .fb-publish{margin-top:9px;width:100%;border:0;border-radius:12px;padding:12px 14px;background:var(--blue);color:#fff;font-weight:900}
+
+/* ---------------------------------------------------------------------
+   PARENT / PLAYER HUB (Phase 1)
+   Scoped to .ph-* so none of it can reach the Coach or Management
+   screens - the two navigations render into the same root, and a shared
+   class would silently restyle a Coach card.
+   --------------------------------------------------------------------- */
+.ph-hero{margin:0 -14px;padding:22px 18px 20px;background:linear-gradient(180deg,#fff,#f7fbff);border-bottom:1px solid #edf1f6;position:relative;overflow:hidden}
+.ph-hero:after{content:"";position:absolute;right:-62px;top:-68px;width:180px;height:180px;border-radius:50%;background:radial-gradient(circle,rgba(17,135,238,.09),rgba(17,135,238,0) 70%)}
+.ph-eyebrow{font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:var(--blue)}
+.ph-hero h1{font-family:Anton,sans-serif;font-size:30px;line-height:1.05;margin:5px 0;color:var(--navy)}
+.ph-hero p{margin:0;color:var(--muted);font-size:12px;line-height:1.45}
+.ph-strip{display:flex;align-items:center;gap:10px;margin-top:14px;position:relative;z-index:1}
+.ph-strip b{display:block;font-size:13px;color:var(--navy)}
+.ph-strip small{display:block;color:var(--muted);font-size:10px;margin-top:2px}
+.ph-avatar{width:46px;height:46px;flex:none;border-radius:50%;background:#eef6ff;color:var(--navy);display:grid;place-items:center;font-weight:800;font-size:13px;border:3px solid #fff;box-shadow:0 3px 10px rgba(6,42,89,.08);overflow:hidden}
+.ph-avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.ph-section-head{display:flex;justify-content:space-between;align-items:center;margin:18px 2px 9px}
+.ph-section-head h2{font-size:18px;margin:0;letter-spacing:-.02em;color:var(--ink)}
+.ph-section-head span{font-size:10.5px;color:var(--blue);font-weight:800}
+.ph-empty{padding:15px}
+.ph-empty b{font-size:13px;color:var(--navy)}
+.ph-empty p{font-size:11px;line-height:1.5;color:#52657f;margin:6px 0 0}
+.ph-muted{color:var(--muted);font-size:11px;line-height:1.5}
+.ph-next{background:linear-gradient(135deg,#0a3f7a,#0e6cb5);color:#fff;border-radius:22px;padding:16px;box-shadow:var(--shadow-strong);position:relative;overflow:hidden}
+.ph-next:before{content:"";position:absolute;right:-16px;bottom:-38px;width:145px;height:145px;border:24px solid rgba(200,237,33,.13);border-radius:50%}
+.ph-next h3{font-size:18px;line-height:1.15;margin:12px 0 10px;position:relative;z-index:1}
+.ph-next-meta{display:grid;gap:6px;font-size:11.5px;position:relative;z-index:1}
+.ph-next .primary-btn{position:relative;z-index:1}
+.ph-pill{display:inline-flex;align-items:center;padding:5px 8px;border-radius:999px;font-size:9px;font-weight:900;letter-spacing:.02em;background:var(--lime);color:var(--navy);position:relative;z-index:1}
+.ph-update{padding:14px;border-left:4px solid var(--amber)}
+.ph-update h3{font-size:13px;margin:0 0 5px;color:var(--navy)}
+.ph-update p{font-size:10.5px;line-height:1.45;color:#586b84;margin:0}
+.ph-update-meta{font-size:9px;color:var(--muted);margin-top:8px}
+.ph-feedback{padding:15px}
+.ph-feedback b{font-size:13px;color:var(--navy)}
+.ph-feedback p{font-size:11.5px;line-height:1.55;color:#52657f;margin:7px 0 0}
+.ph-grid2{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.ph-mini{padding:13px 12px;border:1px solid var(--line);background:#fff;border-radius:14px;min-height:74px;box-shadow:0 4px 14px rgba(6,42,89,.04)}
+.ph-mini b{font-size:11.5px;color:var(--navy)}
+.ph-mini small{display:block;color:var(--muted);font-size:9.5px;line-height:1.35;margin-top:4px}
+.ph-row{width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:13px 14px;display:grid;grid-template-columns:46px 1fr auto;gap:10px;align-items:center;font-family:inherit;color:inherit}
+.ph-row:last-child{border-bottom:0}
+.ph-datebox{width:46px;height:52px;border-radius:12px;background:#eef6ff;display:grid;align-content:center;text-align:center;color:var(--navy)}
+.ph-datebox small{font-size:8px;font-weight:900;color:var(--blue)}
+.ph-datebox b{font-size:20px;line-height:1}
+.ph-datebox em{font-style:normal;font-size:8px;font-weight:800;color:#6c7c94}
+.ph-datebox-muted{background:#f2f5f9}
+.ph-row-title{font-size:12.5px;font-weight:850;color:var(--navy);line-height:1.25}
+.ph-row-sub{font-size:9.8px;color:var(--muted);line-height:1.45;margin-top:4px}
+.ph-chev{color:var(--blue);font-size:22px}
+.ph-detail-hero{margin:0 -14px 4px;padding:18px 16px 22px;background:var(--blue);color:#fff}
+.ph-detail-hero .ph-eyebrow{color:#dff1ff}
+.ph-detail-hero h1{font-family:Anton,sans-serif;margin:5px 0 6px;font-size:25px}
+.ph-detail-hero p{margin:0;font-size:11px;opacity:.9}
+.ph-detail-list{overflow:hidden}
+.ph-detail-row{padding:13px 14px;border-bottom:1px solid var(--line)}
+.ph-detail-row:last-child{border-bottom:0}
+.ph-detail-row small{display:block;color:var(--muted);font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+.ph-detail-row b{display:block;color:var(--navy);font-size:12px;margin-top:3px;line-height:1.35;white-space:pre-line}
+.ph-snapshot{padding:14px}
+.ph-group-label{font-size:9px;text-transform:uppercase;letter-spacing:.12em;color:#6d7889;font-weight:900;margin:10px 0 4px}
+.ph-group-label:first-child{margin-top:0}
+.ph-rate{display:grid;grid-template-columns:1fr 24px 24px 24px 24px;gap:6px;align-items:center;padding:8px 0;border-bottom:1px solid #edf1f5}
+.ph-rate b{font-size:11.5px;color:var(--ink)}
+.ph-rate-note{font-size:10.5px;color:#586b84;line-height:1.45;padding:0 0 8px;border-bottom:1px solid #edf1f5}
+.ph-dot{width:12px;height:12px;border-radius:50%;margin:auto;opacity:.22}
+.ph-dot.is-selected{opacity:1;outline:2px solid #1a8c5a;outline-offset:2px;border-radius:50%}
+.ph-blue{background:#3f7fed}.ph-green{background:#53b368}.ph-amber{background:#efb937}.ph-red{background:#df3b36}
+.ph-legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
+.ph-legend-item{display:inline-flex;align-items:center;gap:5px;font-size:9.5px;color:#586b84}
+.ph-legend-dot{width:9px;height:9px;border-radius:50%;flex:none}
+.ph-history{width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:13px 14px;display:grid;grid-template-columns:1fr auto;align-items:center;font-family:inherit;color:inherit}
+.ph-history:last-child{border-bottom:0}
+.ph-history b{font-size:11.5px;color:var(--navy)}
+.ph-history small{display:block;color:var(--muted);font-size:9.5px;margin-top:3px}
+.ph-menu{overflow:hidden}
+.ph-menu-row{width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:36px 1fr auto;gap:10px;align-items:center;padding:13px 14px;font-family:inherit;color:inherit}
+.ph-menu-row:last-child{border-bottom:0}
+.ph-menu-icon{width:34px;height:34px;border-radius:10px;background:#eef6ff;color:var(--blue);display:grid;place-items:center;font-size:13px;font-weight:800;overflow:hidden}
+.ph-menu-icon img{width:100%;height:100%;object-fit:cover}
+.ph-menu-row b{font-size:12px;color:var(--navy)}
+.ph-menu-row small{display:block;color:var(--muted);font-size:9.5px;line-height:1.35;margin-top:2px}
+@media(min-width:760px){.ph-hero,.ph-detail-hero{margin:0;border-radius:0 0 20px 20px}}

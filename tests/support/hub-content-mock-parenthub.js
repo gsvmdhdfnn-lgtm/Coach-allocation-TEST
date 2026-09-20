@@ -11,11 +11,42 @@ const PLAYERS = [
 ];
 // Ambiguity in the real function is "more than one Player matches name+DOB
 // exactly" - simulate that directly with two same name+dob records above.
+// Schedule detail mirrors the real /me shape: the Airtable Session record
+// (id/name) joined to its published Sessions-sheet row and Venues record.
+// sess3 deliberately has no day/time at all, to exercise "omit the row
+// rather than invent a date".
 const SESSIONS = [
-  { id: 'sess1', name: 'U9/10 Development' },
-  { id: 'sess2', name: 'U11/12 Academy' },
-  { id: 'sess3', name: 'U13/14 Development' }
+  { id: 'sess1', name: 'U9/10 Development', day: 'Wednesday', time: '4:00pm - 5:30pm', venue: "City of London Freemen's", address: 'Ashtead, Surrey', coaches: ['David'], age_group: 'U9/10', programme: 'Evening',
+    venue_info: { address: 'Park Lane, Ashtead', postcode: 'KT21 1ET', parking: 'Use the main school car park.', meeting_point: 'Astro gate', access: '', notes: '' } },
+  { id: 'sess2', name: 'U11/12 Academy', day: 'Thursday', time: '6:00pm - 7:30pm', venue: 'Therfield School', address: 'Leatherhead', coaches: ['David', 'Charlie'], age_group: 'U11/12', programme: 'Evening', venue_info: null },
+  { id: 'sess3', name: 'U13/14 Development', day: '', time: '', venue: '', address: '', coaches: [], age_group: '', programme: '', venue_info: null }
 ];
+
+// Published+Active is the ONLY thing a parent may see - the draft and the
+// archived record below must never reach the parent client.
+const FEEDBACK = [
+  { id: 'fb-pub-1', playerId: 'plyr1', date: '2026-09-20', coach: 'Coach David', published: true, active: true, session_name: 'U9/10 Development',
+    keep_doing: 'Being you.', big_focus: 'Hard work.', summary: 'Been a joy to coach this year.',
+    ratings: [
+      { framework_item_id: 'fi1', name: 'Winners', group: 'Characteristics', sort_order: 1, rating: 'Green', notes: '' },
+      { framework_item_id: 'fi2', name: 'Movers', group: 'Characteristics', sort_order: 2, rating: 'Blue', notes: '' },
+      { framework_item_id: 'fi3', name: 'Passing & Receiving', group: 'Football Pillars', sort_order: 3, rating: 'Amber', notes: '' }
+    ] },
+  { id: 'fb-pub-2', playerId: 'plyr1', date: '2026-08-31', coach: 'Demo Coach', published: true, active: true, session_name: 'U9/10 Development',
+    keep_doing: 'Great attitude.', big_focus: 'First touch.', summary: 'Second review showing progress.', ratings: [] },
+  { id: 'fb-draft', playerId: 'plyr1', date: '2026-09-25', coach: 'Coach David', published: false, active: true, session_name: 'U9/10 Development',
+    keep_doing: 'DRAFT-KEEP-DOING', big_focus: 'DRAFT-FOCUS', summary: 'DRAFT-SUMMARY', ratings: [] },
+  { id: 'fb-archived', playerId: 'plyr1', date: '2026-07-01', coach: 'Coach David', published: true, active: false, session_name: 'U9/10 Development',
+    keep_doing: 'ARCHIVED-KEEP-DOING', big_focus: 'ARCHIVED-FOCUS', summary: 'ARCHIVED-SUMMARY', ratings: [] },
+  { id: 'fb-other-child', playerId: 'plyr2', date: '2026-09-19', coach: 'Coach David', published: true, active: true, session_name: 'U11/12 Academy',
+    keep_doing: 'OTHER-CHILD-KEEP-DOING', big_focus: 'OTHER-CHILD-FOCUS', summary: 'OTHER-CHILD-SUMMARY', ratings: [] }
+];
+
+const FEEDBACK_SETTINGS = {
+  framework_name: 'Player Development Framework', intro_text: '',
+  blue_label: 'Consistently strong', green_label: 'Often good', amber_label: 'Developing', red_label: 'Needs focus',
+  show_keep_doing: true, show_my_focus: true, show_general_feedback: true, per_area_written_feedback: false
+};
 
 let linkSeq = 1;
 let requestSeq = 1;
@@ -62,20 +93,50 @@ module.exports.start = function (port) {
 
     // Parent-only routes - mirrors the real deployed parent-hub function's
     // explicit role check, not just the frontend hiding buttons.
-    if ((u === '/parent-hub/me' || u === '/parent-hub/claims' || u === '/parent-hub/session-requests') && caller.role !== 'parent') {
+    if ((u === '/parent-hub/me' || u === '/parent-hub/claims' || u === '/parent-hub/session-requests' || u === '/parent-hub/feedback') && caller.role !== 'parent') {
       return send(r, 403, { error: 'Parent access required' });
     }
 
     if (u === '/parent-hub/me' && q.method === 'GET') {
       const mine = links.filter(l => l.parentEmail === caller.email);
+      const sessionPayload = (id) => {
+        const s = SESSIONS.find(x => x.id === id) || {};
+        return {
+          session_record_id: id, session_id: id, session_name: s.name || '',
+          programme: s.programme || '', category: '', age_group: s.age_group || '',
+          day: s.day || '', time: s.time || '', venue: s.venue || '', address: s.address || '',
+          coaches: s.coaches || [], venue_info: s.venue_info || null
+        };
+      };
       const children = mine.filter(l => l.status === 'Verified').map(l => ({
         link_id: l.id, player_record_id: l.playerId, player_id: l.playerId, name: l.playerName, photo_url: '', relationship: l.relationship,
-        active_sessions: sessionLinks.filter(sl => sl.playerId === l.playerId && sl.status === 'Active').map(sl => ({ session_record_id: sl.sessionId, session_name: (SESSIONS.find(s => s.id === sl.sessionId) || {}).name || '' })),
+        active_sessions: sessionLinks.filter(sl => sl.playerId === l.playerId && sl.status === 'Active').map(sl => Object.assign(sessionPayload(sl.sessionId), { start_date: '2026-09-01' })),
+        ended_sessions: sessionLinks.filter(sl => sl.playerId === l.playerId && sl.status === 'Ended').map(sl => ({ session_record_id: sl.sessionId, session_name: (SESSIONS.find(s => s.id === sl.sessionId) || {}).name || '', end_date: '2026-06-30' })),
         pending_requests: sessionRequests.filter(sr => sr.playerId === l.playerId && sr.status === 'Pending').map(sr => ({ request_id: sr.id, session_record_id: sr.sessionId, session_name: (SESSIONS.find(s => s.id === sr.sessionId) || {}).name || '', requested_date: '2026-01-01' })),
       }));
       const pendingClaims = mine.filter(l => l.status !== 'Verified').map(l => ({ link_id: l.id, player_name: l.playerName || 'Claim submitted', status: l.status, relationship: l.relationship }));
-      const availableSessions = SESSIONS.map(s => ({ session_record_id: s.id, session_name: s.name }));
+      const availableSessions = SESSIONS.map(s => ({ session_record_id: s.id, session_name: s.name, day: s.day || '', time: s.time || '', venue: s.venue || '', age_group: s.age_group || '', programme: s.programme || '' }));
       return send(r, 200, { parent_id: 'PARENT-' + caller.email, children, pending_claims: pendingClaims, available_sessions: availableSessions });
+    }
+    // Mirrors the real function's three gates: parent role (above), the
+    // player must be one of THIS caller's Verified children, and only
+    // Published + Active feedback is ever returned.
+    if (u === '/parent-hub/feedback' && q.method === 'GET') {
+      const playerId = new URLSearchParams(q.url.split('?')[1] || '').get('player_record_id') || '';
+      if (!playerId) return send(r, 400, { error: 'player_record_id is required' });
+      const owns = links.some(l => l.parentEmail === caller.email && l.playerId === playerId && l.status === 'Verified');
+      if (!owns) return send(r, 403, { error: 'You can only view feedback for your own verified children.' });
+      const feedback = FEEDBACK
+        .filter(f => f.playerId === playerId && f.published === true && f.active === true)
+        .map(f => ({
+          feedback_id: f.id, date: f.date, title: '', coach_name: f.coach, session_name: f.session_name,
+          summary: FEEDBACK_SETTINGS.show_general_feedback ? f.summary : '',
+          keep_doing: FEEDBACK_SETTINGS.show_keep_doing ? f.keep_doing : '',
+          big_focus: FEEDBACK_SETTINGS.show_my_focus ? f.big_focus : '',
+          ratings: f.ratings || []
+        }))
+        .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+      return send(r, 200, { settings: FEEDBACK_SETTINGS, feedback });
     }
     if (u === '/parent-hub/claims' && q.method === 'POST') {
       const body = await readJson(q);

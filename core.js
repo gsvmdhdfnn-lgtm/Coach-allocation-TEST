@@ -1,13 +1,13 @@
 import { renderHome, renderMyPlayers, renderResources, renderSchedule, renderSupport, renderVenueDetail, renderVenues, venueKey } from './coach.js';
 import { renderCoachManagement, renderManagement, renderParentClaims, renderPlayerMigration, renderSessionRequests } from './management.js';
-import { renderParentHub } from './parent.js';
+import { renderParentHub, renderParentScreen } from './parent.js';
 import { renderFeedbackForm, renderFeedbackHistory, renderFeedbackRecord, renderPlayerProfile } from './feedback.js';
 
 export let CFG=window.APP_CONFIG||{};
 
 export let DEMO=new URLSearchParams(location.search).get('demo')==='1';
 
-export let state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],participantCounts:{},airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,expandedPlayerSession:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[],whatWeOffer:[],parentHub:null,parentHubLoaded:false,fbPlayerId:null,fbSessionRecordId:null,fbFramework:null,fbHistory:{},fbRecord:null,fbEditingId:null,fbDraft:null,fbBusy:false,fbError:'',fbRecordId:null};
+export let state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],participantCounts:{},airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,expandedPlayerSession:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[],whatWeOffer:[],parentHub:null,parentHubLoaded:false,parentChildId:null,parentSessionId:null,parentFeedback:{},parentFeedbackLoaded:false,parentFeedbackError:'',parentFeedbackId:null,parentPolicy:'',parentUpdates:[],fbPlayerId:null,fbSessionRecordId:null,fbFramework:null,fbHistory:{},fbRecord:null,fbEditingId:null,fbDraft:null,fbBusy:false,fbError:'',fbRecordId:null};
 
 export let supabaseClient=(!DEMO&&window.supabase&&CFG.supabaseUrl&&CFG.supabasePublishableKey)?window.supabase.createClient(CFG.supabaseUrl,CFG.supabasePublishableKey):null;
 
@@ -161,7 +161,7 @@ export function syncBackButton(){var b=document.getElementById('app-back');if(b)
  * which is what the back button is actually for.
  */
 
-export function navigateTo(screen){if(screen!==state.screen){if(!TAB_SCREENS[screen])pushNavState();state.screen=screen}render()}
+export function navigateTo(screen){if(screen!==state.screen){if(!TAB_SCREENS[screen]&&!PARENT_TAB_SCREENS[screen])pushNavState();state.screen=screen}render()}
 
 export function goBack(){var p=state.navStack.pop();if(!p){state.screen='home';render();return}state.screen=p.screen;state.scheduleView=p.scheduleView||state.scheduleView;state.scheduleWeekOffset=p.scheduleWeekOffset||0;state.calendarCursor=p.calendarCursor?parseDate(p.calendarCursor):state.calendarCursor;state.calendarSelected=p.calendarSelected?parseDate(p.calendarSelected):state.calendarSelected;state.expandedDay=p.expandedDay||null;render()}
 /**
@@ -177,6 +177,9 @@ export function goBack(){var p=state.navStack.pop();if(!p){state.screen='home';r
 export let panes={};
 
 export let TAB_SCREENS={home:1,schedule:1,resources:1,players:1};
+/** The parent tab bar's own four screens - lateral like the Coach tabs, so switching between them never pushes a back step either. */
+
+export let PARENT_TAB_SCREENS={'parent-home':1,'parent-sessions':1,'parent-development':1,'parent-more':1};
 
 export function ensureTabShell(){
  if(panes.home&&root.contains(panes.home))return;
@@ -191,7 +194,15 @@ export function reRenderSchedule(){renderIntoPane('schedule',renderSchedule)}
 
 export function reRenderMyPlayers(){renderIntoPane('players',renderMyPlayers)}
 
-export function render(){document.getElementById('app').classList.remove('auth-mode');document.getElementById('app').classList.toggle('role-parent',state.role==='parent');setNav(state.screen);if(state.role==='parent'){renderParentHub();syncBackButton();return}if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();else if(state.screen==='session-requests')renderSessionRequests();else if(state.screen==='player-migration')renderPlayerMigration();else if(state.screen==='parent-claims')renderParentClaims();else if(state.screen==='player-profile')renderPlayerProfile(state.fbPlayerId,state.fbSessionRecordId);else if(state.screen==='feedback-form')renderFeedbackForm();else if(state.screen==='feedback-record')renderFeedbackRecord(state.fbRecordId);else if(state.screen==='feedback-history')renderFeedbackHistory(state.fbPlayerId,state.fbSessionRecordId);syncBackButton()}
+export function render(){document.getElementById('app').classList.remove('auth-mode');document.getElementById('app').classList.toggle('role-parent',state.role==='parent');
+ /**
+  * A parent landing on the shared default screen ('home') is moved onto
+  * their own tab rather than falling through to the Coach home - the two
+  * navigations don't share screen names, so anything not already a
+  * parent-* screen means "start at the parent's Home".
+  */
+ if(state.role==='parent'&&state.screen.indexOf('parent-')!==0)state.screen='parent-home';
+ setNav(state.screen);if(state.role==='parent'){renderParentScreen();syncBackButton();window.scrollTo(0,0);return}if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();else if(state.screen==='session-requests')renderSessionRequests();else if(state.screen==='player-migration')renderPlayerMigration();else if(state.screen==='parent-claims')renderParentClaims();else if(state.screen==='player-profile')renderPlayerProfile(state.fbPlayerId,state.fbSessionRecordId);else if(state.screen==='feedback-form')renderFeedbackForm();else if(state.screen==='feedback-record')renderFeedbackRecord(state.fbRecordId);else if(state.screen==='feedback-history')renderFeedbackHistory(state.fbPlayerId,state.fbSessionRecordId);syncBackButton()}
 
 export function openProfileSheet(){
  var m=state.me||{},roleLabel=(state.role||'coach').replace(/^./,function(c){return c.toUpperCase()});
@@ -210,6 +221,19 @@ export function openProfileSheet(){
  */
 
 export function openMoreSheet(){
+ /**
+  * A parent never sees the staff rows - Management & Financials in
+  * particular is a Coach/Management control, and the Parent hub has its
+  * own More tab for everything a parent actually needs. Routing already
+  * bounces a parent off staff screens, but the row shouldn't be offered
+  * in the first place.
+  */
+ if(state.role==='parent'){
+  var parentRows=[['●','My Profile',(state.me&&state.me.email)||'Update your details','','profile'],['▤','More','Payments, support and policies','parent-more',''],['↪','Log Out','','','logout']];
+  sheet.hidden=false;
+  sheetContent.innerHTML='<div class="calendar-sheet"><h3>More</h3><div class="card more-list" style="margin-top:6px">'+parentRows.map(function(r){return '<button class="more-row" '+(r[3]?'data-nav="'+r[3]+'"':'')+(r[4]?' data-action="'+r[4]+'"':'')+'><span class="support-icon">'+r[0]+'</span><span><b>'+r[1]+'</b><small>'+esc(r[2])+'</small></span><span>›</span></button>'}).join('')+'</div></div>';
+  return;
+ }
  var rows=[['●','My Profile',(state.me&&state.me.email)||'Update your details','','profile'],['◉','Notifications','Manage alerts','','coming-soon'],['£','Management & Financials','Restricted access','management',''],['●','Feedback','Share ideas or report an issue','','coming-soon'],['☎','Contact the Office','Get in touch','','coming-soon'],['↪','Log Out','','','logout']];
  if(state.role==='management')rows.splice(3,0,['✓','Coach Management','Approve pending staff sign-ups','coach-management',''],['◉','Session Requests','Approve player session requests','session-requests',''],['▤','Player Migration','Move existing players onto sessions','player-migration',''],['●','Parent Claims','Approve parents’ claims to their child','parent-claims','']);
  sheet.hidden=false;

@@ -20,7 +20,7 @@ const ck = (n, c, x) => { R.push([c ? 'PASS' : 'FAIL', n, x || '']); if (!c) pro
   await p.fill('#auth-email', 'redirect-check@test.com');
   await p.fill('#auth-password', 'password123');
   await p.click('[data-action="auth-submit"]');
-  await p.waitForSelector('.page-title', { timeout: 8000 });
+  await p.waitForSelector('.ph-hero', { timeout: 8000 });
 
   const redirectTo = await p.evaluate(() => window.__lastSignUpEmailRedirectTo);
   ck('signUp is called with an explicit emailRedirectTo', !!redirectTo, redirectTo);
