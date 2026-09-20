@@ -856,7 +856,16 @@ function authSubmit(){
  if(!supabaseClient){state.authError='Sign-in is not configured.';renderAuth();return}
  state.authBusy=true;state.authError='';renderAuth();
  var mode=state.authScreen==='signup'?'signup':'login';
- var op=mode==='signup'?supabaseClient.auth.signUp({email:email,password:password,options:{data:{account_type:state.authAccountType==='parent'?'parent':'staff'}}}):supabaseClient.auth.signInWithPassword({email:email,password:password});
+ /**
+  * Explicit emailRedirectTo, not the Supabase project's default Site URL -
+  * derived from the page's own location (not hardcoded) so it's always
+  * exactly where this copy of the Hub is actually being served from,
+  * subdirectory included (e.g. https://…github.io/Coach-allocation-TEST/),
+  * and never drifts if the repo/Pages path ever changes. Must also be on
+  * the project's Redirect URLs allow-list in Supabase, or Supabase falls
+  * back to the Site URL regardless of what's passed here.
+  */
+ var op=mode==='signup'?supabaseClient.auth.signUp({email:email,password:password,options:{data:{account_type:state.authAccountType==='parent'?'parent':'staff'},emailRedirectTo:location.origin+location.pathname}}):supabaseClient.auth.signInWithPassword({email:email,password:password});
  op.then(function(res){
   state.authBusy=false;
   if(res.error){state.authError=res.error.message||'Something went wrong. Please try again.';renderAuth();return}
