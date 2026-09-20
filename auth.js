@@ -152,14 +152,33 @@ export function ageGroupField(page){
   '</select></label>';
 }
 
+/**
+ * Category and Age Groups are both plain existing Public Pages fields -
+ * this just surfaces them as scannable chips instead of leaving Age
+ * Groups buried inside the register-interest form only. Either half
+ * simply omits itself when the field is blank, and the whole row
+ * disappears if both are.
+ */
+export function publicDetailInfoRow(page){
+ var chips=[];
+ if(page.category)chips.push('<span class="detail-info-chip">'+iconForCategory(page.category)+' '+esc(page.category)+'</span>');
+ var ages=String(page.age_groups||'').split(',').map(function(s){return s.trim()}).filter(Boolean);
+ if(ages.length)chips.push('<span class="detail-info-chip">'+esc(ages.join(' · '))+'</span>');
+ return chips.length?'<div class="detail-info-row">'+chips.join('')+'</div>':'';
+}
+
 export function renderPublicDetail(pageId,submitted){
  document.getElementById('app').classList.add('auth-mode');
  state.selectedPublicPage=pageId;
  var page=(state.publicPages||[]).find(function(x){return x.page_id===pageId});
  if(!page){renderPublicHome();return}
  if(!submitted)state.riStartedAt=Date.now();
+ var hex=window.HubContent&&HubContent.resolveColour?HubContent.resolveColour(page.colour,page.colour_preset):'';
+ var validHex=!!hex;
+ var isLight=validHex&&contrastIsLight(hex);
+ var heroStyle=validHex?' style="background:'+(hex.charAt(0)==='#'?hex:'#'+hex)+'"':'';
  var img=page.image_url?'<div class="public-detail-img"><img src="'+esc(page.image_url)+'" alt=""></div>':'';
- var cta=(page.cta_label&&page.cta_link)?'<a class="secondary-btn sheet-link-btn" href="'+esc(page.cta_link)+'" target="_blank" rel="noopener">'+esc(page.cta_label)+'</a>':'';
+ var cta=(page.cta_label&&page.cta_link)?'<a class="primary-btn sheet-link-btn public-detail-cta" href="'+esc(page.cta_link)+'" target="_blank" rel="noopener">'+esc(page.cta_label)+'</a>':'';
  var formOrThanks=submitted?
   '<div class="ri-done"><span class="ri-done-icon">✓</span><h2>Thanks!</h2><p class="auth-sub">We’ve got your details for '+esc(page.title)+' and will be in touch soon.</p></div>':
   '<h2>Register interest</h2><p class="auth-sub">Leave your details and we’ll be in touch.</p>'+
@@ -179,13 +198,16 @@ export function renderPublicDetail(pageId,submitted){
     (e.description?'<p class="event-item-desc">'+esc(e.description)+'</p>':'')+
    '</div>';
   }).join('')+'</section>':'';
- root.innerHTML='<section class="detail-hero public-detail-hero"><button class="back-btn" data-action="show-public">‹ Back</button>'+
-  '<h1>'+esc(page.title)+'</h1></section>'+
-  '<div class="venue-detail-wrap">'+
-  '<section class="card detail-card">'+img+(page.body?'<p>'+esc(page.body)+'</p>':'')+cta+'</section>'+
-  eventsHtml+
-  (showForm?'<section class="card register-interest-card">'+formOrThanks+'</section>':'')+
-  '</div>';
+ var mainHtml='<section class="card detail-card">'+img+(page.body?'<p>'+esc(page.body)+'</p>':'')+'</section>'+publicDetailInfoRow(page);
+ var sideHtml=[cta,eventsHtml,showForm?'<section class="card register-interest-card">'+formOrThanks+'</section>':''].filter(Boolean).join('');
+ var bodyHtml=sideHtml?
+  '<div class="public-detail-grid"><div class="public-detail-main">'+mainHtml+'</div><div class="public-detail-side">'+sideHtml+'</div></div>':
+  mainHtml;
+ root.innerHTML='<section class="detail-hero public-detail-hero'+(isLight?' light-bg':'')+'"'+heroStyle+'><button class="back-btn" data-action="show-public">‹ Back</button>'+
+  '<h1>'+esc(page.title)+'</h1>'+
+  (page.summary?'<p>'+esc(page.summary)+'</p>':'')+
+  '</section>'+
+  '<div class="venue-detail-wrap public-detail-wrap">'+bodyHtml+'</div>';
  window.scrollTo(0,0);
 }
 
