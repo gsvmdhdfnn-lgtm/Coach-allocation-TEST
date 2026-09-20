@@ -321,7 +321,32 @@ async function withPage(port, fn) {
     ck('Draft save creates no duplicate parent Feedback record', historyByPlayer.p3.length === beforeCount, String(historyByPlayer.p3.length));
     ck('The record still reads DRAFT after a draft save', (await page.locator('.pf-pill').textContent()) === 'DRAFT');
 
-    // Go back to Player Profile and resume again, this time publishing.
+    // Reproduces the exact reported regression: open Add Feedback, Save
+    // Draft (above), go back into Resume Draft, change something, Save
+    // Draft again - a SECOND consecutive PATCH on the same just-churned
+    // record, which is exactly the timing where a real Airtable
+    // reciprocal-link propagation lag would bite (see
+    // tests/support/feedback-ratings-merge.test.ts for the backend-logic
+    // side of this fix). Must succeed reliably, keep PATCHing the same
+    // parent, never duplicate, and never lose the edited content.
+    await page.click('[data-action="app-back"]');
+    await page.waitForSelector('.pf-hero');
+    await page.waitForFunction(() => document.querySelector('[data-action="add-feedback"] b')?.textContent === 'Resume Draft');
+    await page.click('.pf-add');
+    await page.waitForSelector('.fb-hero');
+    ck('Resuming a draft a second time still pre-fills correctly', (await page.locator('#fb-field-keep-doing').inputValue()) === 'Working on first touch.');
+    await page.fill('#fb-field-keep-doing', 'Working on first touch - now also tracking back.');
+    await page.click('.fb-ratingRow:has-text("Winners") .fb-choice.fb-green');
+    await page.click('[data-action="save-feedback-draft"]');
+    await page.waitForSelector('.pf-feedback-detail');
+    ck('A second consecutive draft save succeeds (no "load failed")', errs.length === 0, errs.join(' | '));
+    ck('The second draft save still uses PATCH on the same record id', lastRequest && lastRequest.method === 'PATCH' && lastRequest.url === '/player-feedback/record/fb-draft-1', JSON.stringify(lastRequest));
+    ck('The second draft save still creates no duplicate parent record', historyByPlayer.p3.length === beforeCount, String(historyByPlayer.p3.length));
+    ck('The edited written text is not lost', /Working on first touch - now also tracking back\./.test(await page.locator('.pf-feedback-detail').textContent()));
+    ck('The edited rating is not lost', historyByPlayer.p3[0].ratings.some((r) => r.framework_item_id === 'fi1' && r.rating === 'Green'), JSON.stringify(historyByPlayer.p3[0].ratings));
+    ck('Still reads DRAFT after the second draft save', (await page.locator('.pf-pill').textContent()) === 'DRAFT');
+
+    // Go back to Player Profile and resume once more, this time publishing.
     await page.click('[data-action="app-back"]');
     await page.waitForSelector('.pf-hero');
     await page.waitForFunction(() => document.querySelector('[data-action="add-feedback"] b')?.textContent === 'Resume Draft');
