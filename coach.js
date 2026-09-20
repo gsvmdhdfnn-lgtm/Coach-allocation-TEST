@@ -87,13 +87,29 @@ export function countdownText(o,now){if(!o)return '';now=now||new Date();if(now>
 
 export function greeting(){var h=new Date().getHours();return h<12?'Good morning':h<18?'Good afternoon':'Good evening'}
 
+/**
+ * "Cover" is the only extra status Next Session/Today ever need to show -
+ * cancelled sessions are already filtered out upstream by
+ * sessionRunsForCoach() before they can become "next" or appear in
+ * today's list, and nextOccurrence() only ever draws from the base
+ * schedule (never a virtual "extra" row). Reuses the existing
+ * coachAssignment() read used elsewhere - a display-only call, changes
+ * nothing about which sessions are selected or how.
+ */
+function homeStatusChip(s,d){return coachAssignment(s,d)==='cover'?'<span class="home-status-chip">Cover</span>':''}
+
 export function renderHome(){
  var now=new Date(),n=nextOccurrence(now),today=todaysOccurrences(now),ns=n&&n.session;
+ var nextAgeChip=ns&&ns.ageGroup?'<span class="next-home-tag">'+esc(ns.ageGroup)+'</span>':'';
+ var nextStatusChip=n?homeStatusChip(ns,n.date):'';
+ var todayEmpty=n
+  ?'<div class="empty-state"><span class="empty-state-icon">'+icons.clock+'</span><b>No sessions today</b><p>Your next session is '+esc(ns.name)+', '+esc(n.date.toLocaleDateString('en-GB',{weekday:'long'}))+'.</p></div>'
+  :'<div class="empty-state"><span class="empty-state-icon">'+icons.clock+'</span><b>No sessions today</b><p>Nothing on your schedule right now.</p></div>';
  root.innerHTML='<div class="coach-home">'+
  changesWarningBanner()+
- (n?'<section class="next-home-card" data-session="'+esc(ns.id)+'" data-date="'+iso(n.date)+'"><div class="next-home-head"><span>NEXT SESSION</span><span class="next-arrow">›</span></div><div class="next-home-body"><h1>'+esc(ns.name)+'</h1><div class="home-meta"><span>'+icons.clock+'</span><b>'+esc(ns.time)+'</b></div><div class="home-meta"><span>'+icons.pin+'</span><span>'+esc(ns.venue)+'</span></div>'+(participantCount(ns)!=null?'<div class="home-meta"><span>'+icons.users+'</span><span>'+esc(participantCountText(ns))+'</span></div>':'')+'<span class="countdown-pill" id="next-countdown" data-start="'+n.start.toISOString()+'" data-end="'+n.end.toISOString()+'">'+esc(countdownText(n,now))+'</span></div></section>':'<section class="next-home-card empty"><div class="next-home-head"><span>NEXT SESSION</span></div><div class="next-home-body"><h1>No upcoming sessions</h1></div></section>')+
- '<section class="today-home"><div class="home-section-title"><h2>TODAY’S SESSIONS</h2><button data-nav="schedule">View all</button></div><div class="today-home-list">'+(today.length?today.map(function(o,i){var s=o.session,pc=participantCountText(s);return '<button class="today-home-row" data-session="'+esc(s.id)+'" data-date="'+iso(o.date)+'"><span class="today-line"></span><span class="today-time">'+esc(s.time.split(/\s*[-–—]\s*/)[0])+'</span><span class="today-copy"><b>'+esc(s.name)+'</b><small>'+esc(s.venue)+(pc?' · '+esc(pc):'')+'</small></span><span class="chev">›</span></button>'}).join(''):'<div class="today-empty">No sessions today.</div>')+'</div></section>'+
- '<section class="home-shortcuts"><button data-nav="schedule"><span>▣</span><b>My Schedule</b></button><button data-nav="resources"><span>▤</span><b>Resources</b></button><button data-nav="venues"><span>⌖</span><b>Venues</b></button><button data-nav="support"><span>▧</span><b>Coach Support</b></button></section>'+
+ (n?'<section class="next-home-card" data-session="'+esc(ns.id)+'" data-date="'+iso(n.date)+'"><div class="next-home-head"><span>NEXT SESSION</span>'+(nextStatusChip?'<span class="home-status-chip is-header">Cover</span>':'')+'<span class="next-arrow">›</span></div><div class="next-home-body">'+nextAgeChip+'<h1>'+esc(ns.name)+'</h1><div class="home-meta"><span>'+icons.clock+'</span><b>'+esc(ns.time)+'</b></div><div class="home-meta"><span>'+icons.pin+'</span><span>'+esc(ns.venue)+'</span></div>'+(participantCount(ns)!=null?'<div class="home-meta"><span>'+icons.users+'</span><span>'+esc(participantCountText(ns))+'</span></div>':'')+'<span class="countdown-pill" id="next-countdown" data-start="'+n.start.toISOString()+'" data-end="'+n.end.toISOString()+'">'+esc(countdownText(n,now))+'</span></div></section>':'<section class="next-home-card empty"><div class="next-home-head"><span>NEXT SESSION</span></div><div class="next-home-body"><h1>No upcoming sessions</h1></div></section>')+
+ '<section class="today-home"><div class="home-section-title"><h2>TODAY’S SESSIONS</h2><button data-nav="schedule">View all</button></div><div class="today-home-list">'+(today.length?today.map(function(o,i){var s=o.session,pc=participantCountText(s);return '<button class="today-home-row" data-session="'+esc(s.id)+'" data-date="'+iso(o.date)+'"><span class="today-line"></span><span class="today-time">'+esc(s.time.split(/\s*[-–—]\s*/)[0])+'</span><span class="today-copy"><b>'+esc(s.name)+homeStatusChip(s,o.date)+'</b><small>'+esc(s.venue)+(pc?' · '+esc(pc):'')+'</small></span><span class="chev">›</span></button>'}).join(''):todayEmpty)+'</div></section>'+
+ '<section class="home-shortcuts"><button data-nav="schedule"><span class="qicon-chip">▣</span><b>My Schedule</b></button><button data-nav="resources"><span class="qicon-chip">▤</span><b>Library</b></button><button data-nav="venues"><span class="qicon-chip">⌖</span><b>Venues</b></button><button data-nav="support"><span class="qicon-chip">▧</span><b>Coach Support</b></button></section>'+
  '</div>';
  startCountdownTicker();
 }
@@ -202,12 +218,12 @@ export function renderVenues(){var q=nameKey(state.venueQuery||''),vs=venueListD
 
 export function venueInfoRows(info){var rows=[['Parking',info.parking],['Where to meet',info.meetingPoint],['Access',info.access],['Useful notes',info.notes]];return rows.filter(function(r){return r[1]}).map(function(r){return '<div class="venue-info-row"><b>'+esc(r[0])+'</b><span>'+esc(r[1])+'</span></div>'}).join('')}
 
-export function renderVenueDetail(name){if(!name){state.screen='venues';renderVenues();return}state.selectedVenue=name;state.screen='venue-detail';setNav('home');var info=venueInfoForName(name),fallback=state.sessions.find(function(s){return sameVenueName(s.venue,name)}),address=info.address||(fallback&&fallback.address)||'',postcode=info.postcode||'',where=[address,postcode].filter(Boolean).join(', '),week=coachSessionsAtVenueThisWeek(name),query=where||name,rows=venueInfoRows(info);root.innerHTML='<section class="detail-hero venue-detail-hero"><button class="back-btn" data-action="app-back">‹ Back</button><span class="venue-detail-icon">⌖</span><h1>'+esc(canonicalVenueName(name))+'</h1><p>'+esc(where||'Venue information')+'</p></section><div class="venue-detail-wrap"><section class="card venue-overview-card"><div class="venue-address-block"><span class="detail-icon">⌖</span><span><b>Address</b><small>'+esc(where||'Address not yet added')+'</small></span></div>'+(rows||'<div class="venue-info-empty">Parking, meeting point, access and notes can be added on the Venues table in Airtable.</div>')+'</section><a class="primary-btn venue-directions" href="https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(query)+'" target="_blank" rel="noopener">⌖ Get Directions</a><section class="venue-week"><div class="home-section-title"><h2>YOUR SESSIONS HERE THIS WEEK</h2><span>'+week.length+'</span></div><div class="card venue-week-list">'+(week.length?week.map(function(o){var s=o.session,heading=statusHeading(o.status);return '<button class="venue-week-session" data-session="'+esc(s.id)+'" data-date="'+iso(o.date)+'"><span class="venue-week-date"><b>'+esc(o.date.toLocaleDateString('en-GB',{weekday:'short'}))+'</b><small>'+esc(formatDateShort(o.date))+'</small></span><span><i>'+esc(formatTimeRange(s.time))+'</i><b>'+esc(s.name)+'</b>'+(heading?'<small>'+esc(heading)+'</small>':'')+'</span><span class="chev">›</span></button>'}).join(''):'<div class="venue-no-sessions">You have no sessions at this venue this week.</div>')+'</div></section></div>'}
+export function renderVenueDetail(name){if(!name){state.screen='venues';renderVenues();return}state.selectedVenue=name;state.screen='venue-detail';setNav('home');var info=venueInfoForName(name),fallback=state.sessions.find(function(s){return sameVenueName(s.venue,name)}),address=info.address||(fallback&&fallback.address)||'',postcode=info.postcode||'',where=[address,postcode].filter(Boolean).join(', '),week=coachSessionsAtVenueThisWeek(name),query=where||name,rows=venueInfoRows(info);root.innerHTML='<section class="detail-hero venue-detail-hero"><button class="back-btn" data-action="app-back">‹ Back</button><span class="venue-detail-icon">⌖</span><h1>'+esc(canonicalVenueName(name))+'</h1><p>'+esc(where||'Venue information')+'</p></section><div class="venue-detail-wrap"><section class="card venue-overview-card"><div class="venue-address-block"><span class="detail-icon">⌖</span><span><b>Address</b><small>'+esc(where||'Address not yet added')+'</small></span></div>'+(rows||'<div class="venue-info-empty">Parking, meeting point and access details will appear here once added.</div>')+'</section><a class="primary-btn venue-directions" href="https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(query)+'" target="_blank" rel="noopener">⌖ Get Directions</a><section class="venue-week"><div class="home-section-title"><h2>YOUR SESSIONS HERE THIS WEEK</h2><span>'+week.length+'</span></div><div class="card venue-week-list">'+(week.length?week.map(function(o){var s=o.session,heading=statusHeading(o.status);return '<button class="venue-week-session" data-session="'+esc(s.id)+'" data-date="'+iso(o.date)+'"><span class="venue-week-date"><b>'+esc(o.date.toLocaleDateString('en-GB',{weekday:'short'}))+'</b><small>'+esc(formatDateShort(o.date))+'</small></span><span><i>'+esc(formatTimeRange(s.time))+'</i><b>'+esc(s.name)+'</b>'+(heading?'<small>'+esc(heading)+'</small>':'')+'</span><span class="chev">›</span></button>'}).join(''):'<div class="venue-no-sessions">You have no sessions at this venue this week.</div>')+'</div></section></div>'}
 
 export function renderResources(){
  var list=state.resources||[];
- root.innerHTML='<div class="page-title"><h1>Resources</h1><p>Session plans, curriculum, drills and useful documents.</p></div><div class="resource-grid">'+
-  (list.length?list.map(function(r,i){
+ root.innerHTML='<div class="page-title"><h1>Library</h1><p>Session plans, curriculum, drills and useful documents.</p></div>'+
+  (list.length?'<div class="resource-grid">'+list.map(function(r,i){
    var href=r.attachment_url||r.external_link||r.video_url||'';
    var img=r.thumbnail_url?'<img src="'+esc(r.thumbnail_url)+'" alt="">':'';
    var gradient=['','alt','warm'][i%3];
@@ -215,8 +231,7 @@ export function renderResources(){
     (r.category?'<span class="pill blue">'+esc(r.category)+'</span>':'')+'<h3>'+esc(r.title)+'</h3>'+
     (r.description?'<p>'+esc(r.description)+'</p>':'')+'</div>';
    return href?'<a class="card resource-card" href="'+esc(href)+'" target="_blank" rel="noopener">'+body+'</a>':'<article class="card resource-card">'+body+'</article>';
-  }).join(''):'<div class="schedule-empty">Nothing here yet — add a resource in Airtable and it appears here automatically.</div>')+
- '</div>';
+  }).join('')+'</div>':'<div class="empty-state"><span class="empty-state-icon">'+icons.book+'</span><b>No resources yet</b><p>Session plans and documents will appear here once added.</p></div>');
 }
 
 export function renderSupport(){
@@ -224,12 +239,12 @@ export function renderSupport(){
  var org=(window.HubContent&&HubContent.get()&&HubContent.get().organisation)||{};
  var title=(window.HubContent&&HubContent.label('coach_support_title','Coach Support Centre'))||'Coach Support Centre';
  var subtitle=(window.HubContent&&HubContent.label('coach_support_subtitle','Everything you need to be the best version of yourself as a coach.'))||'Everything you need to be the best version of yourself as a coach.';
- root.innerHTML='<div class="page-title"><h1>'+esc(title)+'</h1><p>'+esc(subtitle)+'</p></div><div class="resource-grid">'+
-  (list.length?list.map(function(s,i){
+ root.innerHTML='<div class="page-title"><h1>'+esc(title)+'</h1><p>'+esc(subtitle)+'</p></div>'+
+  (list.length?'<div class="resource-grid">'+list.map(function(s,i){
    var gradient=['','alt','warm'][i%3];
    return '<button class="card resource-card" data-action="support-detail" data-support="'+esc(s.support_id)+'"><div class="resource-img icon-only '+gradient+'">'+icons.doc+'</div><div class="resource-body">'+(s.section?'<span class="pill blue">'+esc(s.section)+'</span>':'')+'<h3>'+esc(s.title)+'</h3></div></button>';
-  }).join(''):'<div class="schedule-empty">Nothing here yet — add an item to the Coach Support table in Airtable.</div>')+
- '</div>'+(org.tagline?'<div class="quote-card card" style="margin-top:14px"><strong>“'+esc(org.tagline)+'”</strong></div>':'');
+  }).join('')+'</div>':'<div class="empty-state"><span class="empty-state-icon">'+icons.doc+'</span><b>Nothing here yet</b><p>Guidance and documents will appear here once added.</p></div>')+
+ (org.tagline?'<div class="quote-card card" style="margin-top:14px"><strong>“'+esc(org.tagline)+'”</strong></div>':'');
 }
 
 export function openSupportDetail(id){
@@ -255,7 +270,13 @@ export function playerTierBadge(p){
 export function playerRowHtml(p){
  var avatar=p.photo_url?'<img src="'+esc(p.photo_url)+'" alt="">':'<span>'+esc(playerInitials(p.name))+'</span>';
  var endBtn=(state.role==='management'&&p.link_record_id)?'<button class="secondary-btn end-membership-btn" data-action="end-player-session" data-link-id="'+esc(p.link_record_id)+'">End</button>':'';
- return '<div class="player-row" data-player-row="'+esc(p.link_record_id||'')+'"><span class="player-avatar'+(p.photo_url?' has-photo':'')+'">'+avatar+'</span><span><b>'+esc(p.name)+'</b>'+playerTierBadge(p)+'</span>'+endBtn+'</div>';
+ /**
+  * player-row-badges is its own flex wrapper (not just playerTierBadge()
+  * inline) so a future session-role badge (Lead Coach/Coach/Learning
+  * Coach) can sit alongside the existing tier badge later with no
+  * structural change here - just another item added to this same row.
+  */
+ return '<div class="player-row" data-player-row="'+esc(p.link_record_id||'')+'"><span class="player-avatar'+(p.photo_url?' has-photo':'')+'">'+avatar+'</span><span class="player-row-info"><b>'+esc(p.name)+'</b><span class="player-row-badges">'+playerTierBadge(p)+'</span></span>'+endBtn+'</div>';
 }
 /**
  * Grouped by session, not one flat list - each row from the players API
@@ -277,14 +298,14 @@ export function renderMyPlayers(){
   groups[key].players.push(p);
  });
  order.sort(function(a,b){return groups[a].name.localeCompare(groups[b].name)});
- root.innerHTML='<div class="page-title"><h1>My Players</h1><p>Players linked to your sessions.</p></div>'+
+ root.innerHTML='<div class="page-title"><h1>Player Hub</h1><p>Players linked to your sessions.</p></div>'+
   (order.length?'<div class="card player-session-list">'+order.map(function(key){
     var g=groups[key],open=state.expandedPlayerSession===key;
     return '<div class="player-session-group">'+
-     '<button class="player-session-head" data-action="toggle-player-session" data-key="'+esc(key)+'"><span>'+esc(g.name)+'</span><span class="player-session-count">'+g.players.length+(open?' ▾':' ▸')+'</span></button>'+
+     '<button class="player-session-head" data-action="toggle-player-session" data-key="'+esc(key)+'"><span class="player-session-icon">'+icons.users+'</span><span class="player-session-name">'+esc(g.name)+'</span><span class="player-session-count">'+g.players.length+(open?' ▾':' ▸')+'</span></button>'+
      (open?g.players.map(playerRowHtml).join(''):'')+
     '</div>';
-   }).join('')+'</div>':'<div class="schedule-empty">No players linked to your sessions yet.</div>');
+   }).join('')+'</div>':'<div class="empty-state"><span class="empty-state-icon">'+icons.users+'</span><b>No players yet</b><p>Players linked to your sessions will appear here.</p></div>');
 }
 
 export function reloadPlayers(){

@@ -152,7 +152,7 @@ async function signIn(p) {
   // --- Player Hub, Resources, Venues, Coach Support still load ---
   await page.click('[data-nav="players"]');
   await page.waitForSelector('.page-title h1');
-  ck('Player Hub (My Players) still loads', (await page.locator('.page-title h1').textContent()) === 'My Players');
+  ck('Player Hub still loads', (await page.locator('.page-title h1').textContent()) === 'Player Hub');
 
   await page.click('[data-nav="resources"]');
   await page.waitForSelector('.resource-grid');

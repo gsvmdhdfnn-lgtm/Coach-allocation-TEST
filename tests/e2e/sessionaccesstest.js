@@ -25,7 +25,7 @@ const ck = (n, c, x) => { R.push([c ? 'PASS' : 'FAIL', n, x || '']); if (!c) pro
 
     await p.click('[data-nav="players"]');
     await p.waitForSelector('.player-session-group', { timeout: 5000 });
-    const heads = await p.$$eval('.player-session-head span:first-child', els => els.map(e => e.textContent));
+    const heads = await p.$$eval('.player-session-name', els => els.map(e => e.textContent));
     ck('Three session groups shown, sorted by name', JSON.stringify(heads) === JSON.stringify(['Monday Academy', 'Not yet linked to a session', 'Thursday U9/10'].sort()), heads.join(', '));
 
     // Expand Monday Academy - should show its 3 players (permanent x2, former x1)

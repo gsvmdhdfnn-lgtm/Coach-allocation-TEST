@@ -45,8 +45,8 @@ async function freshCtx(b) {
     await p.waitForSelector('.resource-grid', { timeout: 8000 });
     ck('Resources screen renders', true);
     await p.click('[data-nav="players"]');
-    await p.waitForSelector('#screen-root > div:not([hidden]) h1:has-text("My Players")', { timeout: 8000 });
-    ck('My Players screen renders', true);
+    await p.waitForSelector('#screen-root > div:not([hidden]) h1:has-text("Player Hub")', { timeout: 8000 });
+    ck('Player Hub screen renders', true);
     await p.click('[data-nav="home"]');
     await p.waitForSelector('.coach-home', { timeout: 8000 });
     await p.click('.home-shortcuts button:has-text("Venues")');

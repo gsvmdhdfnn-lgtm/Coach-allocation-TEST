@@ -21,13 +21,13 @@ const ck = (n, c, x) => { R.push([c ? 'PASS' : 'FAIL', n, x || '']); if (!c) pro
   await p.click('[data-action="auth-submit"]');
   await p.waitForSelector('.coach-home', { timeout: 8000 });
 
-  // Nav pill now says My Players, and its screen renders
+  // Nav pill now says Player Hub, and its screen renders
   const pillText = await p.$eval('[data-nav="players"]', el => el.textContent.trim());
-  ck('Fourth nav tab is now "My Players"', pillText === 'My Players', pillText);
+  ck('Fourth nav tab is now "Player Hub"', pillText === 'Player Hub', pillText);
   await p.click('[data-nav="players"]');
   await p.waitForSelector('.page-title h1');
   const playersHeading = await p.$eval('.page-title h1', el => el.textContent);
-  ck('My Players screen renders', playersHeading === 'My Players', playersHeading);
+  ck('Player Hub screen renders', playersHeading === 'Player Hub', playersHeading);
 
   // Hamburger opens the More sheet
   await p.click('[data-action="open-more"]');
