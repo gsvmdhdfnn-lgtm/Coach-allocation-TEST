@@ -59,9 +59,39 @@ export function publicFeaturedTile(p){
    '<div class="public-tile-ring"></div>'+
    '<h2>'+esc(p.title)+'</h2>'+
    (p.summary?'<p>'+esc(p.summary)+'</p>':'')+
-   '<span class="public-featured-enquiry">For general enquiries, click here</span>'+
+   '<span class="public-featured-enquiry">'+esc(p.cta_label||'Find out more')+' →</span>'+
   '</div>'+
  '</button>';
+}
+/**
+ * Reads an arbitrary Hub Setting's raw value with no text fallback - unlike
+ * HubContent.label(key,fallback), which is designed to always show
+ * something (falling back to the key name itself as a last resort, useful
+ * for a label that's always visible), a quick link with nothing configured
+ * should render nothing at all rather than show a literal "instagram_url".
+ */
+function settingValue(key){
+ var settings=window.HubContent&&HubContent.get()&&HubContent.get().settings;
+ return (settings&&settings[key])||'';
+}
+/**
+ * Optional, organisation-agnostic quick actions shown alongside the hero.
+ * Every entry is config-driven and simply doesn't render if left blank -
+ * organisation.website already comes back from hub-content unused until
+ * now; instagram_url/contact_url are Hub Settings, the same generic
+ * key/value mechanism landing_subtitle already uses, so any organisation
+ * can fill in the same optional keys (or none) with no code change here.
+ */
+function publicQuickLinks(org){
+ var links=[
+  {label:'Website',url:org.website||''},
+  {label:'Instagram',url:settingValue('instagram_url')},
+  {label:'Contact Us',url:settingValue('contact_url')}
+ ].filter(function(l){return l.url});
+ if(!links.length)return '';
+ return '<div class="public-quicklinks">'+links.map(function(l){
+  return '<a class="public-quicklink" href="'+esc(l.url)+'" target="_blank" rel="noopener">'+esc(l.label)+'</a>';
+ }).join('')+'</div>';
 }
 /**
  * One flat 2-column grid, no per-category headers - matches the reference
@@ -84,6 +114,7 @@ export function renderPublicHome(){
    '<h1>'+esc(org.hub_name||'Josh Evans Hub')+'</h1>'+
    (heroSubtitle?'<p class="public-hero-tag">'+esc(heroSubtitle)+'</p>':'')+
    '<div class="public-hero-actions"><button class="secondary-btn" data-action="show-signin">Sign In</button><button class="primary-btn" data-action="show-signup">Register</button></div>'+
+   publicQuickLinks(org)+
   '</section>'+
   (featured?'<section class="public-section">'+publicFeaturedTile(featured)+'</section>':'')+
   (rest.length?'<section class="public-section"><div class="public-tile-grid">'+rest.map(function(p,i){return publicPageTile(p,i)}).join('')+'</div></section>':'')+
