@@ -123,19 +123,36 @@ export function renderPlayerProfile(playerRecordId,sessionRecordId){
    '<button class="pf-dev pf-history" data-action="open-feedback-history" data-player="'+esc(playerRecordId)+'" data-session-record="'+esc(sessionRecordId)+'"><i>≡</i><span><b>Previous Feedback</b><small>View the feedback history.</small></span></button>'+
   '</section>'+
   '<div id="pf-latest-slot"><div class="pf-head"><h2>Latest Feedback</h2><small>Most recent</small></div><div class="loading">Loading feedback…</div></div>'+
-  '<div class="pf-note">Repo-faithful concept: same Coach Hub top bar, navigation and card language throughout. This screen is the bridge between Player Hub and Coach Feedback.</div>'+
   '</div>';
 
  fetchFeedbackHistory(playerRecordId,sessionRecordId).then(function(list){
   var slot=document.getElementById('pf-latest-slot');
-  if(!slot)return;
-  if(!list.length){slot.innerHTML='<div class="pf-head"><h2>Latest Feedback</h2><small>Most recent</small></div><div class="empty-state"><span class="empty-state-icon">★</span><b>No feedback yet</b><p>Feedback for this player/session will appear here once added.</p></div>';return}
-  var f=list[0];
-  slot.innerHTML='<div class="pf-head"><h2>Latest Feedback</h2><small>Most recent</small></div>'+feedbackPreviewCardHtml(f);
+  if(slot){
+   if(!list.length){slot.innerHTML='<div class="pf-head"><h2>Latest Feedback</h2><small>Most recent</small></div><div class="empty-state"><span class="empty-state-icon">★</span><b>No feedback yet</b><p>Feedback for this player/session will appear here once added.</p></div>';}
+   else{
+    var f=list[0];
+    slot.innerHTML='<div class="pf-head"><h2>Latest Feedback</h2><small>Most recent</small></div>'+feedbackPreviewCardHtml(f);
+   }
+  }
+  updateAddFeedbackButton(list);
  }).catch(function(e){
   var slot=document.getElementById('pf-latest-slot');
   if(slot)slot.innerHTML='<div class="pf-head"><h2>Latest Feedback</h2><small>Most recent</small></div><div class="empty-state"><span class="empty-state-icon">★</span><b>Couldn’t load feedback</b><p>'+esc(e.message||'Please try again.')+'</p></div>';
  });
+}
+
+/** Finds the (at most one expected) unpublished draft for a player+session's feedback history - see startAddFeedback(). */
+function findDraftFeedback(list){
+ return (list||[]).find(function(f){return !f.published});
+}
+
+/** Patches the Player Profile's Add Feedback button to read "Resume Draft" once we know a draft exists - reuses the same fetchFeedbackHistory() call already made for the Latest Feedback panel, no extra request. */
+function updateAddFeedbackButton(list){
+ var btn=document.querySelector('[data-action="add-feedback"]');
+ if(!btn||btn.disabled)return;
+ var span=btn.querySelector('span');
+ if(!span)return;
+ span.innerHTML=findDraftFeedback(list)?'<b>Resume Draft</b><small>Continue your unfinished feedback.</small>':'<b>Add Feedback</b><small>Create feedback for this player/session.</small>';
 }
 
 function feedbackPreviewCardHtml(f){
@@ -163,11 +180,29 @@ export function openFeedbackHistory(playerRecordId,sessionRecordId){
  pushNavState();state.fbPlayerId=playerRecordId;state.fbSessionRecordId=sessionRecordId;state.screen='feedback-history';render();
 }
 
+/** An existing draft (unpublished Feedback record) for this player+session is authorised the same way any other feedback is - resolveAccessForPair() on the backend has already gated the history fetch that finds it. Resuming it edits/PATCHes that same record instead of creating a duplicate. */
+function draftFromRecord(f){
+ var ratings={},notes={};
+ (f.ratings||[]).forEach(function(r){
+  if(!r.framework_item_id)return;
+  if(r.rating)ratings[r.framework_item_id]=r.rating.toLowerCase();
+  if(r.notes)notes[r.framework_item_id]=r.notes;
+ });
+ return {ratings:ratings,notes:notes,keepDoing:f.keep_doing||'',myFocus:f.big_focus||'',summary:f.summary||''};
+}
+
 export function startAddFeedback(playerRecordId,sessionRecordId){
- fetchFramework().then(function(){
+ Promise.all([fetchFramework(),fetchFeedbackHistory(playerRecordId,sessionRecordId)]).then(function(results){
+  var draft=findDraftFeedback(results[1]);
   pushNavState();
-  state.fbPlayerId=playerRecordId;state.fbSessionRecordId=sessionRecordId;state.fbEditingId=null;
-  state.fbDraft={ratings:{},notes:{}};
+  state.fbPlayerId=playerRecordId;state.fbSessionRecordId=sessionRecordId;
+  if(draft){
+   state.fbEditingId=draft.feedback_id;
+   state.fbDraft=draftFromRecord(draft);
+  }else{
+   state.fbEditingId=null;
+   state.fbDraft={ratings:{},notes:{}};
+  }
   state.fbError='';
   state.screen='feedback-form';render();
  }).catch(function(e){toast(e.message||'Could not load the feedback framework.')});
@@ -220,19 +255,39 @@ export function renderFeedbackRecord(feedbackId){
  * Coach Feedback entry (Add Feedback) - Part C
  * ------------------------------------------------------------------ */
 
-function choicePill(itemId,ratingKey,ratingLabel,selected){
- return '<span class="fb-choice fb-'+ratingKey+(selected?' fb-selected':'')+'" data-action="rating-choice" data-item="'+esc(itemId)+'" data-rating="'+esc(ratingKey)+'">'+esc(ratingLabel)+'</span>';
+function choiceSwatch(itemId,ratingKey,ratingLabel,selected){
+ return '<button type="button" class="fb-choice fb-'+ratingKey+(selected?' fb-selected':'')+'" data-action="rating-choice" data-item="'+esc(itemId)+'" data-rating="'+esc(ratingKey)+'" title="'+esc(ratingLabel)+'" aria-label="'+esc(ratingLabel)+'" aria-pressed="'+(selected?'true':'false')+'">'+(selected?'✓':'')+'</button>';
 }
 
-function ratingRowHtml(item,settings,draft){
- var choices=[['blue',settings.blue_label],['green',settings.green_label],['amber',settings.amber_label],['red',settings.red_label]];
- var selected=draft.ratings[item.framework_item_id]||'';
- var choicesHtml=choices.map(function(c){return choicePill(item.framework_item_id,c[0],c[1],selected.toLowerCase()===c[0])}).join('');
+/** Whether this framework item has anything to show at all in the current feedback mode - drives both whether it renders and whether its group renders. Ratings Only: rating control only, no note. Written Only: no rating control, note only when per-area written is on. Combined: either/both, per each item's own toggles. */
+function itemHasVisibleControl(item,settings){
+ var showsRating=settings.feedback_mode!=='written_only'&&item.rating_enabled;
+ var showsNote=settings.feedback_mode!=='ratings_only'&&settings.per_area_written_feedback&&item.written_enabled;
+ return showsRating||showsNote;
+}
+
+function ratingRowHtml(item,settings,draft,showChoices){
+ var hasChoices=showChoices&&item.rating_enabled;
+ var rowHtml;
+ if(hasChoices){
+  var choices=[['blue',settings.blue_label],['green',settings.green_label],['amber',settings.amber_label],['red',settings.red_label]];
+  var selected=(draft.ratings[item.framework_item_id]||'').toLowerCase();
+  var choicesHtml=choices.map(function(c){return choiceSwatch(item.framework_item_id,c[0],c[1],selected===c[0])}).join('');
+  rowHtml='<div class="fb-ratingRow"><div class="fb-ratingLabel" title="'+esc(item.description||'')+'"><b>'+esc(item.name)+'</b></div><div class="fb-choices">'+choicesHtml+'</div></div>';
+ }else{
+  rowHtml='<div class="fb-ratingRow fb-ratingRow-textOnly"><div class="fb-ratingLabel" title="'+esc(item.description||'')+'"><b>'+esc(item.name)+'</b></div></div>';
+ }
  var noteHtml='';
  if(settings.per_area_written_feedback&&item.written_enabled&&settings.feedback_mode!=='ratings_only'){
-  noteHtml='<textarea class="fb-area-note" id="fb-note-'+esc(item.framework_item_id)+'" placeholder="Optional note for '+esc(item.name)+'">'+esc(draft.notes[item.framework_item_id]||'')+'</textarea>';
+  noteHtml='<textarea class="fb-area-note" id="fb-note-'+esc(item.framework_item_id)+'" placeholder="Note for '+esc(item.name)+'">'+esc(draft.notes[item.framework_item_id]||'')+'</textarea>';
  }
- return '<div class="fb-ratingRow"><div class="fb-ratingLabel"><b>'+esc(item.name)+'</b><small>'+esc(item.description||'Current status')+'</small></div><div class="fb-choices">'+choicesHtml+'</div>'+noteHtml+'</div>';
+ return '<div class="fb-item">'+rowHtml+noteHtml+'</div>';
+}
+
+/** One colour dot + its single configured label per rating, e.g. "● Consistently strong" - no hardcoded description duplicating whatever the coach configured as the label itself. */
+function legendHtml(settings){
+ var items=[['blue',settings.blue_label],['green',settings.green_label],['amber',settings.amber_label],['red',settings.red_label]];
+ return '<div class="fb-legend">'+items.map(function(c){return '<span class="fb-legend-item"><i class="fb-legend-dot fb-'+c[0]+'"></i>'+esc(c[1])+'</span>'}).join('')+'</div>';
 }
 
 export function renderFeedbackForm(){
@@ -245,12 +300,13 @@ export function renderFeedbackForm(){
  var showRatings=settings.feedback_mode!=='written_only';
  var showWritten=settings.feedback_mode!=='ratings_only';
 
- var groupsHtml=showRatings?fw.groups.map(function(g){
-  var ratable=g.items.filter(function(i){return i.rating_enabled});
-  if(!ratable.length)return '';
-  return '<section class="card fb-group"><div class="fb-groupHead"><b>'+esc(g.label)+'</b><small>'+ratable.length+' area'+(ratable.length===1?'':'s')+'</small></div>'+
-   ratable.map(function(i){return ratingRowHtml(i,settings,draft)}).join('')+'</section>';
- }).join(''):'';
+ var visibleGroups=fw.groups.map(function(g){
+  var visible=g.items.filter(function(i){return itemHasVisibleControl(i,settings)});
+  if(!visible.length)return '';
+  return '<section class="card fb-group"><div class="fb-groupHead"><b>'+esc(g.label)+'</b><small>'+visible.length+' area'+(visible.length===1?'':'s')+'</small></div>'+
+   visible.map(function(i){return ratingRowHtml(i,settings,draft,showRatings)}).join('')+'</section>';
+ }).join('');
+ var hasVisibleGroups=fw.groups.some(function(g){return g.items.some(function(i){return itemHasVisibleControl(i,settings)})});
 
  var writtenHtml='';
  if(showWritten){
@@ -266,14 +322,13 @@ export function renderFeedbackForm(){
 
  root.innerHTML='<div class="fb-back">‹ Back to '+esc(p.name)+'</div>'.replace('<div class="fb-back">','<button class="back-btn" data-action="app-back" style="margin:4px 2px 10px">').replace('</div>','</button>')+
   '<section class="fb-hero"><div class="fb-heroTop"><span class="pf-avatar'+(p.photo_url?' has-photo':'')+'">'+avatar+'</span><div><h1>Add Feedback</h1><p>'+esc(p.name)+' · '+esc(p.session_name||'')+'</p></div>'+(ageGroupForSessionId(p.session_id)?'<span class="fb-sessionChip">'+esc(ageGroupForSessionId(p.session_id))+'</span>':'')+'</div></section>'+
-  (showRatings&&groupsHtml?'<div class="fb-sectionTitle"><h2>Development Snapshot</h2><p>'+(showWritten?'Ratings + written feedback':'Ratings')+'</p></div>'+
-   '<section class="card fb-intro"><p>'+esc(settings.intro_text||'')+'</p><div class="fb-legend"><span><b>'+esc(settings.blue_label)+':</b> Consistently strong</span><span><b>'+esc(settings.green_label)+':</b> Showing regularly</span><span><b>'+esc(settings.amber_label)+':</b> Developing</span><span><b>'+esc(settings.red_label)+':</b> Key focus</span></div></section>'+
-   groupsHtml:'')+
+  (hasVisibleGroups?'<div class="fb-sectionTitle"><h2>Development Snapshot</h2><p>'+(showRatings?(showWritten?'Ratings + written feedback':'Ratings'):'Written feedback per area')+'</p></div>'+
+   '<section class="card fb-intro"><p>'+esc(settings.intro_text||'')+'</p>'+(showRatings?legendHtml(settings):'')+'</section>'+
+   visibleGroups:'')+
   writtenHtml+
   (state.fbError?'<p class="auth-error" style="margin:10px 2px 0">'+esc(state.fbError)+'</p>':'')+
   '<div class="fb-actions"><button class="secondary-btn fb-secondary" data-action="cancel-feedback">Cancel</button><button class="primary-btn fb-primary" data-action="save-feedback-draft"'+(state.fbBusy?' disabled':'')+'>Save Draft</button></div>'+
-  '<button class="fb-publish" data-action="publish-feedback"'+(state.fbBusy?' disabled':'')+'>Publish Feedback</button>'+
-  '<div class="pf-note">This form is driven by the live framework/settings data, not hardcoded to a fixed number of areas.</div>';
+  '<button class="fb-publish" data-action="publish-feedback"'+(state.fbBusy?' disabled':'')+'>Publish Feedback</button>';
 }
 
 /** Captures any typed textarea text into state.fbDraft first (so it survives the redraw), then records the choice and redraws to show the new selection. */
@@ -301,8 +356,15 @@ export function readDraftFromDom(){
 
 function buildSubmitPayload(published){
  var d=readDraftFromDom();
- var ratings=Object.keys(d.ratings||{}).map(function(itemId){
-  return {framework_item_id:itemId,rating:capitalize(d.ratings[itemId]),note:(d.notes||{})[itemId]||''};
+ // Union of items with a rating AND items with a typed note - a Written
+ // Only area has no rating at all but must still send its note, so
+ // iterating d.ratings' keys alone (as before) silently dropped it.
+ var itemIds={};
+ Object.keys(d.ratings||{}).forEach(function(k){itemIds[k]=1});
+ Object.keys(d.notes||{}).forEach(function(k){if((d.notes[k]||'').trim())itemIds[k]=1});
+ var ratings=Object.keys(itemIds).map(function(itemId){
+  var r=(d.ratings||{})[itemId];
+  return {framework_item_id:itemId,rating:r?capitalize(r):'',note:(d.notes||{})[itemId]||''};
  });
  return {
   player_record_id:state.fbPlayerId,
