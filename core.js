@@ -128,7 +128,7 @@ export function load(){
  HubContent.loadVenues().catch(function(){return []}),
  HubContent.loadCoachSupport().catch(function(){return []}),
  HubContent.loadPlayers(token).catch(function(){return []}),
- HubContent.loadSessionParticipants().catch(function(){return []})
+ HubContent.loadSessionParticipants(token).catch(function(){return []})
 ])}).then(function(all){
 
   var ss=all[0];state.sessions=ss.map(function(r){return {id:r.session_id,name:r.session_name,programme:r.programme,category:r.category,ageGroup:r.age_group,day:r.day,time:r.time,venue:r.venue,address:r.address,coaches:splitCoaches(r.coaches),client:r.client,termKey:r.term_key,hours:r.hours}});

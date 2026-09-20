@@ -311,7 +311,7 @@ window.HubContent={
   loadPublicPages:function(){return apiCollection('public-pages')},
   loadWhatWeOffer:function(){return apiCollection('what-we-offer')},
   loadPlayers:function(token){return apiCollection('players',token)},
-  loadSessionParticipants:function(){return apiCollection('session-participants')},
+  loadSessionParticipants:function(token){return apiCollection('session-participants',token)},
   loadFeedback:function(){return apiCollection('feedback')},
   loadDevelopmentPlans:function(){return apiCollection('development-plans')},
   resolveColour:resolveColour

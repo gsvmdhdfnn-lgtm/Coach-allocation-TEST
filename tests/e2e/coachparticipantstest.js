@@ -41,7 +41,19 @@ function makeServer() {
     if (u === '/hub-content/coach-support') { r.writeHead(200, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify([{ support_id: 'SUP-1', title: 'Example Support Item', section: 'Our Standards', body: 'Body text.', attachment_url: '', external_link: '' }])); }
     if (u === '/hub-content/public-pages') { r.writeHead(200, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify([])); }
     if (u === '/hub-content/what-we-offer') { r.writeHead(200, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify([])); }
-    if (u === '/hub-content/session-participants') { r.writeHead(200, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify(SESSION_PARTICIPANTS)); }
+    if (u === '/hub-content/session-participants') {
+      // Mirrors the real hub-content route's auth gate: a missing/invalid
+      // token is 401, a valid token for a non-coach/management or
+      // inactive account is 403, and only then is the safe
+      // {session_id, participants}-only payload returned.
+      const auth = q.headers['authorization'] || '';
+      if (!auth) { r.writeHead(401, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify({ error: 'Missing or invalid Authorization header' })); }
+      const email = auth.replace(/^Bearer /, '').replace(/^tok-/, '').replace(/~.*/, '');
+      if (!email) { r.writeHead(401, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify({ error: 'Missing or invalid Authorization header' })); }
+      if (/^inactive/.test(email)) { r.writeHead(403, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify({ error: 'Forbidden' })); }
+      r.writeHead(200, { 'Content-Type': 'application/json' });
+      return r.end(JSON.stringify(SESSION_PARTICIPANTS));
+    }
     if (u === '/hub-content' || u === '/hub-content/') { r.writeHead(200, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify({ organisation: { hub_name: 'Josh Evans Hub', tagline: 'Better people make better players.' }, settings: {}, features: {} })); }
     if (u === '/me') {
       const auth = q.headers['authorization'] || '';
@@ -74,6 +86,20 @@ async function signIn(p) {
 (async () => {
   const server = makeServer();
   await new Promise((res) => server.listen(PORT, res));
+
+  // --- Hardening: session-participants requires an authenticated,
+  // active Coach/Management user - not the public/no-auth pattern the
+  // rest of hub-content's collections use. ---
+  const unauthRes = await fetch(`http://localhost:${PORT}/hub-content/session-participants`);
+  ck('Unauthenticated request to session-participants is rejected (401)', unauthRes.status === 401, unauthRes.status);
+  const unauthBody = await unauthRes.json().catch(() => ({}));
+  ck('...and returns no participant data', !Array.isArray(unauthBody) || unauthBody.length === 0, JSON.stringify(unauthBody));
+
+  const authRes = await fetch(`http://localhost:${PORT}/hub-content/session-participants`, { headers: { Authorization: 'Bearer tok-coach-tom@test.com' } });
+  ck('Authenticated Coach request to session-participants succeeds (200)', authRes.status === 200, authRes.status);
+  const authBody = await authRes.json().catch(() => null);
+  ck('...and the response is strictly {session_id, participants} - no revenue/cost/profit fields', Array.isArray(authBody) && authBody.every((r) => Object.keys(r).sort().join(',') === 'participants,session_id'), JSON.stringify(authBody));
+
   const b = await chromium.launch({ args: ['--no-sandbox'] });
   const ctx = await b.newContext({ viewport: { width: 390, height: 900 } });
   await ctx.route('**/supabase-js@2/dist/umd/supabase.js', (route) => route.fulfill({ path: path.join(__dirname, '..', 'support', 'auth-stub.js'), contentType: 'text/javascript' }));
