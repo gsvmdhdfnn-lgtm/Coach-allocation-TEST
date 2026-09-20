@@ -187,7 +187,7 @@ function ensureTabShell(){
 function renderIntoPane(name,fn){var saved=root;root=panes[name];fn();root=saved}
 function reRenderSchedule(){renderIntoPane('schedule',renderSchedule)}
 function reRenderMyPlayers(){renderIntoPane('players',renderMyPlayers)}
-function render(){document.getElementById('app').classList.remove('auth-mode');setNav(state.screen);if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();else if(state.screen==='session-requests')renderSessionRequests();syncBackButton()}
+function render(){document.getElementById('app').classList.remove('auth-mode');setNav(state.screen);if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();else if(state.screen==='session-requests')renderSessionRequests();else if(state.screen==='player-migration')renderPlayerMigration();syncBackButton()}
 function renderHome(){
  var now=new Date(),n=nextOccurrence(now),today=todaysOccurrences(now),ns=n&&n.session;
  root.innerHTML='<div class="coach-home">'+
@@ -317,7 +317,7 @@ function openProfileSheet(){
  */
 function openMoreSheet(){
  var rows=[['●','My Profile',(state.me&&state.me.email)||'Update your details','','profile'],['◉','Notifications','Manage alerts','','coming-soon'],['£','Management & Financials','Restricted access','management',''],['●','Feedback','Share ideas or report an issue','','coming-soon'],['☎','Contact the Office','Get in touch','','coming-soon'],['↪','Log Out','','','logout']];
- if(state.role==='management')rows.splice(3,0,['✓','Coach Management','Approve pending staff sign-ups','coach-management',''],['◉','Session Requests','Approve player session requests','session-requests','']);
+ if(state.role==='management')rows.splice(3,0,['✓','Coach Management','Approve pending staff sign-ups','coach-management',''],['◉','Session Requests','Approve player session requests','session-requests',''],['▤','Player Migration','Move existing players onto sessions','player-migration','']);
  sheet.hidden=false;
  sheetContent.innerHTML='<div class="calendar-sheet"><h3>More</h3><div class="card more-list" style="margin-top:6px">'+rows.map(function(r){return '<button class="more-row" '+(r[3]?'data-nav="'+r[3]+'"':'')+(r[4]?' data-action="'+r[4]+'"':'')+'><span class="support-icon">'+r[0]+'</span><span><b>'+r[1]+'</b><small>'+esc(r[2])+'</small></span><span>›</span></button>'}).join('')+'</div></div>';
 }
@@ -329,7 +329,8 @@ function playerTierBadge(p){
 }
 function playerRowHtml(p){
  var avatar=p.photo_url?'<img src="'+esc(p.photo_url)+'" alt="">':'<span>'+esc(playerInitials(p.name))+'</span>';
- return '<div class="player-row"><span class="player-avatar'+(p.photo_url?' has-photo':'')+'">'+avatar+'</span><span><b>'+esc(p.name)+'</b>'+playerTierBadge(p)+'</span></div>';
+ var endBtn=(state.role==='management'&&p.link_record_id)?'<button class="secondary-btn end-membership-btn" data-action="end-player-session" data-link-id="'+esc(p.link_record_id)+'">End</button>':'';
+ return '<div class="player-row" data-player-row="'+esc(p.link_record_id||'')+'"><span class="player-avatar'+(p.photo_url?' has-photo':'')+'">'+avatar+'</span><span><b>'+esc(p.name)+'</b>'+playerTierBadge(p)+'</span>'+endBtn+'</div>';
 }
 /**
  * Grouped by session, not one flat list - each row from the players API
@@ -525,6 +526,107 @@ function syncSessions(btn){
   loadSessionRequests();
  }).catch(function(e){
   toast(e.message||'Sync failed');
+ }).finally(function(){
+  btn.disabled=false;btn.textContent=originalText;
+ });
+}
+/** Re-fetches just the players list (not the whole hub) and re-renders My Players. */
+function reloadPlayers(){
+ return accessToken().then(function(token){return HubContent.loadPlayers(token)}).then(function(rows){state.players=rows||[];reRenderMyPlayers()}).catch(function(){});
+}
+/**
+ * Management-only: a player has left this session. Snapshots the
+ * session's current Permanent Coaches into the link's "Coaches At End"
+ * server-side, which is what former-coach access checks from then on -
+ * see handleEndLink in the player-sessions function.
+ */
+function endPlayerSession(linkId,btn){
+ if(!confirm('End this player’s membership in this session? Their current coach(es) keep 28 days of access after this.'))return;
+ btn.disabled=true;btn.textContent='Ending…';
+ withAccessToken().then(function(token){
+  return fetch(playerSessionsUrl()+'/links/'+encodeURIComponent(linkId)+'/end',{method:'POST',headers:{Authorization:'Bearer '+token}});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not end this membership.');return body});
+ }).then(function(){
+  toast('Membership ended — former access starts now');
+  reloadPlayers();
+ }).catch(function(e){
+  btn.disabled=false;btn.textContent='End';
+  toast(e.message||'Could not end this membership.');
+ });
+}
+/**
+ * Preview-first migration for existing players onto the new session
+ * system: nothing is linked until Migrate Selected is pressed, and only
+ * for the exact rows checked. Matched rows (one exact session-name match)
+ * come pre-checked; ambiguous rows (more than one plausible session) need
+ * a pick from the dropdown before they'll count; unmatched rows are
+ * informational only, nothing to select.
+ */
+function renderPlayerMigration(){
+ state.screen='player-migration';setNav('player-migration');
+ if(state.role!=='management'){root.innerHTML='<section class="locked"><div class="page-title"><h1>Player Migration</h1><p>Restricted to management accounts.</p></div><div class="card" style="padding:16px;color:var(--ink);font-size:12px">Your account isn’t set up for management access.</div></section>';return}
+ root.innerHTML='<section class="locked"><div class="page-title"><h1>Player Migration</h1><p>Preview which existing players can be linked onto the new session system before anything is committed.</p></div><div id="migration-list"><div class="loading">Loading preview…</div></div></section>';
+ loadMigrationPreview();
+}
+function loadMigrationPreview(){
+ var listEl=document.getElementById('migration-list');
+ withAccessToken().then(function(token){
+  return fetch(playerSessionsUrl()+'/migration/preview',{headers:{Authorization:'Bearer '+token}});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not load migration preview.');return body});
+ }).then(function(body){
+  if(document.getElementById('migration-list'))renderMigrationPreviewBody(body);
+ }).catch(function(e){
+  if(listEl)listEl.innerHTML='<div class="error"><b>Couldn’t load migration preview.</b><br>'+esc(e.message||'')+'</div>';
+ });
+}
+function renderMigrationPreviewBody(data){
+ var listEl=document.getElementById('migration-list');
+ if(!listEl)return;
+ var matched=data.matched||[],ambiguous=data.ambiguous||[],unmatched=data.unmatched||[];
+ if(!matched.length&&!ambiguous.length&&!unmatched.length){listEl.innerHTML='<div class="schedule-empty">Every current player is already linked to a session — nothing to migrate.</div>';return}
+ var html='';
+ if(matched.length){
+  html+='<div class="migration-section"><h3>Matched ('+matched.length+')</h3><p>Exact match to a session name — ready to link.</p><div class="card migration-card">'+matched.map(function(m){
+   return '<label class="migration-row"><input type="checkbox" class="migration-check" data-player="'+esc(m.player_record_id)+'" data-session="'+esc(m.session_record_id)+'" checked><span><b>'+esc(m.player_name)+'</b><small>→ '+esc(m.session_name)+'</small></span></label>';
+  }).join('')+'</div></div>';
+ }
+ if(ambiguous.length){
+  html+='<div class="migration-section"><h3>Needs a pick ('+ambiguous.length+')</h3><p>More than one session looks close — choose the right one, then tick to include.</p><div class="card migration-card">'+ambiguous.map(function(m){
+   var options=(m.candidates||[]).map(function(c){return '<option value="'+esc(c.session_record_id)+'">'+esc(c.session_name)+'</option>'}).join('');
+   return '<div class="migration-row migration-row-ambiguous"><input type="checkbox" class="migration-check" data-player="'+esc(m.player_record_id)+'"><span><b>'+esc(m.player_name)+'</b><small>Team/Session: "'+esc(m.team_session_text)+'"</small></span><select class="migration-select">'+options+'</select></div>';
+  }).join('')+'</div></div>';
+ }
+ if(unmatched.length){
+  html+='<div class="migration-section"><h3>No match ('+unmatched.length+')</h3><p>Nothing close enough — fix the Team / Session text or add the session first, then come back.</p><div class="card migration-card">'+unmatched.map(function(m){
+   return '<div class="migration-row migration-row-unmatched"><span><b>'+esc(m.player_name)+'</b><small>'+esc(m.reason)+'</small></span></div>';
+  }).join('')+'</div></div>';
+ }
+ if(matched.length||ambiguous.length){
+  html+='<button class="primary-btn" data-action="migrate-commit" style="margin-top:4px">Migrate Selected</button>';
+ }
+ listEl.innerHTML=html;
+}
+function commitMigration(btn){
+ var rows=document.querySelectorAll('#migration-list .migration-check:checked'),links=[];
+ rows.forEach(function(cb){
+  var row=cb.closest('.migration-row'),select=row.querySelector('.migration-select');
+  var sessionId=select?select.value:cb.dataset.session;
+  if(sessionId)links.push({player_record_id:cb.dataset.player,session_record_id:sessionId});
+ });
+ if(!links.length){toast('Nothing selected to migrate');return}
+ var originalText=btn.textContent;
+ btn.disabled=true;btn.textContent='Migrating…';
+ withAccessToken().then(function(token){
+  return fetch(playerSessionsUrl()+'/migration/commit',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({links:links})});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Migration failed.');return body});
+ }).then(function(body){
+  toast((body.committed||0)+' player'+(body.committed===1?'':'s')+' linked to their session'+(body.committed===1?'':'s'));
+  loadMigrationPreview();
+ }).catch(function(e){
+  toast(e.message||'Migration failed');
  }).finally(function(){
   btn.disabled=false;btn.textContent=originalText;
  });
@@ -789,7 +891,7 @@ function init(){
   if(event==='SIGNED_OUT'){state.me=null;state.role='coach';state.screen='home';state.authScreen='login';state.authEmail='';state.authError='';state.authAccountType='staff';loadPublicHome()}
  });
 }
-document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;closeSheet();navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;reRenderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;reRenderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;reRenderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);reRenderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);reRenderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='open-more'){openMoreSheet();return}if(act==='approve-coach'){approveCoach(a.dataset.userId,a);return}if(act==='toggle-player-session'){state.expandedPlayerSession=state.expandedPlayerSession===a.dataset.key?null:a.dataset.key;reRenderMyPlayers();return}if(act==='approve-session-request'){approveSessionRequest(a.dataset.requestId,a);return}if(act==='reject-session-request'){rejectSessionRequest(a.dataset.requestId,a);return}if(act==='sync-sessions'){syncSessions(a);return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='show-signin'){state.authScreen='login';state.authError='';renderAuth();return}if(act==='show-signup'){state.authScreen='signup';state.authError='';renderAuth();return}if(act==='show-public'){if(state.publicPages&&state.publicPages.length)renderPublicHome();else loadPublicHome();return}if(act==='public-detail'){renderPublicDetail(a.dataset.page);return}if(act==='register-interest-submit'){submitRegisterInterest(a.dataset.page);return}if(act==='logout'){closeSheet();if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}if(act==='retry-load'){load();return}});
+document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;closeSheet();navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;reRenderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;reRenderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;reRenderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);reRenderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);reRenderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='open-more'){openMoreSheet();return}if(act==='approve-coach'){approveCoach(a.dataset.userId,a);return}if(act==='toggle-player-session'){state.expandedPlayerSession=state.expandedPlayerSession===a.dataset.key?null:a.dataset.key;reRenderMyPlayers();return}if(act==='approve-session-request'){approveSessionRequest(a.dataset.requestId,a);return}if(act==='reject-session-request'){rejectSessionRequest(a.dataset.requestId,a);return}if(act==='sync-sessions'){syncSessions(a);return}if(act==='end-player-session'){endPlayerSession(a.dataset.linkId,a);return}if(act==='migrate-commit'){commitMigration(a);return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='show-signin'){state.authScreen='login';state.authError='';renderAuth();return}if(act==='show-signup'){state.authScreen='signup';state.authError='';renderAuth();return}if(act==='show-public'){if(state.publicPages&&state.publicPages.length)renderPublicHome();else loadPublicHome();return}if(act==='public-detail'){renderPublicDetail(a.dataset.page);return}if(act==='register-interest-submit'){submitRegisterInterest(a.dataset.page);return}if(act==='logout'){closeSheet();if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}if(act==='retry-load'){load();return}});
 document.addEventListener('input',function(e){if(e.target&&e.target.id==='venue-search'){state.venueQuery=e.target.value;renderVenues();var i=document.getElementById('venue-search');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}}});
 document.addEventListener('keydown',function(e){if(e.key==='Enter'&&e.target&&(e.target.id==='auth-email'||e.target.id==='auth-password')){e.preventDefault();authSubmit()}});
 init();
