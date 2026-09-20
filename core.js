@@ -6,7 +6,7 @@ export let CFG=window.APP_CONFIG||{};
 
 export let DEMO=new URLSearchParams(location.search).get('demo')==='1';
 
-export let state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,expandedPlayerSession:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[],whatWeOffer:[],parentHub:null,parentHubLoaded:false};
+export let state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],participantCounts:{},airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,expandedPlayerSession:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[],whatWeOffer:[],parentHub:null,parentHubLoaded:false};
 
 export let supabaseClient=(!DEMO&&window.supabase&&CFG.supabaseUrl&&CFG.supabasePublishableKey)?window.supabase.createClient(CFG.supabaseUrl,CFG.supabasePublishableKey):null;
 
@@ -96,15 +96,21 @@ export function money(v){var n=Number(v);return isFinite(n)?new Intl.NumberForma
 
 export function demoData(){
  state.sessions=[
-{id:'E01',programme:'Evening',category:'Development Centre',name:'U9/10 Development',ageGroup:'U9/10',day:'Thursday',time:'17:30 - 18:30',venue:"City of London Freemen's",address:'Ashtead, KT21',coaches:['David','Charlie'],participants:'12'},
-{id:'E02',programme:'Evening',category:'Academy',name:'U12 Academy',ageGroup:'U12',day:'Thursday',time:'19:00 - 20:30',venue:"City of London Freemen's",address:'Ashtead, KT21',coaches:['David','Charlie'],participants:'14'},
-{id:'E03',programme:'Evening',category:'Development Centre',name:'U13/14 Development',ageGroup:'U13/14',day:'Friday',time:'18:00 - 19:00',venue:'Therfield School',address:'Leatherhead',coaches:['David'],participants:'15'},
-{id:'D00',programme:'Day',category:'School',name:'School Coaching',ageGroup:'',day:'Friday',time:'13:00 - 17:30',venue:'School Programme',address:'Surrey',coaches:['David'],participants:''},
-{id:'D01',programme:'Day',category:'School',name:"St Peter's After School",ageGroup:'',day:'Friday',time:'16:00 - 17:00',venue:"St Peter's School",address:'Leatherhead',coaches:['David'],participants:'18'},
-{id:'E04',programme:'Evening',category:'Development Centre',name:'U8 Development',ageGroup:'U8',day:'Thursday',time:'16:30 - 17:30',venue:"City of London Freemen's",address:'Ashtead, KT21',coaches:['Jack'],participants:'11'}];
+{id:'E01',programme:'Evening',category:'Development Centre',name:'U9/10 Development',ageGroup:'U9/10',day:'Thursday',time:'17:30 - 18:30',venue:"City of London Freemen's",address:'Ashtead, KT21',coaches:['David','Charlie']},
+{id:'E02',programme:'Evening',category:'Academy',name:'U12 Academy',ageGroup:'U12',day:'Thursday',time:'19:00 - 20:30',venue:"City of London Freemen's",address:'Ashtead, KT21',coaches:['David','Charlie']},
+{id:'E03',programme:'Evening',category:'Development Centre',name:'U13/14 Development',ageGroup:'U13/14',day:'Friday',time:'18:00 - 19:00',venue:'Therfield School',address:'Leatherhead',coaches:['David']},
+{id:'D00',programme:'Day',category:'School',name:'School Coaching',ageGroup:'',day:'Friday',time:'13:00 - 17:30',venue:'School Programme',address:'Surrey',coaches:['David']},
+{id:'D01',programme:'Day',category:'School',name:"St Peter's After School",ageGroup:'',day:'Friday',time:'16:00 - 17:00',venue:"St Peter's School",address:'Leatherhead',coaches:['David']},
+{id:'E04',programme:'Evening',category:'Development Centre',name:'U8 Development',ageGroup:'U8',day:'Thursday',time:'16:30 - 17:30',venue:"City of London Freemen's",address:'Ashtead, KT21',coaches:['Jack']}];
  state.me={name:'David',owner:true}; state.week=iso(mondayOf(new Date(2026,8,17)));
  state.themes[state.week]={'development centre':'Receiving to play forward','academy':'Playing through pressure','school':'1v1 attacking'};
  state.calendar[state.week]={label:'Term 1 Week 1',running:true};
+ /**
+  * Mirrors the real coach-facing source: a narrow session_id->participants
+  * read from Financials, not full financial rows - D00 is left out on
+  * purpose to exercise "blank means nothing shows" in demo mode too.
+  */
+ state.participantCounts={E01:'12',E02:'14',E03:'15',D01:'18',E04:'11'};
  state.financials={E01:{participants:'12',revenue_net:'144',coach_cost:'48',venue_cost:'32',profit:'64'},E02:{participants:'14',revenue_net:'168',coach_cost:'60',venue_cost:'36',profit:'72'}};
  state.unlocked=true;
 }
@@ -121,7 +127,8 @@ export function load(){
  HubContent.loadResources().catch(function(){return []}),
  HubContent.loadVenues().catch(function(){return []}),
  HubContent.loadCoachSupport().catch(function(){return []}),
- HubContent.loadPlayers(token).catch(function(){return []})
+ HubContent.loadPlayers(token).catch(function(){return []}),
+ HubContent.loadSessionParticipants().catch(function(){return []})
 ])}).then(function(all){
 
   var ss=all[0];state.sessions=ss.map(function(r){return {id:r.session_id,name:r.session_name,programme:r.programme,category:r.category,ageGroup:r.age_group,day:r.day,time:r.time,venue:r.venue,address:r.address,coaches:splitCoaches(r.coaches),client:r.client,termKey:r.term_key,hours:r.hours}});
@@ -131,6 +138,7 @@ export function load(){
   (all[6]||[]).forEach(function(v){if(!v.name)return;state.venueInfo[venueKey(v.name)]={venue:v.name,address:v.address||'',postcode:v.postcode||'',parking:v.parking||'',meetingPoint:v.meeting_point||'',access:v.access||'',notes:v.notes||'',heroImageUrl:v.hero_image_url||'',parkingImageUrl:v.parking_image_url||'',siteMapUrl:v.site_map_url||''}});
   state.coachSupport=all[7]||[];
   state.players=all[8]||[];
+  state.participantCounts={};(all[9]||[]).forEach(function(r){if(r.session_id)state.participantCounts[r.session_id]=r.participants});
   state.week=iso(mondayOf(new Date()));render();
  }).catch(function(e){root.innerHTML='<div class="error"><b>Couldn’t load your Hub.</b><br>This is usually just a weak connection - check your signal and try again.<br>'+
   '<button class="primary-btn error-retry" data-action="retry-load">Try again</button>'+
