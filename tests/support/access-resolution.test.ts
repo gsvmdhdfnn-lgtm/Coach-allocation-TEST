@@ -7,9 +7,10 @@
 // itself fails here even if every HTTP-mocked e2e test still passes.
 import {
   buildScheduledCoachNameKeysBySessionId,
-  canonicalCoachNameKey,
   capabilitiesForCoach,
+  coachIdentityKeys,
   eligibleCoachIdsForSessionSnapshot,
+  legacyFallbackPerms,
   resolvePlayerAccess,
   roleCapabilitiesById,
   type CoachRoleCapabilities,
@@ -46,24 +47,33 @@ const COACH_GEORGE = { id: "coachGeorge", fields: { "Coach Name": "George", Acti
 const COACH_SARAH = { id: "coachSarah", fields: { "Coach Name": "Sarah", Active: true, "Coach Role": [ROLE_LEAD.id] } }; // Lead Coach, never scheduled on E01
 const COACH_OBS = { id: "coachObs", fields: { "Coach Name": "Olivia", Active: true, "Coach Role": [ROLE_OBSERVER.id] } };
 const COACH_INACTIVE = { id: "coachInactive", fields: { "Coach Name": "Ian", Active: false, "Coach Role": [ROLE_LEAD.id] } }; // scheduled+eligible role, but not an Active Coach record
+// Mirrors the real production coach: onboarded with an Airtable Coach Name
+// that doesn't match the schedule identity at all ("davidcole.surrey"),
+// resolved instead via their Supabase profiles.display_name ("David2" here,
+// kept distinct from COACH_DAVID's own name to avoid masking a bug).
+const COACH_DAVID_ALIAS = { id: "coachDavidAlias", fields: { "Coach Name": "davidcole.surrey", Active: true, "Coach Role": [ROLE_LEAD.id] } };
+const COACH_DAVID_ALIAS_DISPLAY_NAME = "David2";
 
-const coachRows = [COACH_DAVID, COACH_JOHN, COACH_GEORGE, COACH_SARAH, COACH_OBS, COACH_INACTIVE];
+const coachRows = [COACH_DAVID, COACH_JOHN, COACH_GEORGE, COACH_SARAH, COACH_OBS, COACH_INACTIVE, COACH_DAVID_ALIAS];
 
 const SESSION_A = { id: "sessA", fields: { "Session ID": "E01", "Session Name": "Monday Academy", Active: true } };
 const SESSION_B = { id: "sessB", fields: { "Session ID": "E02", "Session Name": "Wednesday Development Centre", Active: true } };
-const sessions = [SESSION_A, SESSION_B];
+const SESSION_C = { id: "sessC", fields: { "Session ID": "E03", "Session Name": "Friday Elite", Active: true } };
+const sessions = [SESSION_A, SESSION_B, SESSION_C];
 
 const PLAYER_1 = { id: "p1", fields: { "Player Name": "Archie", "Player ID": "PLY-1" } };
 const PLAYER_2 = { id: "p2", fields: { "Player Name": "Bella", "Player ID": "PLY-2" } };
 const players = [PLAYER_1, PLAYER_2];
 
-// David, John and George (via "Jack" -> "Jacko"-style alias is tested
-// separately below) are scheduled on E01 per the Sessions Google Sheet.
-// Inactive-coach "Ian" is also textually scheduled, to prove Active=false
-// still excludes him from the former-access eligibility snapshot.
+// David, John and George are scheduled on E01 per the Sessions Google
+// Sheet. Inactive-coach "Ian" is also textually scheduled, to prove
+// Active=false still excludes him from the former-access eligibility
+// snapshot. E03 is scheduled under "David2" - the schedule identity that
+// only COACH_DAVID_ALIAS's display_name (not its Coach Name) resolves to.
 const sessionsCsvRows = [
   { session_id: "E01", coaches: "David, John, George, Ian" },
   { session_id: "E02", coaches: "Sarah" },
+  { session_id: "E03", coaches: "David2" },
 ];
 
 const roleCapsById = roleCapabilitiesById(coachRoleRows);
@@ -72,13 +82,13 @@ const scheduledCoachNameKeysBySessionId = buildScheduledCoachNameKeysBySessionId
 const LINK_ACTIVE_1 = { id: "link1", fields: { Player: [PLAYER_1.id], Session: [SESSION_A.id], Status: "Active" } };
 const LINK_ACTIVE_2 = { id: "link2", fields: { Player: [PLAYER_2.id], Session: [SESSION_B.id], Status: "Active" } };
 
-function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>()) {
-  const coachNameKey = coach ? coach.fields["Coach Name"].trim().toLowerCase() : "";
+function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>(), displayName: string | null = null) {
+  const coachNameKeys = coachIdentityKeys(coach, displayName);
   const coachCapabilities = capabilitiesForCoach(coach, roleCapsById);
   return resolvePlayerAccess({
     role: "coach",
     coachRecordId: coach ? coach.id : null,
-    coachNameKey,
+    coachNameKeys,
     coachCapabilities,
     players,
     sessions,
@@ -131,7 +141,7 @@ function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>(
   const rows = resolvePlayerAccess({
     role: "management",
     coachRecordId: null,
-    coachNameKey: "",
+    coachNameKeys: new Set<string>(),
     coachCapabilities: null,
     players,
     sessions,
@@ -202,7 +212,7 @@ function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>(
   );
 }
 
-// --- 12. eligibleCoachIdsForSessionSnapshot (Part 5) ---------------------
+// --- 12. eligibleCoachIdsForSessionSnapshot ------------------------------
 {
   const eligible = eligibleCoachIdsForSessionSnapshot("E01", coachRows, scheduledCoachNameKeysBySessionId, roleCapsById);
   ck("Snapshot includes scheduled coaches with Can View Players=true (David, John)", eligible.includes(COACH_DAVID.id) && eligible.includes(COACH_JOHN.id), JSON.stringify(eligible));
@@ -210,14 +220,67 @@ function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>(
   ck("Snapshot excludes a coach not scheduled on this session at all (Sarah)", !eligible.includes(COACH_SARAH.id), JSON.stringify(eligible));
   ck("Snapshot excludes an inactive Coach record even if textually scheduled+eligible (Ian)", !eligible.includes(COACH_INACTIVE.id), JSON.stringify(eligible));
   ck("Snapshot is never the whole roster - Observer (not scheduled on E01) is excluded", !eligible.includes(COACH_OBS.id), JSON.stringify(eligible));
+
+  // Coaches-At-End snapshot for E03 only resolves COACH_DAVID_ALIAS when
+  // its Supabase display_name is supplied - proves eligibleCoachIdsFor-
+  // SessionSnapshot's optional displayNameByCoachId parameter actually
+  // participates in identity matching, not just resolvePlayerAccess().
+  const eligibleE03NoDisplayName = eligibleCoachIdsForSessionSnapshot("E03", coachRows, scheduledCoachNameKeysBySessionId, roleCapsById);
+  ck("Without a known display_name, a coach onboarded under an unrelated Coach Name doesn't match the schedule", !eligibleE03NoDisplayName.includes(COACH_DAVID_ALIAS.id), JSON.stringify(eligibleE03NoDisplayName));
+
+  const eligibleE03WithDisplayName = eligibleCoachIdsForSessionSnapshot("E03", coachRows, scheduledCoachNameKeysBySessionId, roleCapsById, { [COACH_DAVID_ALIAS.id]: COACH_DAVID_ALIAS_DISPLAY_NAME });
+  ck("With display_name resolved, the same coach is captured in the Coaches At End snapshot", eligibleE03WithDisplayName.includes(COACH_DAVID_ALIAS.id), JSON.stringify(eligibleE03WithDisplayName));
 }
 
-// --- 13. Coach name matching / aliases (Part 6) ---------------------------
+// --- 13. Coach identity resolution via display_name (real David scenario) ---
 {
-  ck("'Jack' on the schedule resolves to the same key as Coach Name 'Jacko'", canonicalCoachNameKey("Jack") === canonicalCoachNameKey("Jacko"), canonicalCoachNameKey("Jack"));
-  const withAlias = buildScheduledCoachNameKeysBySessionId([{ session_id: "E09", coaches: "Jack, David" }]);
-  ck("buildScheduledCoachNameKeysBySessionId resolves 'Jack' through the alias before storing it", withAlias["E09"].has(canonicalCoachNameKey("Jacko")) && !withAlias["E09"].has("jack"), JSON.stringify([...withAlias["E09"]]));
-  ck("Matching is case/whitespace-insensitive, not fragile string equality", canonicalCoachNameKey("  DAVID  ") === canonicalCoachNameKey("david"));
+  // Mirrors production: an Airtable Coach Name ("davidcole.surrey") that
+  // shares nothing with the schedule identity ("David2"), resolved only
+  // through the coach's Supabase profiles.display_name - never a
+  // hardcoded STATIC_COACH_ALIASES pair.
+  const keysNoDisplayName = coachIdentityKeys(COACH_DAVID_ALIAS, null);
+  ck("Without display_name, 'davidcole.surrey' does not resolve to the schedule name 'David2'", !keysNoDisplayName.has("david2"), JSON.stringify([...keysNoDisplayName]));
+
+  const keysWithDisplayName = coachIdentityKeys(COACH_DAVID_ALIAS, COACH_DAVID_ALIAS_DISPLAY_NAME);
+  ck("With display_name 'David2' supplied, coachIdentityKeys includes it alongside the Coach Name", keysWithDisplayName.has("david2") && keysWithDisplayName.has("davidcole.surrey"), JSON.stringify([...keysWithDisplayName]));
+
+  // End-to-end through resolvePlayerAccess(): scheduled on E03 as
+  // "David2", linked player only becomes visible once display_name is
+  // known to the resolver, exactly mirroring how resolveCaller() passes
+  // profiles.display_name through in the real Edge Functions.
+  const linkOnE03 = { id: "linkE03", fields: { Player: [PLAYER_1.id], Session: [SESSION_C.id], Status: "Active" } };
+  const rowsNoDisplayName = resolveFor(COACH_DAVID_ALIAS, [linkOnE03], new Set(), null);
+  ck("Coach with unrelated Coach Name + no display_name known -> not scheduled, invisible", !rowsNoDisplayName.some((r) => r.player_record_id === PLAYER_1.id), JSON.stringify(rowsNoDisplayName));
+
+  const rowsWithDisplayName = resolveFor(COACH_DAVID_ALIAS, [linkOnE03], new Set(), COACH_DAVID_ALIAS_DISPLAY_NAME);
+  const row = rowsWithDisplayName.find((r) => r.player_record_id === PLAYER_1.id);
+  ck("Same coach + display_name resolved -> matches the schedule identity, visible as 'permanent'", !!row && row.tier === "permanent", JSON.stringify(row));
+
+  ck("Matching is case/whitespace-insensitive, not fragile string equality", coachIdentityKeys(COACH_DAVID, "  DAVID  ").has(nameKeyOf("david")), true);
+}
+
+// tiny local helper - avoids importing nameKey just for this one assertion
+function nameKeyOf(s: string): string {
+  return s.trim().toLowerCase();
+}
+
+// --- 14. legacyFallbackPerms obeys the Coach Role capability model ------
+{
+  const learningCaps = capabilitiesForCoach(COACH_GEORGE, roleCapsById); // Learning Coach: Can View Players = false
+  ck("Learning Coach (Can View Players=false) -> legacyFallbackPerms returns null (no legacy access at all)", legacyFallbackPerms(learningCaps) === null, JSON.stringify(learningCaps));
+
+  const leadCaps = capabilitiesForCoach(COACH_DAVID, roleCapsById); // Lead Coach: all capabilities true
+  const leadLegacyPerms = legacyFallbackPerms(leadCaps);
+  ck("Lead Coach (Can View Players=true) -> legacyFallbackPerms returns a role-derived permissions object", !!leadLegacyPerms && leadLegacyPerms.can_edit_feedback === true && leadLegacyPerms.can_edit_idp === true && leadLegacyPerms.can_edit_attendance === true, JSON.stringify(leadLegacyPerms));
+
+  const supportCaps = capabilitiesForCoach(COACH_JOHN, roleCapsById); // Support Coach: view/feedback/attendance true, dev plans false
+  const supportLegacyPerms = legacyFallbackPerms(supportCaps);
+  ck("Support Coach's legacy perms mirror their role exactly (feedback/attendance true, dev plans false)", !!supportLegacyPerms && supportLegacyPerms.can_edit_feedback === true && supportLegacyPerms.can_edit_idp === false && supportLegacyPerms.can_edit_attendance === true, JSON.stringify(supportLegacyPerms));
+
+  ck("No capabilities at all (no linked/active Coach Role) -> legacyFallbackPerms returns null", legacyFallbackPerms(null) === null);
+
+  const noViewCaps: CoachRoleCapabilities = { active: true, canViewPlayers: false, canAddFeedback: true, canEditDevelopmentPlans: true, canRecordAttendance: true };
+  ck("Can View Players=false always returns null regardless of other capabilities being true", legacyFallbackPerms(noViewCaps) === null, JSON.stringify(noViewCaps));
 }
 
 console.log(R.map(([s, n, x]) => `${s}  ${n}${x ? "  -- " + x : ""}`).join("\n"));
