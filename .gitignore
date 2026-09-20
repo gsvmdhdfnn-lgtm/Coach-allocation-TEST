@@ -1,0 +1,6 @@
+node_modules/
+
+# debug screenshots written by tests/e2e/loaderrortest.js and toggletest.js
+# to their working directory when run
+/shot-load-error.png
+/shot-toggle-demo.png
