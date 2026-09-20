@@ -76,12 +76,13 @@ export function publicFeaturedTile(p){
 export function renderPublicHome(){
  document.getElementById('app').classList.add('auth-mode');
  var org=(window.HubContent&&HubContent.get()&&HubContent.get().organisation)||{};
+ var heroSubtitle=(window.HubContent&&HubContent.label('landing_subtitle',org.tagline))||'';
  var pages=state.publicPages||[];
  var featured=pages[0],rest=pages.slice(1);
  root.innerHTML='<div class="public-page">'+
   '<section class="public-hero">'+
    '<h1>'+esc(org.hub_name||'Josh Evans Hub')+'</h1>'+
-   (org.tagline?'<p class="public-hero-tag">'+esc(org.tagline)+'</p>':'')+
+   (heroSubtitle?'<p class="public-hero-tag">'+esc(heroSubtitle)+'</p>':'')+
    '<div class="public-hero-actions"><button class="secondary-btn" data-action="show-signin">Sign In</button><button class="primary-btn" data-action="show-signup">Register</button></div>'+
   '</section>'+
   (featured?'<section class="public-section">'+publicFeaturedTile(featured)+'</section>':'')+
