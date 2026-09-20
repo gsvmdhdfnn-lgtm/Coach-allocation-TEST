@@ -161,10 +161,78 @@ export function ageGroupField(page){
  */
 export function publicDetailInfoRow(page){
  var chips=[];
- if(page.category)chips.push('<span class="detail-info-chip">'+iconForCategory(page.category)+' '+esc(page.category)+'</span>');
+ /**
+  * "General" is Airtable's generic/uncategorised default, not a real
+  * programme label - never useful to a parent, on any organisation's
+  * Hub, so it's skipped by value rather than by page ID/title. Every
+  * other category (Trials, Academy, Tours, Events, Camps, ...) still
+  * shows its chip exactly as before.
+  */
+ if(page.category&&page.category.trim().toLowerCase()!=='general')chips.push('<span class="detail-info-chip">'+iconForCategory(page.category)+' '+esc(page.category)+'</span>');
  var ages=String(page.age_groups||'').split(',').map(function(s){return s.trim()}).filter(Boolean);
  if(ages.length)chips.push('<span class="detail-info-chip">'+esc(ages.join(' · '))+'</span>');
  return chips.length?'<div class="detail-info-row">'+chips.join('')+'</div>':'';
+}
+/**
+ * Price is deliberately simple, public-facing text only - no payment or
+ * finance logic. Price Note doubles as a prefix in front of a numeric
+ * Price ("From" -> "From £10 weekly") or, with no Price set, as
+ * standalone wording instead ("Trial / invitation pathway", "Contact
+ * us"). Both blank means no price line at all.
+ */
+export function offeringPriceLine(o){
+ var price=typeof o.price==='number'?o.price:null;
+ var note=String(o.price_note||'').trim();
+ if(price==null)return note?esc(note):'';
+ var amount=Number.isInteger(price)?String(price):price.toFixed(2);
+ var period=String(o.billing_period||'').trim();
+ return esc((note?note+' ':'')+'£'+amount+(period?' '+period.toLowerCase():''));
+}
+/**
+ * One informational, non-clickable "What We Offer" card - title and
+ * description are the only pieces guaranteed to be there; every other
+ * field (image, age/who for, day/time, venue, price) just doesn't render
+ * its row when blank, so a bare Title+Description offering still looks
+ * complete rather than leaving empty gaps.
+ */
+export function offeringCard(o){
+ var img=o.image_url?'<div class="offer-card-img" style="background-image:url(\''+esc(o.image_url)+'\')"></div>':'';
+ var facts=[];
+ if(o.age_for)facts.push('<span class="offer-fact">Ages: '+esc(o.age_for)+'</span>');
+ if(o.day_time)facts.push('<span class="offer-fact">When: '+esc(o.day_time)+'</span>');
+ if(o.venue)facts.push('<span class="offer-fact">Where: '+esc(o.venue)+'</span>');
+ var priceLine=offeringPriceLine(o);
+ if(priceLine)facts.push('<span class="offer-fact">Price: '+priceLine+'</span>');
+ return '<div class="card offer-card">'+img+
+  '<div class="offer-card-body">'+
+   '<h3>'+esc(o.title)+'</h3>'+
+   (o.description?'<p>'+esc(o.description)+'</p>':'')+
+   (facts.length?'<div class="offer-facts">'+facts.join('')+'</div>':'')+
+  '</div>'+
+ '</div>';
+}
+/**
+ * Shared, reusable "What We Offer" block - only rendered on a Public
+ * Page whose own "Show What We Offer" checkbox is ticked (see
+ * renderPublicDetail), never tied to a specific page ID/title. Cards are
+ * purely informational (not clickable) by design - the one action at the
+ * end reuses the existing Sign In/Register auth flows rather than
+ * inventing a new journey or any programme-specific booking here.
+ */
+export function whatWeOfferSection(){
+ var offers=state.whatWeOffer||[];
+ if(!offers.length)return '';
+ return '<section class="public-offer-section">'+
+  '<h2 class="public-offer-heading">What we offer</h2>'+
+  '<div class="offer-grid">'+offers.map(offeringCard).join('')+'</div>'+
+  '<div class="offer-auth-cta">'+
+   '<p>Sign in or register to view availability and booking options</p>'+
+   '<div class="offer-auth-cta-actions">'+
+    '<button class="secondary-btn" data-action="show-signin">Sign In</button>'+
+    '<button class="primary-btn" data-action="show-signup">Register</button>'+
+   '</div>'+
+  '</div>'+
+ '</section>';
 }
 
 export function renderPublicDetail(pageId,submitted){
@@ -198,7 +266,8 @@ export function renderPublicDetail(pageId,submitted){
     (e.description?'<p class="event-item-desc">'+esc(e.description)+'</p>':'')+
    '</div>';
   }).join('')+'</section>':'';
- var mainHtml='<section class="card detail-card">'+img+(page.body?'<p>'+esc(page.body)+'</p>':'')+'</section>'+publicDetailInfoRow(page);
+ var offerHtml=page.show_what_we_offer?whatWeOfferSection():'';
+ var mainHtml='<section class="card detail-card">'+img+(page.body?'<p>'+esc(page.body)+'</p>':'')+'</section>'+publicDetailInfoRow(page)+offerHtml;
  var sideHtml=[cta,eventsHtml,showForm?'<section class="card register-interest-card">'+formOrThanks+'</section>':''].filter(Boolean).join('');
  var bodyHtml=sideHtml?
   '<div class="public-detail-grid"><div class="public-detail-main">'+mainHtml+'</div><div class="public-detail-side">'+sideHtml+'</div></div>':
@@ -243,9 +312,11 @@ export function loadPublicHome(){
  root.innerHTML='<div class="loading">Loading…</div>';
  Promise.all([
   HubContent.load().catch(function(){return null}),
-  HubContent.loadPublicPages().catch(function(){return []})
+  HubContent.loadPublicPages().catch(function(){return []}),
+  HubContent.loadWhatWeOffer().catch(function(){return []})
  ]).then(function(all){
   state.publicPages=all[1]||[];
+  state.whatWeOffer=all[2]||[];
   renderPublicHome();
  });
 }

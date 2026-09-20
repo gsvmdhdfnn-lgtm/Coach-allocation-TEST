@@ -6,7 +6,7 @@ export let CFG=window.APP_CONFIG||{};
 
 export let DEMO=new URLSearchParams(location.search).get('demo')==='1';
 
-export let state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,expandedPlayerSession:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[],parentHub:null,parentHubLoaded:false};
+export let state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,expandedPlayerSession:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[],whatWeOffer:[],parentHub:null,parentHubLoaded:false};
 
 export let supabaseClient=(!DEMO&&window.supabase&&CFG.supabaseUrl&&CFG.supabasePublishableKey)?window.supabase.createClient(CFG.supabaseUrl,CFG.supabasePublishableKey):null;
 

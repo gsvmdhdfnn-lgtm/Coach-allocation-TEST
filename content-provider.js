@@ -309,6 +309,7 @@ window.HubContent={
   loadVenues:function(){return apiCollection('venues')},
   loadCoachSupport:function(){return apiCollection('coach-support')},
   loadPublicPages:function(){return apiCollection('public-pages')},
+  loadWhatWeOffer:function(){return apiCollection('what-we-offer')},
   loadPlayers:function(token){return apiCollection('players',token)},
   loadFeedback:function(){return apiCollection('feedback')},
   loadDevelopmentPlans:function(){return apiCollection('development-plans')},
