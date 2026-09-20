@@ -124,7 +124,7 @@ export function load(){
  HubContent.loadPlayers(token).catch(function(){return []})
 ])}).then(function(all){
 
-  var ss=all[0];state.sessions=ss.map(function(r){return {id:r.session_id,name:r.session_name,programme:r.programme,category:r.category,ageGroup:r.age_group,day:r.day,time:r.time,venue:r.venue,address:r.address,coaches:splitCoaches(r.coaches),client:r.client,hours:r.hours}});
+  var ss=all[0];state.sessions=ss.map(function(r){return {id:r.session_id,name:r.session_name,programme:r.programme,category:r.category,ageGroup:r.age_group,day:r.day,time:r.time,venue:r.venue,address:r.address,coaches:splitCoaches(r.coaches),client:r.client,termKey:r.term_key,hours:r.hours}});
   all[1].forEach(function(r){var d=parseDate(r.week_commencing);if(d)state.calendar[iso(mondayOf(d))]={label:r.label||'',weekNo:r.week_no||'',running:!/^(no|n|0|false)$/i.test(r.running||'yes')}});
   state.changes=all[2];state.terms=all[3];all[4].forEach(function(r){var d=parseDate(r.week_commencing);if(!d)return;var k=iso(mondayOf(d));state.themes[k]=state.themes[k]||{};state.themes[k][nameKey(r.category)]=r.theme||''});
   state.resources=all[5]||[];

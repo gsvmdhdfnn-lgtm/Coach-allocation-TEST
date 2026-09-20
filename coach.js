@@ -48,7 +48,7 @@ export function weekIsoFor(d){return iso(mondayOf(d))}
 
 export function calendarAllows(d){var c=state.calendar[weekIsoFor(d)];return !c||c.running!==false}
 
-export function schoolTermRows(s){var k=nameKey(s.client||s.venue||'');return (state.terms||[]).filter(function(r){return nameKey(r.school)===k})}
+export function schoolTermRows(s){var k=nameKey(s.termKey||s.client||s.venue||'');return (state.terms||[]).filter(function(r){return nameKey(r.school)===k})}
 
 export function termAllows(s,d){var rows=schoolTermRows(s);if(!rows.length)return true;var md=mondayOf(d);return rows.some(function(r){var a=parseDate(r.starts),b=parseDate(r.ends);return (!a||md>=mondayOf(a))&&(!b||md<=mondayOf(b))})}
 
