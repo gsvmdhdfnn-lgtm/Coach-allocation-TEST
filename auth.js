@@ -75,22 +75,36 @@ function settingValue(key){
  return (settings&&settings[key])||'';
 }
 /**
+ * Purely decorative (aria-hidden), so the link's own text still carries
+ * the meaning for screen readers - stroke uses currentColor so each icon
+ * follows the pill's normal/hover colour automatically, same as the text.
+ */
+var QUICK_LINK_ICONS={
+ website:'<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.3"/><path d="M1.7 8h12.6M8 1.7c1.8 1.8 2.8 4 2.8 6.3S9.8 12.5 8 14.3C6.2 12.5 5.2 10.3 5.2 8S6.2 3.5 8 1.7Z"/></svg>',
+ instagram:'<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" focusable="false"><rect x="1.5" y="1.5" width="13" height="13" rx="3.6"/><circle cx="8" cy="8" r="3.3"/><circle cx="11.6" cy="4.4" r=".9" fill="currentColor" stroke="none"/></svg>',
+ contact:'<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" focusable="false"><rect x="1.5" y="3" width="13" height="10" rx="1.8"/><path d="M2 4.2 8 9l6-4.8"/></svg>'
+};
+/**
  * Optional, organisation-agnostic quick actions shown alongside the hero.
  * Every entry is config-driven and simply doesn't render if left blank -
  * organisation.website already comes back from hub-content unused until
  * now; instagram_url/contact_url are Hub Settings, the same generic
  * key/value mechanism landing_subtitle already uses, so any organisation
  * can fill in the same optional keys (or none) with no code change here.
+ * icon just picks which generic glyph fits the label, not anything
+ * organisation-specific.
  */
 function publicQuickLinks(org){
  var links=[
-  {label:'Website',url:org.website||''},
-  {label:'Instagram',url:settingValue('instagram_url')},
-  {label:'Contact Us',url:settingValue('contact_url')}
+  {label:'Website',icon:'website',url:org.website||''},
+  {label:'Instagram',icon:'instagram',url:settingValue('instagram_url')},
+  {label:'Contact Us',icon:'contact',url:settingValue('contact_url')}
  ].filter(function(l){return l.url});
  if(!links.length)return '';
  return '<div class="public-quicklinks">'+links.map(function(l){
-  return '<a class="public-quicklink" href="'+esc(l.url)+'" target="_blank" rel="noopener">'+esc(l.label)+'</a>';
+  return '<a class="public-quicklink" href="'+esc(l.url)+'" target="_blank" rel="noopener">'+
+   '<span class="public-quicklink-icon">'+QUICK_LINK_ICONS[l.icon]+'</span>'+esc(l.label)+
+   '</a>';
  }).join('')+'</div>';
 }
 /**
