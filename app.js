@@ -3,7 +3,7 @@
 'use strict';
 var CFG=window.APP_CONFIG||{};
 var DEMO=new URLSearchParams(location.search).get('demo')==='1';
-var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,expandedPlayerSession:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[]};
+var state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,expandedPlayerSession:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[],parentHub:null,parentHubLoaded:false};
 var supabaseClient=(!DEMO&&window.supabase&&CFG.supabaseUrl&&CFG.supabasePublishableKey)?window.supabase.createClient(CFG.supabaseUrl,CFG.supabasePublishableKey):null;
 var root=document.getElementById('screen-root');
 var sheet=document.getElementById('sheet'),sheetContent=document.getElementById('sheet-content');
@@ -187,7 +187,7 @@ function ensureTabShell(){
 function renderIntoPane(name,fn){var saved=root;root=panes[name];fn();root=saved}
 function reRenderSchedule(){renderIntoPane('schedule',renderSchedule)}
 function reRenderMyPlayers(){renderIntoPane('players',renderMyPlayers)}
-function render(){document.getElementById('app').classList.remove('auth-mode');setNav(state.screen);if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();else if(state.screen==='session-requests')renderSessionRequests();else if(state.screen==='player-migration')renderPlayerMigration();syncBackButton()}
+function render(){document.getElementById('app').classList.remove('auth-mode');document.getElementById('app').classList.toggle('role-parent',state.role==='parent');setNav(state.screen);if(state.role==='parent'){renderParentHub();syncBackButton();return}if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();else if(state.screen==='session-requests')renderSessionRequests();else if(state.screen==='player-migration')renderPlayerMigration();else if(state.screen==='parent-claims')renderParentClaims();syncBackButton()}
 function renderHome(){
  var now=new Date(),n=nextOccurrence(now),today=todaysOccurrences(now),ns=n&&n.session;
  root.innerHTML='<div class="coach-home">'+
@@ -317,7 +317,7 @@ function openProfileSheet(){
  */
 function openMoreSheet(){
  var rows=[['●','My Profile',(state.me&&state.me.email)||'Update your details','','profile'],['◉','Notifications','Manage alerts','','coming-soon'],['£','Management & Financials','Restricted access','management',''],['●','Feedback','Share ideas or report an issue','','coming-soon'],['☎','Contact the Office','Get in touch','','coming-soon'],['↪','Log Out','','','logout']];
- if(state.role==='management')rows.splice(3,0,['✓','Coach Management','Approve pending staff sign-ups','coach-management',''],['◉','Session Requests','Approve player session requests','session-requests',''],['▤','Player Migration','Move existing players onto sessions','player-migration','']);
+ if(state.role==='management')rows.splice(3,0,['✓','Coach Management','Approve pending staff sign-ups','coach-management',''],['◉','Session Requests','Approve player session requests','session-requests',''],['▤','Player Migration','Move existing players onto sessions','player-migration',''],['●','Parent Claims','Approve parents’ claims to their child','parent-claims','']);
  sheet.hidden=false;
  sheetContent.innerHTML='<div class="calendar-sheet"><h3>More</h3><div class="card more-list" style="margin-top:6px">'+rows.map(function(r){return '<button class="more-row" '+(r[3]?'data-nav="'+r[3]+'"':'')+(r[4]?' data-action="'+r[4]+'"':'')+'><span class="support-icon">'+r[0]+'</span><span><b>'+r[1]+'</b><small>'+esc(r[2])+'</small></span><span>›</span></button>'}).join('')+'</div></div>';
 }
@@ -631,6 +631,189 @@ function commitMigration(btn){
   btn.disabled=false;btn.textContent=originalText;
  });
 }
+/**
+ * Parent Hub: children (Verified claims), pending/rejected claims (zero
+ * access, surfaced so a parent can see where a claim stands) and the
+ * Request a session action, which reuses Phase 1's Player Session
+ * Requests system untouched - the management Session Requests screen
+ * picks these up with no changes. Claiming a child never links a Player
+ * directly; only management's approval (Management Parent Claims screen)
+ * sets a link to Verified.
+ */
+function parentHubUrl(){return (CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/parent-hub')}
+function renderParentHub(){
+ state.screen='parent-home';
+ if(!state.parentHubLoaded){root.innerHTML='<div class="loading">Loading your hub…</div>';loadParentHub();return}
+ var d=state.parentHub||{},children=d.children||[],pending=d.pending_claims||[];
+ root.innerHTML='<div class="page-title"><h1>'+esc(hubName())+'</h1><p>Your children and session requests.</p></div>'+
+  '<section class="card parent-children-list">'+
+   (children.length?children.map(parentChildRowHtml).join(''):'<div class="schedule-empty">No children linked to your account yet. Use Claim a Child below to get started.</div>')+
+  '</section>'+
+  (pending.length?'<div class="page-title" style="margin-top:18px"><h2 style="font-size:16px;margin:0">Pending claims</h2></div><section class="card parent-pending-list">'+pending.map(parentClaimRowHtml).join('')+'</section>':'')+
+  '<button class="primary-btn" data-action="open-claim-child" style="margin-top:16px">+ Claim a Child</button>';
+}
+function loadParentHub(){
+ withAccessToken().then(function(token){
+  return fetch(parentHubUrl()+'/me',{headers:{Authorization:'Bearer '+token}});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not load your hub.');return body});
+ }).then(function(body){
+  state.parentHub=body;state.parentHubLoaded=true;
+  if(state.role==='parent')renderParentHub();
+ }).catch(function(e){
+  root.innerHTML='<div class="error"><b>Couldn’t load your hub.</b><br>'+esc(e.message||'')+'<br><button class="primary-btn error-retry" data-action="retry-parent-hub">Try again</button></div>';
+ });
+}
+function parentChildRowHtml(c){
+ var avatar=c.photo_url?'<img src="'+esc(c.photo_url)+'" alt="">':'<span>'+esc(playerInitials(c.name))+'</span>';
+ return '<div class="player-row"><span class="player-avatar'+(c.photo_url?' has-photo':'')+'">'+avatar+'</span><span><b>'+esc(c.name)+'</b>'+(c.relationship?'<small class="player-tier">'+esc(c.relationship)+'</small>':'')+'</span><button class="secondary-btn" data-action="open-request-session" data-player-id="'+esc(c.player_record_id)+'" data-player-name="'+esc(c.name)+'">Request a session</button></div>';
+}
+function parentClaimStatusLabel(status){return status==='Needs Review'?'Needs review':status==='Rejected'?'Rejected':'Pending'}
+function parentClaimRowHtml(c){
+ var cls=c.status==='Rejected'?'is-former':'is-cover';
+ return '<div class="request-row"><div><b>'+esc(c.player_name||'Claim submitted')+'</b><small class="player-tier '+cls+'">'+esc(parentClaimStatusLabel(c.status))+'</small></div></div>';
+}
+function openClaimChildSheet(){
+ sheet.hidden=false;
+ sheetContent.innerHTML='<div class="calendar-sheet"><h3>Claim a Child</h3><p>We’ll match this to their player record. Management will confirm it before you get access.</p>'+
+  '<div class="parent-form">'+
+  '<label class="auth-field">Child’s full name<input id="claim-name" autocomplete="off"></label>'+
+  '<label class="auth-field">Date of birth<input id="claim-dob" type="date"></label>'+
+  '<label class="auth-field">Relationship<select id="claim-relationship"><option value="Parent">Parent</option><option value="Guardian">Guardian</option><option value="Grandparent">Grandparent</option><option value="Carer">Carer</option><option value="Other">Other</option></select></label>'+
+  '<p class="auth-error" id="claim-error" hidden></p>'+
+  '<button class="primary-btn" data-action="submit-claim">Submit claim</button>'+
+  '</div></div>';
+}
+function submitClaim(btn){
+ var nameEl=document.getElementById('claim-name'),dobEl=document.getElementById('claim-dob'),relEl=document.getElementById('claim-relationship'),errEl=document.getElementById('claim-error');
+ var name=(nameEl&&nameEl.value||'').trim(),dob=(dobEl&&dobEl.value||'').trim(),relationship=relEl&&relEl.value||'Parent';
+ if(!name||!dob){if(errEl){errEl.textContent='Please add your child’s name and date of birth.';errEl.hidden=false}return}
+ if(errEl)errEl.hidden=true;
+ if(btn){btn.disabled=true;btn.textContent='Submitting…'}
+ withAccessToken().then(function(token){
+  return fetch(parentHubUrl()+'/claims',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({player_name:name,date_of_birth:dob,relationship:relationship})});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not submit this claim.');return body});
+ }).then(function(){
+  closeSheet();toast('Claim submitted — management will confirm it');
+  state.parentHubLoaded=false;loadParentHub();
+ }).catch(function(e){
+  if(btn){btn.disabled=false;btn.textContent='Submit claim'}
+  if(errEl){errEl.textContent=e.message||'Could not submit this claim.';errEl.hidden=false}
+ });
+}
+function openRequestSessionSheet(playerId,playerName){
+ var sessions=(state.parentHub&&state.parentHub.available_sessions)||[];
+ var options=sessions.map(function(s){return '<option value="'+esc(s.session_record_id)+'">'+esc(s.session_name)+'</option>'}).join('');
+ sheet.hidden=false;
+ sheetContent.innerHTML='<div class="calendar-sheet"><h3>Request a session</h3><p>For '+esc(playerName)+'. Management will approve, reject or amend this request.</p>'+
+  '<div class="parent-form">'+
+  (sessions.length?'<label class="auth-field">Session<select id="request-session-select">'+options+'</select></label>':'<p class="auth-sub">No sessions are available to request right now.</p>')+
+  '<p class="auth-error" id="request-session-error" hidden></p>'+
+  (sessions.length?'<button class="primary-btn" data-action="submit-session-request" data-player-id="'+esc(playerId)+'">Request session</button>':'')+
+  '</div></div>';
+}
+function submitSessionRequest(playerId,btn){
+ var select=document.getElementById('request-session-select'),errEl=document.getElementById('request-session-error');
+ var sessionId=select?select.value:'';
+ if(!sessionId){if(errEl){errEl.textContent='Please choose a session.';errEl.hidden=false}return}
+ if(errEl)errEl.hidden=true;
+ if(btn){btn.disabled=true;btn.textContent='Sending…'}
+ withAccessToken().then(function(token){
+  return fetch(parentHubUrl()+'/session-requests',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({player_record_id:playerId,session_record_id:sessionId})});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not send this request.');return body});
+ }).then(function(){
+  closeSheet();toast('Session request sent — waiting for approval');
+ }).catch(function(e){
+  if(btn){btn.disabled=false;btn.textContent='Request session'}
+  if(errEl){errEl.textContent=e.message||'Could not send this request.';errEl.hidden=false}
+ });
+}
+/**
+ * Management-only: approve, reject or (for a zero/multi-match claim) pick
+ * the right player before approving a parent's claim to a child. Mirrors
+ * the Coach Management / Session Requests screens exactly. Nothing here
+ * ever grants access itself - approving just sets the Parent-Player
+ * Links row to Verified, which is the only thing the parent-hub /me
+ * endpoint (and the Player Session Requests it feeds) checks.
+ */
+function renderParentClaims(){
+ state.screen='parent-claims';setNav('parent-claims');
+ if(state.role!=='management'){root.innerHTML='<section class="locked"><div class="page-title"><h1>Parent Claims</h1><p>Restricted to management accounts.</p></div><div class="card" style="padding:16px;color:var(--ink);font-size:12px">Your account isn’t set up for management access.</div></section>';return}
+ root.innerHTML='<section class="locked"><div class="page-title"><h1>Parent Claims</h1><p>Approve or reject a parent’s claim to their child. A claim with no clear match needs a player picked before it can be approved.</p></div><div id="parent-claims-list"><div class="loading">Loading claims…</div></div></section>';
+ loadParentClaims();
+}
+function loadParentClaims(){
+ var listEl=document.getElementById('parent-claims-list');
+ withAccessToken().then(function(token){
+  return fetch(parentHubUrl()+'/claims/pending',{headers:{Authorization:'Bearer '+token}});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not load parent claims.');return body});
+ }).then(function(body){
+  if(document.getElementById('parent-claims-list'))renderParentClaimsList(body.pending||[],body.players||[]);
+ }).catch(function(e){
+  if(listEl)listEl.innerHTML='<div class="error"><b>Couldn’t load parent claims.</b><br>'+esc(e.message||'')+'</div>';
+ });
+}
+function renderParentClaimsList(pending,players){
+ var listEl=document.getElementById('parent-claims-list');
+ if(!listEl)return;
+ if(!pending.length){listEl.innerHTML='<div class="schedule-empty">No parent claims waiting for review.</div>';return}
+ var options='<option value="">Choose a player…</option>'+players.map(function(p){return '<option value="'+esc(p.player_record_id)+'">'+esc(p.player_name)+'</option>'}).join('');
+ listEl.innerHTML='<div class="card request-list">'+pending.map(function(c){
+  var needsPick=!c.player_record_id;
+  return '<div class="request-row" data-claim-row="'+esc(c.link_id)+'">'+
+   '<div><b>'+esc(c.player_name||'Claim needs a player match')+'</b><small>'+esc(c.parent_name||'')+(c.parent_email?' · '+c.parent_email:'')+'</small><small class="player-tier '+(c.status==='Needs Review'?'is-cover':'')+'">'+esc(c.status)+(c.relationship?' · '+c.relationship:'')+'</small>'+(c.notes?'<small>'+esc(c.notes)+'</small>':'')+'<small class="request-error" hidden></small></div>'+
+   (needsPick?'<select class="request-session-select claim-player-select">'+options+'</select>':'')+
+   '<div class="request-actions">'+
+    '<button class="primary-btn approve-btn" data-action="approve-parent-claim" data-link-id="'+esc(c.link_id)+'">Approve</button>'+
+    '<button class="secondary-btn reject-btn" data-action="reject-parent-claim" data-link-id="'+esc(c.link_id)+'">Reject</button>'+
+   '</div>'+
+  '</div>';
+ }).join('')+'</div>';
+}
+function approveParentClaim(linkId,btn){
+ var row=btn.closest('.request-row'),errEl=row&&row.querySelector('.request-error'),select=row&&row.querySelector('.claim-player-select');
+ if(select&&!select.value){if(errEl){errEl.hidden=false;errEl.textContent='Pick a player before approving.'}return}
+ row.querySelectorAll('button').forEach(function(b){b.disabled=true});
+ btn.textContent='Approving…';
+ if(errEl){errEl.hidden=true;errEl.textContent=''}
+ withAccessToken().then(function(token){
+  return fetch(parentHubUrl()+'/claims/'+encodeURIComponent(linkId)+'/approve',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify(select?{player_record_id:select.value}:{})});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not approve this claim.');return body});
+ }).then(function(){
+  toast('Claim approved');
+  if(row)row.remove();
+  var list=document.querySelector('#parent-claims-list .request-list');
+  if(list&&!list.children.length)renderParentClaimsList([],[]);
+ }).catch(function(e){
+  row.querySelectorAll('button').forEach(function(b){b.disabled=false});
+  btn.textContent='Approve';
+  if(errEl){errEl.hidden=false;errEl.textContent=e.message||'Could not approve this claim.'}
+ });
+}
+function rejectParentClaim(linkId,btn){
+ var row=btn.closest('.request-row'),errEl=row&&row.querySelector('.request-error');
+ row.querySelectorAll('button').forEach(function(b){b.disabled=true});
+ btn.textContent='Rejecting…';
+ if(errEl){errEl.hidden=true;errEl.textContent=''}
+ withAccessToken().then(function(token){
+  return fetch(parentHubUrl()+'/claims/'+encodeURIComponent(linkId)+'/reject',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({})});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not reject this claim.');return body});
+ }).then(function(){
+  toast('Claim rejected');
+  if(row)row.remove();
+  var list=document.querySelector('#parent-claims-list .request-list');
+  if(list&&!list.children.length)renderParentClaimsList([],[]);
+ }).catch(function(e){
+  row.querySelectorAll('button').forEach(function(b){b.disabled=false});
+  btn.textContent='Reject';
+  if(errEl){errEl.hidden=false;errEl.textContent=e.message||'Could not reject this claim.'}
+ });
+}
 function b64(b){var bin=atob(String(b).replace(/\s+/g,'')),o=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)o[i]=bin.charCodeAt(i);return o}
 function unlock(pw){if(DEMO){state.unlocked=true;renderManagementDashboard();return}var f=CFG.financials;if(!f||!f.ciphertext){document.getElementById('pw-error').textContent='Financial connection is not configured.';return}crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']).then(function(base){return crypto.subtle.deriveKey({name:'PBKDF2',salt:b64(f.salt),iterations:f.iterations||250000,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['decrypt'])}).then(function(key){return crypto.subtle.decrypt({name:'AES-GCM',iv:b64(f.iv)},key,b64(f.ciphertext))}).then(function(buf){return fetchCsv(new TextDecoder().decode(buf).trim())}).then(function(rows){state.financials={};rows.forEach(function(r){if(r.session_id)state.financials[r.session_id]=r});state.unlocked=true;renderManagementDashboard()}).catch(function(){document.getElementById('pw-error').textContent='Incorrect password.'})}
 function icsStamp(d){return d.getFullYear()+pad2(d.getMonth()+1)+pad2(d.getDate())+'T'+pad2(d.getHours())+pad2(d.getMinutes())+'00'}
@@ -897,10 +1080,10 @@ function init(){
   if(session)onSignedIn(session);else loadPublicHome()
  });
  supabaseClient.auth.onAuthStateChange(function(event){
-  if(event==='SIGNED_OUT'){state.me=null;state.role='coach';state.screen='home';state.authScreen='login';state.authEmail='';state.authError='';state.authAccountType='staff';loadPublicHome()}
+  if(event==='SIGNED_OUT'){state.me=null;state.role='coach';state.screen='home';state.authScreen='login';state.authEmail='';state.authError='';state.authAccountType='staff';state.parentHub=null;state.parentHubLoaded=false;loadPublicHome()}
  });
 }
-document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;closeSheet();navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;reRenderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;reRenderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;reRenderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);reRenderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);reRenderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='open-more'){openMoreSheet();return}if(act==='approve-coach'){approveCoach(a.dataset.userId,a);return}if(act==='toggle-player-session'){state.expandedPlayerSession=state.expandedPlayerSession===a.dataset.key?null:a.dataset.key;reRenderMyPlayers();return}if(act==='approve-session-request'){approveSessionRequest(a.dataset.requestId,a);return}if(act==='reject-session-request'){rejectSessionRequest(a.dataset.requestId,a);return}if(act==='sync-sessions'){syncSessions(a);return}if(act==='end-player-session'){endPlayerSession(a.dataset.linkId,a);return}if(act==='migrate-commit'){commitMigration(a);return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='show-signin'){state.authScreen='login';state.authError='';renderAuth();return}if(act==='show-signup'){state.authScreen='signup';state.authError='';renderAuth();return}if(act==='show-public'){if(state.publicPages&&state.publicPages.length)renderPublicHome();else loadPublicHome();return}if(act==='public-detail'){renderPublicDetail(a.dataset.page);return}if(act==='register-interest-submit'){submitRegisterInterest(a.dataset.page);return}if(act==='logout'){closeSheet();if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}if(act==='retry-load'){load();return}});
+document.addEventListener('click',function(e){var nav=e.target.closest('[data-nav]');if(nav){if(document.getElementById('app').classList.contains('auth-mode'))return;closeSheet();navigateTo(nav.dataset.nav);return}var ss=e.target.closest('[data-session]');if(ss&&!ss.dataset.action){pushNavState();renderSession(ss.dataset.session,ss.dataset.date);syncBackButton();return}var a=e.target.closest('[data-action]');if(!a)return;var act=a.dataset.action;if(act==='app-back'){goBack();return}if(act==='venue-detail'){pushNavState();state.selectedVenue=a.dataset.venue;renderVenueDetail(a.dataset.venue);syncBackButton();return}if(act==='unlock')unlock(document.getElementById('pw').value);if(act==='schedule-view'){state.scheduleView=a.dataset.view;state.expandedDay=null;reRenderSchedule()}if(act==='week-shift'){state.scheduleWeekOffset=Math.max(0,Math.min(3,state.scheduleWeekOffset+(+a.dataset.dir||0)));state.expandedDay=null;reRenderSchedule()}if(act==='toggle-day'){state.expandedDay=state.expandedDay===a.dataset.date?null:a.dataset.date;reRenderSchedule()}if(act==='select-date'){state.calendarSelected=parseDate(a.dataset.date);reRenderSchedule()}if(act==='month-shift'){var c=state.calendarCursor||new Date();state.calendarCursor=new Date(c.getFullYear(),c.getMonth()+(+a.dataset.dir||0),1,12);reRenderSchedule()}if(act==='calendar-options')openCalendarOptions(a.dataset.scope,a.dataset.date);if(act==='calendar-session'){var o=occurrenceByIdDate(a.dataset.session,a.dataset.date);if(o)makeCalendarFile([o],o.session.name)}if(act==='calendar-download'){var opts=sheetContent._calendarOptions||[],o=opts[+a.dataset.option];if(o){makeCalendarFile(o.list,o.file);closeSheet()}}if(act==='support-detail')openSupportDetail(a.dataset.support);if(act==='profile'){openProfileSheet();return}if(act==='open-more'){openMoreSheet();return}if(act==='approve-coach'){approveCoach(a.dataset.userId,a);return}if(act==='toggle-player-session'){state.expandedPlayerSession=state.expandedPlayerSession===a.dataset.key?null:a.dataset.key;reRenderMyPlayers();return}if(act==='approve-session-request'){approveSessionRequest(a.dataset.requestId,a);return}if(act==='reject-session-request'){rejectSessionRequest(a.dataset.requestId,a);return}if(act==='sync-sessions'){syncSessions(a);return}if(act==='end-player-session'){endPlayerSession(a.dataset.linkId,a);return}if(act==='migrate-commit'){commitMigration(a);return}if(act==='open-claim-child'){openClaimChildSheet();return}if(act==='submit-claim'){submitClaim(a);return}if(act==='open-request-session'){openRequestSessionSheet(a.dataset.playerId,a.dataset.playerName);return}if(act==='submit-session-request'){submitSessionRequest(a.dataset.playerId,a);return}if(act==='retry-parent-hub'){state.parentHubLoaded=false;renderParentHub();return}if(act==='approve-parent-claim'){approveParentClaim(a.dataset.linkId,a);return}if(act==='reject-parent-claim'){rejectParentClaim(a.dataset.linkId,a);return}if(act==='coming-soon'){toast('Coming soon');return}if(act==='close-sheet')closeSheet();if(act==='theme')toast('Theme is pulled from the Themes sheet');if(act==='auth-submit'){authSubmit();return}if(act==='auth-switch'){state.authScreen=state.authScreen==='signup'?'login':'signup';state.authError='';renderAuth();return}if(act==='auth-account-type'){state.authAccountType=a.dataset.type==='parent'?'parent':'staff';renderAuth();return}if(act==='show-signin'){state.authScreen='login';state.authError='';renderAuth();return}if(act==='show-signup'){state.authScreen='signup';state.authError='';renderAuth();return}if(act==='show-public'){if(state.publicPages&&state.publicPages.length)renderPublicHome();else loadPublicHome();return}if(act==='public-detail'){renderPublicDetail(a.dataset.page);return}if(act==='register-interest-submit'){submitRegisterInterest(a.dataset.page);return}if(act==='logout'){closeSheet();if(DEMO||!supabaseClient){location.reload();return}supabaseClient.auth.signOut();return}if(act==='retry-load'){load();return}});
 document.addEventListener('input',function(e){if(e.target&&e.target.id==='venue-search'){state.venueQuery=e.target.value;renderVenues();var i=document.getElementById('venue-search');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}}});
 document.addEventListener('keydown',function(e){if(e.key==='Enter'&&e.target&&(e.target.id==='auth-email'||e.target.id==='auth-password')){e.preventDefault();authSubmit()}});
 init();
