@@ -98,6 +98,32 @@ export function greeting(){var h=new Date().getHours();return h<12?'Good morning
  */
 function homeStatusChip(s,d){return coachAssignment(s,d)==='cover'?'<span class="home-status-chip">Cover</span>':''}
 
+/**
+ * PRESET-only colour configurability for the 4 Coach Home quick-action
+ * cards and the Coach Support tagline (see the matching CSS block in
+ * styles.css, `[data-tint]`). Never a free hex field - a fixed preset
+ * family (Blue/Lime/Green/Navy/Cream/Neutral) keeps every combination
+ * accessible and on-brand, and keeps this safely white-labellable rather
+ * than baking Josh Evans' own colours into the markup.
+ *
+ * Driven entirely by data: each key reads its preset name from Hub
+ * Settings (via HubContent.label, the same mechanism coach_support_title
+ * etc. already use) with today's Josh Evans defaults as the fallback, so
+ * a future Management Hub can repoint any of these to a different preset
+ * from Airtable alone - no redeploy, no UI built for it yet on purpose.
+ */
+var TINT_PRESETS={blue:1,lime:1,green:1,navy:1,cream:1,neutral:1};
+function tintPreset(key,fallback){
+ var raw=(window.HubContent&&HubContent.label(key,fallback))||fallback;
+ var norm=String(raw||'').trim().toLowerCase();
+ return TINT_PRESETS[norm]?norm:fallback;
+}
+function homeCardTint(action){
+ var fallback={schedule:'blue',resources:'lime',venues:'green',support:'navy'}[action]||'neutral';
+ return tintPreset('home_card_colour_'+action,fallback);
+}
+function supportTaglineTint(){return tintPreset('coach_support_tagline_colour','navy')}
+
 export function renderHome(){
  var now=new Date(),n=nextOccurrence(now),today=todaysOccurrences(now),ns=n&&n.session;
  var nextAgeChip=ns&&ns.ageGroup?'<span class="next-home-tag">'+esc(ns.ageGroup)+'</span>':'';
@@ -109,7 +135,7 @@ export function renderHome(){
  changesWarningBanner()+
  (n?'<section class="next-home-card" data-session="'+esc(ns.id)+'" data-date="'+iso(n.date)+'"><div class="next-home-head"><span>NEXT SESSION</span>'+(nextStatusChip?'<span class="home-status-chip is-header">Cover</span>':'')+'<span class="next-arrow">›</span></div><div class="next-home-body">'+nextAgeChip+'<h1>'+esc(ns.name)+'</h1><div class="home-meta"><span>'+icons.clock+'</span><b>'+esc(ns.time)+'</b></div><div class="home-meta"><span>'+icons.pin+'</span><span>'+esc(ns.venue)+'</span></div>'+(participantCount(ns)!=null?'<div class="home-meta"><span>'+icons.users+'</span><span>'+esc(participantCountText(ns))+'</span></div>':'')+'<span class="countdown-pill" id="next-countdown" data-start="'+n.start.toISOString()+'" data-end="'+n.end.toISOString()+'">'+esc(countdownText(n,now))+'</span></div></section>':'<section class="next-home-card empty"><div class="next-home-head"><span>NEXT SESSION</span></div><div class="next-home-body"><h1>No upcoming sessions</h1></div></section>')+
  '<section class="today-home"><div class="home-section-title"><h2>TODAY’S SESSIONS</h2><button data-nav="schedule">View all</button></div><div class="today-home-list">'+(today.length?today.map(function(o,i){var s=o.session,pc=participantCountText(s);return '<button class="today-home-row" data-session="'+esc(s.id)+'" data-date="'+iso(o.date)+'"><span class="today-line"></span><span class="today-time">'+esc(s.time.split(/\s*[-–—]\s*/)[0])+'</span><span class="today-copy"><b>'+esc(s.name)+homeStatusChip(s,o.date)+'</b><small>'+esc(s.venue)+(pc?' · '+esc(pc):'')+'</small></span><span class="chev">›</span></button>'}).join(''):todayEmpty)+'</div></section>'+
- '<section class="home-shortcuts"><button data-nav="schedule"><span class="qicon-chip">▣</span><b>My Schedule</b></button><button data-nav="resources"><span class="qicon-chip">▤</span><b>Library</b></button><button data-nav="venues"><span class="qicon-chip">⌖</span><b>Venues</b></button><button data-nav="support"><span class="qicon-chip">▧</span><b>Coach Support</b></button></section>'+
+ '<section class="home-shortcuts"><button data-nav="schedule" data-tint="'+homeCardTint('schedule')+'"><span class="qicon-chip">▣</span><b>My Schedule</b></button><button data-nav="resources" data-tint="'+homeCardTint('resources')+'"><span class="qicon-chip">▤</span><b>Library</b></button><button data-nav="venues" data-tint="'+homeCardTint('venues')+'"><span class="qicon-chip">⌖</span><b>Venues</b></button><button data-nav="support" data-tint="'+homeCardTint('support')+'"><span class="qicon-chip">▧</span><b>Coach Support</b></button></section>'+
  '</div>';
  startCountdownTicker();
 }
@@ -244,7 +270,7 @@ export function renderSupport(){
    var gradient=['','alt','warm'][i%3];
    return '<button class="card resource-card" data-action="support-detail" data-support="'+esc(s.support_id)+'"><div class="resource-img icon-only '+gradient+'">'+icons.doc+'</div><div class="resource-body">'+(s.section?'<span class="pill blue">'+esc(s.section)+'</span>':'')+'<h3>'+esc(s.title)+'</h3></div></button>';
   }).join('')+'</div>':'<div class="empty-state"><span class="empty-state-icon">'+icons.doc+'</span><b>Nothing here yet</b><p>Guidance and documents will appear here once added.</p></div>')+
- (org.tagline?'<div class="quote-card card" style="margin-top:14px"><strong>“'+esc(org.tagline)+'”</strong></div>':'');
+ (org.tagline?'<div class="quote-card card" data-tint="'+supportTaglineTint()+'" style="margin-top:14px"><strong>“'+esc(org.tagline)+'”</strong></div>':'');
 }
 
 export function openSupportDetail(id){
@@ -275,8 +301,14 @@ export function playerRowHtml(p){
   * inline) so a future session-role badge (Lead Coach/Coach/Learning
   * Coach) can sit alongside the existing tier badge later with no
   * structural change here - just another item added to this same row.
+  *
+  * The row itself carries the player-detail action (Player Hub -> Player
+  * Profile, never straight to a feedback form); the End button keeps its
+  * own data-action nested inside it, so main.js's closest()-based click
+  * delegation resolves a tap on End to itself first, before it would ever
+  * reach the row's own action.
   */
- return '<div class="player-row" data-player-row="'+esc(p.link_record_id||'')+'"><span class="player-avatar'+(p.photo_url?' has-photo':'')+'">'+avatar+'</span><span class="player-row-info"><b>'+esc(p.name)+'</b><span class="player-row-badges">'+playerTierBadge(p)+'</span></span>'+endBtn+'</div>';
+ return '<div class="player-row" data-action="player-detail" data-player="'+esc(p.player_record_id||'')+'" data-session-record="'+esc(p.session_record_id||'')+'"><span class="player-avatar'+(p.photo_url?' has-photo':'')+'">'+avatar+'</span><span class="player-row-info"><b>'+esc(p.name)+'</b><span class="player-row-badges">'+playerTierBadge(p)+'</span></span>'+endBtn+'<span class="chev">›</span></div>';
 }
 /**
  * Grouped by session, not one flat list - each row from the players API

@@ -97,6 +97,11 @@ async function noOverflow(page, label) {
     ck('Main nav reads "Library", not "Resources"', (await page.locator('.main-nav [data-nav="resources"]').textContent()).trim() === 'Library');
     ck('Main nav reads "Player Hub", not "My Players"', (await page.locator('.main-nav [data-nav="players"]').textContent()).trim() === 'Player Hub');
 
+    // Part A: quick-action cards + Coach Support tagline carry a data-driven
+    // colour preset (defaults, since no Hub Settings override is mocked here).
+    const tints = await page.locator('.home-shortcuts button').evaluateAll(els => els.map(e => e.dataset.tint));
+    ck('Quick-action cards default to Blue/Lime/Green/Navy presets', JSON.stringify(tints) === JSON.stringify(['blue', 'lime', 'green', 'navy']), tints.join(','));
+
     // Next Session: age group chip, Cover status chip, participant count all present together
     ck('Next Session shows the age group chip', (await page.locator('.next-home-tag').textContent()) === 'U9/10');
     ck('Next Session header shows a Cover status chip', (await page.locator('.home-status-chip.is-header').textContent()) === 'Cover');
@@ -137,6 +142,7 @@ async function noOverflow(page, label) {
     await page.waitForSelector('.page-title h1');
     ck('Empty Coach Support shows the branded empty state, not a bare grey box', await page.locator('.empty-state').count() === 1);
     ck('Empty Coach Support empty-state text does not name Airtable', !/airtable/i.test(await page.locator('.empty-state').textContent()));
+    ck('Coach Support tagline defaults to the Navy preset', (await page.locator('.quote-card').getAttribute('data-tint')) === 'navy');
     await noOverflow(page, 'Coach Support (empty)');
 
     ck('No console/page errors (scenario A)', errs.length === 0, errs.join(' | '));
