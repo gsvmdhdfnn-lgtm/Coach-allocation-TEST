@@ -13,12 +13,15 @@ const PLAYERS = [
 // exactly" - simulate that directly with two same name+dob records above.
 const SESSIONS = [
   { id: 'sess1', name: 'U9/10 Development' },
-  { id: 'sess2', name: 'U11/12 Academy' }
+  { id: 'sess2', name: 'U11/12 Academy' },
+  { id: 'sess3', name: 'U13/14 Development' }
 ];
 
 let linkSeq = 1;
+let requestSeq = 1;
 const links = []; // {id, parentEmail, playerId, playerName, dob, relationship, status, notes}
-const sessionRequests = [];
+const sessionRequests = []; // {id, playerId, sessionId, parentEmail, status}
+const sessionLinks = []; // {playerId, sessionId, status: 'Active'|'Ended'} - pre-seed via module.exports.sessionLinks.push(...) in a test
 
 function roleForEmail(email) {
   if (/^pending/.test(email)) return 'pending';
@@ -42,6 +45,7 @@ function send(r, status, body) { r.writeHead(status, { 'Content-Type': 'applicat
 
 module.exports.links = links;
 module.exports.sessionRequests = sessionRequests;
+module.exports.sessionLinks = sessionLinks;
 module.exports.start = function (port) {
   const srv = http.createServer(async (q, r) => {
     const u = q.url.split('?')[0];
@@ -56,9 +60,19 @@ module.exports.start = function (port) {
       return send(r, 200, { user_id: 'uid-' + caller.email, email: caller.email, organisation_id: 'ORG-JOSHEVANS', role: caller.role, status: 'active', airtable_person_id: null, display_name: null });
     }
 
+    // Parent-only routes - mirrors the real deployed parent-hub function's
+    // explicit role check, not just the frontend hiding buttons.
+    if ((u === '/parent-hub/me' || u === '/parent-hub/claims' || u === '/parent-hub/session-requests') && caller.role !== 'parent') {
+      return send(r, 403, { error: 'Parent access required' });
+    }
+
     if (u === '/parent-hub/me' && q.method === 'GET') {
       const mine = links.filter(l => l.parentEmail === caller.email);
-      const children = mine.filter(l => l.status === 'Verified').map(l => ({ link_id: l.id, player_record_id: l.playerId, player_id: l.playerId, name: l.playerName, photo_url: '', relationship: l.relationship }));
+      const children = mine.filter(l => l.status === 'Verified').map(l => ({
+        link_id: l.id, player_record_id: l.playerId, player_id: l.playerId, name: l.playerName, photo_url: '', relationship: l.relationship,
+        active_sessions: sessionLinks.filter(sl => sl.playerId === l.playerId && sl.status === 'Active').map(sl => ({ session_record_id: sl.sessionId, session_name: (SESSIONS.find(s => s.id === sl.sessionId) || {}).name || '' })),
+        pending_requests: sessionRequests.filter(sr => sr.playerId === l.playerId && sr.status === 'Pending').map(sr => ({ request_id: sr.id, session_record_id: sr.sessionId, session_name: (SESSIONS.find(s => s.id === sr.sessionId) || {}).name || '', requested_date: '2026-01-01' })),
+      }));
       const pendingClaims = mine.filter(l => l.status !== 'Verified').map(l => ({ link_id: l.id, player_name: l.playerName || 'Claim submitted', status: l.status, relationship: l.relationship }));
       const availableSessions = SESSIONS.map(s => ({ session_record_id: s.id, session_name: s.name }));
       return send(r, 200, { parent_id: 'PARENT-' + caller.email, children, pending_claims: pendingClaims, available_sessions: availableSessions });
@@ -69,12 +83,30 @@ module.exports.start = function (port) {
       if (!name || !dob) return send(r, 400, { error: "Child's name and date of birth are required." });
       const norm = name.trim().toLowerCase().replace(/\s+/g, ' ');
       const matches = PLAYERS.filter(p => p.name.trim().toLowerCase().replace(/\s+/g, ' ') === norm && p.dob === dob);
+
+      // Same duplicate check as the real function: this parent's own
+      // non-Rejected links, compared by the linked player's real name+dob,
+      // or (for a not-yet-resolved claim) by re-parsing the same note text
+      // this route itself writes below.
+      const myOpenLinks = links.filter(l => l.parentEmail === caller.email && l.status !== 'Rejected');
+      const alreadyClaimed = myOpenLinks.some(l => {
+        if (l.playerId) {
+          const p = PLAYERS.find(pp => pp.id === l.playerId);
+          return !!p && p.name.trim().toLowerCase().replace(/\s+/g, ' ') === norm && p.dob === dob;
+        }
+        const m = /Parent-entered claim: "([^"]*)", DOB (\S+)/.exec(l.notes || '');
+        return !!m && m[1].trim().toLowerCase().replace(/\s+/g, ' ') === norm && m[2] === dob;
+      });
+      if (alreadyClaimed) return send(r, 400, { error: "You've already submitted a claim for this child." });
+
       const id = 'link' + (linkSeq++);
       if (matches.length === 1) {
         links.push({ id, parentEmail: caller.email, playerId: matches[0].id, playerName: matches[0].name, dob, relationship, status: 'Pending', notes: '' });
         return send(r, 200, { ok: true, status: 'Pending' });
       }
-      const note = matches.length === 0 ? `No matching active Player record found for "${name}", DOB ${dob}.` : `Matched ${matches.length} Player records (ambiguous) for "${name}", DOB ${dob}.`;
+      const note = matches.length === 0
+        ? `Parent-entered claim: "${name}", DOB ${dob} - no matching active Player record found. Find or create the Player, link them on this record, then approve.`
+        : `Parent-entered claim: "${name}", DOB ${dob} - matched ${matches.length} Player records (ambiguous).`;
       links.push({ id, parentEmail: caller.email, playerId: '', playerName: '', dob, relationship, status: 'Needs Review', notes: note, claimedName: name });
       return send(r, 200, { ok: true, status: 'Needs Review' });
     }
@@ -86,7 +118,11 @@ module.exports.start = function (port) {
       if (!owns) return send(r, 403, { error: 'You can only request sessions for your own verified children.' });
       const session = SESSIONS.find(s => s.id === sessionId);
       if (!session) return send(r, 400, { error: 'That session is not available.' });
-      sessionRequests.push({ playerId, sessionId, parentEmail: caller.email });
+      const alreadyActive = sessionLinks.some(sl => sl.playerId === playerId && sl.sessionId === sessionId && sl.status === 'Active');
+      if (alreadyActive) return send(r, 400, { error: 'This child is already linked to that session.' });
+      const alreadyPending = sessionRequests.some(sr => sr.playerId === playerId && sr.sessionId === sessionId && sr.status === 'Pending');
+      if (alreadyPending) return send(r, 400, { error: 'A request for this session is already pending.' });
+      sessionRequests.push({ id: 'req' + (requestSeq++), playerId, sessionId, parentEmail: caller.email, status: 'Pending' });
       return send(r, 200, { ok: true });
     }
     if (u === '/parent-hub/claims/pending' && q.method === 'GET') {

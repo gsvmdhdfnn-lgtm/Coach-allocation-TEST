@@ -21,6 +21,15 @@ async function logOut(page) {
   await page.click('.more-row[data-action="logout"]');
   await page.waitForSelector('.public-page', { timeout: 8000 });
 }
+async function signIn(page, email) {
+  await page.click('[data-action="show-public"]').catch(() => {});
+  await page.click('[data-action="show-signin"]');
+  await page.waitForSelector('.auth-card');
+  await page.fill('#auth-email', email);
+  await page.fill('#auth-password', 'password123');
+  await page.click('[data-action="auth-submit"]');
+  await page.waitForSelector('.page-title, .coach-home', { timeout: 8000 });
+}
 
 (async () => {
   await server.start(PORT);
@@ -134,6 +143,100 @@ async function logOut(page) {
   await page.waitForSelector('#toast:not([hidden])');
   await page.waitForTimeout(400);
   ck('Session request for a verified child is accepted', server.sessionRequests.length === 1 && server.sessionRequests[0].playerId === 'plyr1');
+
+  // --- Phase 2 hardening: server-side duplicate/role checks, bypassing the
+  // UI entirely (raw requests against the mock's own local port) - these
+  // prove the backend itself rejects the bad request, not just that the
+  // frontend never offers a way to send one.
+  const parentToken = 'tok-parent1@test.com~parent';
+  async function callParentHub(path, method, token, body) {
+    const res = await fetch(`http://localhost:${PORT}/parent-hub${path}`, {
+      method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  }
+
+  // --- Duplicate parent claim rejected server-side ---
+  let res = await callParentHub('/claims', 'POST', parentToken, { player_name: 'Alfie Test', date_of_birth: '2015-05-10', relationship: 'Parent' });
+  ck('Duplicate claim for an already-claimed child is rejected (400, clear message)', res.status === 400 && /already submitted a claim/i.test(res.body.error || ''), JSON.stringify(res.body));
+  ck('Duplicate claim does not create a second link for that child', server.links.filter(l => l.parentEmail === 'parent1@test.com' && l.playerId === 'plyr1').length === 1);
+
+  // --- Duplicate pending session request rejected server-side ---
+  res = await callParentHub('/session-requests', 'POST', parentToken, { player_record_id: 'plyr1', session_record_id: 'sess2' });
+  ck('Duplicate pending session request is rejected (400, clear message)', res.status === 400 && /already pending/i.test(res.body.error || ''), JSON.stringify(res.body));
+  ck('Duplicate pending request does not create a second request row', server.sessionRequests.filter(r => r.playerId === 'plyr1' && r.sessionId === 'sess2').length === 1);
+
+  // --- Requesting a session the child is already actively linked to is rejected ---
+  server.sessionLinks.push({ playerId: 'plyr1', sessionId: 'sess1', status: 'Active' });
+  res = await callParentHub('/session-requests', 'POST', parentToken, { player_record_id: 'plyr1', session_record_id: 'sess1' });
+  ck('Requesting a session the child is already actively linked to is rejected (400, clear message)', res.status === 400 && /already linked/i.test(res.body.error || ''), JSON.stringify(res.body));
+
+  // --- Non-parent accounts are blocked from every parent-only route, server-side ---
+  const mgmtToken = 'tok-mgmt1@test.com';
+  res = await callParentHub('/me', 'GET', mgmtToken);
+  ck('A management account cannot call the parent-only /me route (403)', res.status === 403);
+  res = await callParentHub('/claims', 'POST', mgmtToken, { player_name: 'X', date_of_birth: '2020-01-01' });
+  ck('A management account cannot submit a parent claim (403)', res.status === 403);
+  res = await callParentHub('/session-requests', 'POST', mgmtToken, { player_record_id: 'plyr1', session_record_id: 'sess2' });
+  ck('A management account cannot submit a parent session request (403)', res.status === 403);
+  const coachToken = 'tok-coach-someone@test.com';
+  res = await callParentHub('/me', 'GET', coachToken);
+  ck('A plain coach account cannot call the parent-only /me route either (403)', res.status === 403);
+
+  // --- The read model reports active sessions and pending request status correctly ---
+  res = await callParentHub('/me', 'GET', parentToken);
+  const alfie = (res.body.children || []).find(c => c.name === 'Alfie Test');
+  ck('Active sessions are returned on the child', !!alfie && alfie.active_sessions.some(s => s.session_record_id === 'sess1'));
+  ck('Pending request status is returned on the child', !!alfie && alfie.pending_requests.some(s => s.session_record_id === 'sess2'));
+
+  // --- Full second parent: request-sheet UI correctly excludes an active
+  // session, marks a pending one as unavailable, and still offers a third,
+  // genuinely eligible session for submission.
+  await logOut(page);
+  await signUp(page, 'parent2@test.com', 'parent');
+  await page.click('[data-action="open-claim-child"]');
+  await page.waitForSelector('#claim-name');
+  await page.fill('#claim-name', 'Bea Test');
+  await page.fill('#claim-dob', '2016-02-20');
+  await page.click('[data-action="submit-claim"]');
+  await page.waitForSelector('#toast:not([hidden])');
+  await page.waitForTimeout(400);
+
+  await logOut(page);
+  await signIn(page, 'mgmt1@test.com');
+  await page.click('.icon-btn[data-action="open-more"]');
+  await page.click('[data-nav="parent-claims"]');
+  await page.waitForSelector('.request-row', { timeout: 8000 });
+  await page.locator('.request-row').filter({ has: page.locator('b', { hasText: 'Bea Test' }) }).locator('[data-action="approve-parent-claim"]').click();
+  await page.waitForSelector('#toast:not([hidden])');
+  await page.waitForTimeout(400);
+
+  // Seed active/pending state directly (same effect as real prior activity)
+  // before parent2 ever loads their hub for the first time.
+  server.sessionLinks.push({ playerId: 'plyr2', sessionId: 'sess1', status: 'Active' });
+  server.sessionRequests.push({ id: 'seed1', playerId: 'plyr2', sessionId: 'sess2', parentEmail: 'parent2@test.com', status: 'Pending' });
+
+  await logOut(page);
+  await page.click('[data-action="show-signin"]');
+  await page.waitForSelector('.auth-card');
+  await page.fill('#auth-email', 'parent2@test.com');
+  await page.fill('#auth-password', 'password123');
+  await page.click('[data-action="auth-submit"]');
+  await page.waitForSelector('.parent-children-list', { timeout: 8000 });
+  await page.locator('.player-row', { hasText: 'Bea Test' }).locator('[data-action="open-request-session"]').click();
+  await page.waitForSelector('.calendar-sheet');
+  const sheetHtml = await page.locator('#sheet-content').innerHTML();
+  ck('Active session (U9/10 Development) is not offered as an option at all', !sheetHtml.includes('U9/10 Development'));
+  const pendingOption = page.locator('#request-session-select option[value="sess2"]');
+  ck('Pending session (U11/12 Academy) is shown but disabled, clearly labelled', (await pendingOption.getAttribute('disabled')) !== null && (await pendingOption.textContent()).includes('already requested'));
+  const eligibleOption = page.locator('#request-session-select option[value="sess3"]');
+  ck('The genuinely eligible third session is still offered, not disabled', await eligibleOption.count() === 1 && (await eligibleOption.getAttribute('disabled')) === null);
+  await page.selectOption('#request-session-select', 'sess3');
+  await page.click('[data-action="submit-session-request"]');
+  await page.waitForSelector('#toast:not([hidden])');
+  await page.waitForTimeout(400);
+  ck('Submitting the eligible session succeeds', server.sessionRequests.some(r => r.playerId === 'plyr2' && r.sessionId === 'sess3'));
 
   ck('No console/page errors the whole way through', errs.length === 0, errs.join(' | '));
   console.log(R.map(([s, n, x]) => `${s}  ${n}${x ? '  -- ' + x : ''}`).join('\n'));

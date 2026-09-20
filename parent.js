@@ -69,15 +69,33 @@ export function submitClaim(btn){
  });
 }
 
+/**
+ * A session the child is already actively linked to is never offered here
+ * at all (nothing to request - they're already in). A session with a
+ * Pending request already showing on this child (from parent-hub's /me,
+ * itself read from the real Player Session Requests table, not a
+ * separate tracked list) stays visible but disabled, labelled, so it's
+ * clear why it can't be picked again rather than silently vanishing.
+ */
 export function openRequestSessionSheet(playerId,playerName){
- var sessions=(state.parentHub&&state.parentHub.available_sessions)||[];
- var options=sessions.map(function(s){return '<option value="'+esc(s.session_record_id)+'">'+esc(s.session_name)+'</option>'}).join('');
+ var all=(state.parentHub&&state.parentHub.available_sessions)||[];
+ var child=((state.parentHub&&state.parentHub.children)||[]).find(function(c){return c.player_record_id===playerId})||{};
+ var activeIds={};(child.active_sessions||[]).forEach(function(s){activeIds[s.session_record_id]=true});
+ var pendingIds={};(child.pending_requests||[]).forEach(function(s){pendingIds[s.session_record_id]=true});
+ var requestable=all.filter(function(s){return !activeIds[s.session_record_id]});
+ var pickedFirst=false;
+ var options=requestable.map(function(s){
+  var pending=!!pendingIds[s.session_record_id];
+  var selectAttr=(!pending&&!pickedFirst)?(pickedFirst=true,' selected'):'';
+  return '<option value="'+esc(s.session_record_id)+'"'+(pending?' disabled':'')+selectAttr+'>'+esc(s.session_name)+(pending?' (already requested)':'')+'</option>';
+ }).join('');
+ var anySelectable=pickedFirst;
  sheet.hidden=false;
  sheetContent.innerHTML='<div class="calendar-sheet"><h3>Request a session</h3><p>For '+esc(playerName)+'. Management will approve, reject or amend this request.</p>'+
   '<div class="parent-form">'+
-  (sessions.length?'<label class="auth-field">Session<select id="request-session-select">'+options+'</select></label>':'<p class="auth-sub">No sessions are available to request right now.</p>')+
+  (anySelectable?'<label class="auth-field">Session<select id="request-session-select">'+options+'</select></label>':'<p class="auth-sub">'+(requestable.length?'A request is already pending for every remaining session.':'No sessions are available to request right now.')+'</p>')+
   '<p class="auth-error" id="request-session-error" hidden></p>'+
-  (sessions.length?'<button class="primary-btn" data-action="submit-session-request" data-player-id="'+esc(playerId)+'">Request session</button>':'')+
+  (anySelectable?'<button class="primary-btn" data-action="submit-session-request" data-player-id="'+esc(playerId)+'">Request session</button>':'')+
   '</div></div>';
 }
 
