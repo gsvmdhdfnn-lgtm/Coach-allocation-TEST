@@ -50,6 +50,24 @@ async function signIn(page, email) {
   ck('Hamburger (top-actions) stays visible for parent role', await page.locator('.top-actions').isVisible());
   ck('Empty state shown before any child is linked', (await page.locator('#screen-root').innerText()).includes('No children linked'));
 
+  // --- A parent with no child still gets the NORMAL Home, not a
+  // standalone "add a child" holding screen ---
+  const noChildHome = await page.locator('#screen-root').innerText();
+  ck('No-child Home keeps the normal Next Session section', /Next Session/.test(noChildHome), noChildHome.slice(0, 200));
+  ck('Next Session explains what adding a child unlocks', /Add your child to see schedule and session information/.test(noChildHome));
+  ck('No-child Home keeps the normal Recent Feedback section', /Recent Feedback/.test(noChildHome));
+  ck('No-child Home offers a clear Add a Child action', await page.locator('[data-action="open-claim-child"]').count() === 1);
+  ck('No Back button on the no-child Home (it is a top-level tab)', await page.locator('#app-back').isHidden());
+  // The other tabs are reachable and keep their own structure too.
+  await page.click('.parent-nav [data-nav="parent-sessions"]');
+  await page.waitForSelector('.ph-hero', { timeout: 8000 });
+  ck('No-child Sessions tab still shows the Sessions structure', /Upcoming Sessions/.test(await page.locator('#screen-root').innerText()));
+  await page.click('.parent-nav [data-nav="parent-development"]');
+  await page.waitForSelector('.ph-hero', { timeout: 8000 });
+  ck('No-child Development tab still shows the Development structure', /Latest Feedback/.test(await page.locator('#screen-root').innerText()));
+  await page.click('.parent-nav [data-nav="parent-home"]');
+  await page.waitForSelector('.ph-hero', { timeout: 8000 });
+
   // --- Claim a matched child (Alfie Test) ---
   await page.click('[data-action="open-claim-child"]');
   await page.waitForSelector('#claim-name');

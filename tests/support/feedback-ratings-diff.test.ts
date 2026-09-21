@@ -15,10 +15,24 @@ function firstLink(fields: Record<string, any>, name: string): string {
 }
 
 function diffRatings(filtered: FilteredRating[], oldRatings: any[]) {
-  const oldByItem = new Map<string, any>();
+  // Duplicate collapse: an item may already carry several rows. The most
+  // recently created is the current value and is kept; the rest are
+  // superseded copies of the SAME item and are deleted, so the record
+  // converges on one row per item.
+  const oldRowsByItem = new Map<string, any[]>();
   for (const r of oldRatings) {
     const itemId = firstLink(r.fields, "Framework Item");
-    if (itemId) oldByItem.set(itemId, r);
+    if (!itemId) continue;
+    if (!oldRowsByItem.has(itemId)) oldRowsByItem.set(itemId, []);
+    oldRowsByItem.get(itemId)!.push(r);
+  }
+  const oldByItem = new Map<string, any>();
+  const superseded: any[] = [];
+  for (const [itemId, rows] of oldRowsByItem) {
+    const sorted = rows.slice().sort((a, b) => String(a.createdTime || "").localeCompare(String(b.createdTime || "")));
+    const keeper = sorted[sorted.length - 1];
+    oldByItem.set(itemId, keeper);
+    for (const r of sorted) if (r.id !== keeper.id) superseded.push(r);
   }
   const submittedItemIds = new Set(filtered.map((r) => r.item.id));
 
@@ -28,16 +42,19 @@ function diffRatings(filtered: FilteredRating[], oldRatings: any[]) {
     if (!existingRow) return false;
     return (existingRow.fields["Rating"] || "") !== r.rating || (existingRow.fields["Notes"] || "") !== r.note;
   });
+  const supersededIds = new Set(superseded.map((r) => r.id));
   const toDelete = oldRatings.filter((r) => {
+    if (supersededIds.has(r.id)) return true;
     const itemId = firstLink(r.fields, "Framework Item");
     return !itemId || !submittedItemIds.has(itemId);
   });
+  const deletedIds = new Set(toDelete.map((r) => r.id));
   const unchangedIds = new Set(oldRatings.map((r) => r.id));
   for (const r of toUpdate) unchangedIds.delete(oldByItem.get(r.item.id).id);
-  for (const r of toDelete) unchangedIds.delete(r.id);
+  for (const id of deletedIds) unchangedIds.delete(id);
   const unchanged = oldRatings.filter((r) => unchangedIds.has(r.id));
 
-  return { toCreate, toUpdate, toDelete, unchanged, oldByItem };
+  return { toCreate, toUpdate, toDelete, unchanged, oldByItem, superseded };
 }
 
 const R: [string, string, string][] = [];
@@ -51,8 +68,8 @@ const ITEM_WINNERS: FrameworkItemLike = { id: "fi1", name: "Winners", group: "Ch
 const ITEM_MOVERS: FrameworkItemLike = { id: "fi2", name: "Movers", group: "Characteristics", sortOrder: 2 };
 const ITEM_PASSING: FrameworkItemLike = { id: "fi3", name: "Passing", group: "Football Pillars", sortOrder: 3 };
 
-function oldRow(id: string, itemId: string, rating: string, notes = "") {
-  return { id, fields: { "Framework Item": [itemId], Rating: rating, Notes: notes } };
+function oldRow(id: string, itemId: string, rating: string, notes = "", createdTime = "") {
+  return { id, createdTime, fields: { "Framework Item": [itemId], Rating: rating, Notes: notes } };
 }
 
 // --- 1. Resaving the exact same draft (no edits) touches nothing --------
@@ -158,6 +175,74 @@ function oldRow(id: string, itemId: string, rating: string, notes = "") {
   const diff = diffRatings(submitted, []);
   ck("First-ever save (no prior ratings) creates every submitted item", diff.toCreate.length === 2);
   ck("First-ever save updates/deletes/unchanged are all empty", diff.toUpdate.length === 0 && diff.toDelete.length === 0 && diff.unchanged.length === 0);
+}
+
+// --- 11. Collapsing duplicates left by the old broken read -------------
+{
+  // Winners has four rows (the shape the live table is in), Movers two.
+  // Resubmitting the same values must converge on one row each.
+  const old = [
+    oldRow("recW1", "fi1", "Red", "", "2026-09-20T21:02:40.000Z"),
+    oldRow("recW2", "fi1", "Red", "", "2026-09-20T22:12:35.000Z"),
+    oldRow("recW3", "fi1", "Red", "", "2026-09-20T22:12:58.000Z"),
+    oldRow("recW4", "fi1", "Green", "", "2026-09-20T22:13:24.000Z"),
+    oldRow("recM1", "fi2", "Amber", "", "2026-09-20T22:12:35.000Z"),
+    oldRow("recM2", "fi2", "Blue", "", "2026-09-20T22:13:24.000Z"),
+  ];
+  const submitted: FilteredRating[] = [
+    { item: ITEM_WINNERS, rating: "Green", note: "" },
+    { item: ITEM_MOVERS, rating: "Blue", note: "" },
+  ];
+  const diff = diffRatings(submitted, old);
+  ck("Every superseded duplicate is identified", diff.superseded.length === 4, JSON.stringify(diff.superseded.map((r: any) => r.id)));
+  ck("The newest row of each item is the keeper", diff.oldByItem.get("fi1").id === "recW4" && diff.oldByItem.get("fi2").id === "recM2");
+  ck("All four surplus rows are deleted", diff.toDelete.length === 4, JSON.stringify(diff.toDelete.map((r: any) => r.id)));
+  ck("The keepers are never deleted", !diff.toDelete.some((r: any) => r.id === "recW4" || r.id === "recM2"));
+  ck("Nothing is created - the items already exist", diff.toCreate.length === 0);
+  ck("The keepers already hold the submitted values, so no update is needed", diff.toUpdate.length === 0, JSON.stringify(diff.toUpdate));
+  ck("Exactly one row per item survives", diff.unchanged.length === 2, JSON.stringify(diff.unchanged.map((r: any) => r.id)));
+}
+{
+  // The keeper is stale: it must be PATCHed, not duplicated, and the
+  // surplus still collapses.
+  const old = [
+    oldRow("recW1", "fi1", "Red", "", "2026-09-20T21:00:00.000Z"),
+    oldRow("recW2", "fi1", "Amber", "", "2026-09-20T22:00:00.000Z"),
+  ];
+  const submitted: FilteredRating[] = [{ item: ITEM_WINNERS, rating: "Green", note: "now green" }];
+  const diff = diffRatings(submitted, old);
+  ck("A stale keeper is updated in place rather than recreated", diff.toUpdate.length === 1 && diff.toCreate.length === 0);
+  ck("The update targets the newest row", diff.oldByItem.get("fi1").id === "recW2");
+  ck("The older duplicate is still removed", diff.toDelete.length === 1 && diff.toDelete[0].id === "recW1");
+  ck("An updated keeper is not also counted as unchanged", diff.unchanged.length === 0);
+}
+{
+  // An item dropped from the submission entirely: every one of its
+  // duplicates goes, not just the surplus.
+  const old = [
+    oldRow("recW1", "fi1", "Red", "", "2026-09-20T21:00:00.000Z"),
+    oldRow("recW2", "fi1", "Red", "", "2026-09-20T22:00:00.000Z"),
+    oldRow("recM1", "fi2", "Blue", "", "2026-09-20T22:00:00.000Z"),
+  ];
+  const diff = diffRatings([{ item: ITEM_MOVERS, rating: "Blue", note: "" }], old);
+  ck("Dropping a duplicated item deletes all of its rows", diff.toDelete.length === 2 && diff.toDelete.every((r: any) => r.id.startsWith("recW")), JSON.stringify(diff.toDelete.map((r: any) => r.id)));
+  ck("The unrelated item is untouched", diff.unchanged.length === 1 && diff.unchanged[0].id === "recM1");
+}
+{
+  // Missing createdTime must not throw or lose the item - one row still
+  // survives deterministically.
+  const old = [oldRow("recA", "fi1", "Red"), oldRow("recB", "fi1", "Green")];
+  const diff = diffRatings([{ item: ITEM_WINNERS, rating: "Green", note: "" }], old);
+  ck("Duplicates with no createdTime still collapse to exactly one row", diff.toDelete.length === 1 && diff.superseded.length === 1, JSON.stringify(diff.toDelete.map((r: any) => r.id)));
+  ck("...and the surviving row is kept, not deleted", diff.toDelete[0].id !== diff.oldByItem.get("fi1").id);
+}
+{
+  // An orphaned row (no Framework Item link) can never be matched or
+  // shown, so it is cleaned up rather than left behind.
+  const old = [{ id: "recOrphan", createdTime: "2026-09-20T22:00:00.000Z", fields: { Rating: "Blue" } }];
+  const diff = diffRatings([], old);
+  ck("An orphaned rating row with no framework item is removed", diff.toDelete.length === 1 && diff.toDelete[0].id === "recOrphan");
+  ck("An orphaned row is not counted as a superseded duplicate", diff.superseded.length === 0);
 }
 
 console.log(R.map(([s, n, x]) => `${s}  ${n}${x ? "  -- " + x : ""}`).join("\n"));

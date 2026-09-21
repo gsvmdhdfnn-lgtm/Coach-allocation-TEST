@@ -31,7 +31,7 @@ function dedupeNewestByItem(rows: { itemId: string; createdTime: string; rating:
 }
 
 // --- session labelling -------------------------------------------------
-interface SessionLike { session_name?: string; category?: string; programme?: string; venue?: string; day?: string; time?: string; age_group?: string; coaches?: string[] }
+interface SessionLike { session_id?: string; session_name?: string; category?: string; programme?: string; venue?: string; day?: string; time?: string; age_group?: string; coaches?: string[] }
 function sameText(a: any, b: any) { return String(a || "").trim().toLowerCase().replace(/\s+/g, " ") === String(b || "").trim().toLowerCase().replace(/\s+/g, " "); }
 function sessionTitle(s: SessionLike) { return (s && (s.session_name || s.category || s.programme)) || "Session"; }
 function sessionMetaLines(s: SessionLike, opts?: { noDay?: boolean; noCoach?: boolean }) {
@@ -47,8 +47,16 @@ function sessionMetaLines(s: SessionLike, opts?: { noDay?: boolean; noCoach?: bo
   return lines;
 }
 function sessionOptionLabel(s: SessionLike) {
-  const bits = sessionMetaLines(s, { noCoach: true });
+  const bits = [s && s.day, s && s.time, s && s.age_group].filter(Boolean);
   return bits.length ? sessionTitle(s) + " — " + bits.join(" · ") : sessionTitle(s);
+}
+function sessionOptionLabels(list: SessionLike[]) {
+  const counts: Record<string, number> = {};
+  (list || []).forEach((s) => { const l = sessionOptionLabel(s); counts[l] = (counts[l] || 0) + 1; });
+  return (list || []).map((s) => {
+    const l = sessionOptionLabel(s);
+    return (counts[l] > 1 && s.session_id) ? l + " · " + s.session_id : l;
+  });
 }
 
 const R: [string, string, string][] = [];
@@ -106,6 +114,26 @@ ck("Whitespace-only is treated as nothing", parentFacingCoachName("   ", "  ") =
   ck("A venue identical to the title is not repeated underneath it", sessionMetaLines(a).indexOf("Daneshill") === -1, JSON.stringify(sessionMetaLines(a)));
   ck("The coach is omitted from the option label (no markup room)", !/Tom/.test(sessionOptionLabel(a)));
   ck("The coach IS shown in the card meta lines", sessionMetaLines(a).some((l) => l === "Coach: Tom"));
+  ck("The picker label is name — day · time · age, with no venue",
+    sessionOptionLabel(a) === "Daneshill — Monday · 3:30pm - 4:30pm · Years 1-2", sessionOptionLabel(a));
+}
+
+// --- 3b. Genuinely identical options fall back to the Session ID -------
+{
+  // Same name, day, time AND age group - the picker would otherwise show
+  // two entries a parent cannot tell apart at all.
+  const a: SessionLike = { session_id: "D13", session_name: "Daneshill", venue: "Daneshill", day: "Monday", time: "3:30pm - 4:30pm", age_group: "Years 1-2" };
+  const b: SessionLike = { session_id: "D15", session_name: "Daneshill", venue: "Daneshill", day: "Monday", time: "3:30pm - 4:30pm", age_group: "Years 1-2" };
+  const labels = sessionOptionLabels([a, b]);
+  ck("Otherwise-identical options are disambiguated by Session ID", labels[0] !== labels[1], JSON.stringify(labels));
+  ck("...and each carries its own Session ID", /D13/.test(labels[0]) && /D15/.test(labels[1]), JSON.stringify(labels));
+}
+{
+  // Already distinct - the Session ID must NOT be appended as noise.
+  const a: SessionLike = { session_id: "D13", session_name: "Daneshill", day: "Monday", time: "3:30pm - 4:30pm", age_group: "Years 1-2" };
+  const b: SessionLike = { session_id: "D15", session_name: "Daneshill", day: "Thursday", time: "4:30pm - 5:30pm", age_group: "Years 5-6" };
+  const labels = sessionOptionLabels([a, b]);
+  ck("Distinct options are left clean, with no Session ID appended", !/D13|D15/.test(labels.join(" ")), JSON.stringify(labels));
 }
 {
   const s: SessionLike = { session_name: "U9/10 Development", venue: "City of London Freemen's", day: "Wednesday", time: "4:00pm - 5:30pm", age_group: "U9/10", coaches: ["David"] };

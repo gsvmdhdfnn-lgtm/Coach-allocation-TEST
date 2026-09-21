@@ -76,10 +76,33 @@ export function sessionMetaLines(s, opts) {
   return lines;
 }
 
-/** Single-line form for a <select> option, which can't carry markup. */
+/**
+ * "Session name — Day · Time · Age group" for a <select> option, which
+ * can't carry markup. Whatever the schedule doesn't carry is omitted
+ * rather than filled in. Venue is deliberately not part of this label:
+ * several sessions share one, so it is the name plus day/time/age that
+ * actually tells them apart.
+ */
 export function sessionOptionLabel(s) {
-  var bits = sessionMetaLines(s, { noCoach: true });
+  var bits = [s && s.day, s && s.time, s && s.age_group].filter(Boolean);
   return bits.length ? sessionTitle(s) + ' — ' + bits.join(' · ') : sessionTitle(s);
+}
+
+/**
+ * Labels for a whole picker. Where two sessions would still read
+ * identically - the published schedule does contain genuine repeats -
+ * the stable Session ID is appended so a parent can tell them apart.
+ * The option's VALUE stays the Airtable record id: Session ID is not
+ * unique in the Sessions table (D13 exists twice), so it identifies a
+ * session to a human but can't safely key the write.
+ */
+export function sessionOptionLabels(list) {
+  var counts = {};
+  (list || []).forEach(function (s) { var l = sessionOptionLabel(s); counts[l] = (counts[l] || 0) + 1; });
+  return (list || []).map(function (s) {
+    var l = sessionOptionLabel(s);
+    return (counts[l] > 1 && s.session_id) ? l + ' · ' + s.session_id : l;
+  });
 }
 
 export function activeChild() {
@@ -151,15 +174,20 @@ export function renderParentScreen() {
   return renderParentHome();
 }
 
-/** Shown on every tab until a claim is approved - a parent with no Verified child has nothing to show, and must not be left on a blank screen. */
-function noChildHtml() {
+/**
+ * A parent with no Verified child still gets the normal Hub - the same
+ * tabs, the same sections, each in an honest empty state - rather than
+ * being parked on a separate "add a child" holding screen. This block is
+ * the status-and-action part that sits inside that normal structure: any
+ * claim already awaiting approval, plus the one clear way to add a child.
+ */
+function addChildHtml() {
   var pending = (state.parentHub && state.parentHub.pending_claims) || [];
-  return heroHtml('Parent & Player Hub', 'Welcome', 'Link your child to see their sessions and development.', '', '', null) +
-    (pending.length
-      ? sectionHead('Your claims') + '<section class="card parent-pending-list">' + pending.map(parentClaimRowHtml).join('') + '</section>' +
-        emptyCard('Waiting for approval', 'We’ll let you know once this has been confirmed. You’ll then see their sessions and published feedback here.')
-      : emptyCard('No children linked yet', 'Claim your child to see their sessions, coach feedback and development in one place.')) +
-    '<button class="primary-btn" data-action="open-claim-child" style="margin-top:14px">+ Claim a Child</button>';
+  return (pending.length
+    ? sectionHead('Your claims') + '<section class="card parent-pending-list">' + pending.map(parentClaimRowHtml).join('') + '</section>' +
+      emptyCard('Waiting for approval', 'We’ll let you know once this has been confirmed. You’ll then see their sessions and published feedback here.')
+    : '') +
+    '<button class="primary-btn" data-action="open-claim-child" style="margin-top:14px">+ Add a Child</button>';
 }
 
 // ---------------------------------------------------------------- HOME
@@ -167,25 +195,31 @@ function noChildHtml() {
 export function renderParentHome() {
   state.screen = 'parent-home';
   var child = activeChild();
-  if (!child) { root.innerHTML = noChildHtml(); return; }
-
-  var session = (child.active_sessions || [])[0] || null;
-  var latest = latestFeedback(child.player_record_id);
+  var session = child ? (child.active_sessions || [])[0] || null : null;
+  var latest = child ? latestFeedback(child.player_record_id) : null;
 
   root.innerHTML =
-    heroHtml('Parent & Player Hub', 'Welcome back', 'A quick view of what matters most right now.', child.name, childSubtitle(child), child) +
-    nextSessionHtml(session) +
+    heroHtml('Parent & Player Hub', child ? 'Welcome back' : 'Welcome', 'A quick view of what matters most right now.',
+      child ? child.name : 'No children linked yet',
+      child ? childSubtitle(child) : 'Add your child to get started', child) +
+    nextSessionHtml(session, !!child) +
     updatesHtml() +
-    recentFeedbackHtml(latest);
+    recentFeedbackHtml(latest, !!child) +
+    (child ? '' : addChildHtml());
 
-  if (!state.parentFeedbackLoaded) loadParentFeedback(child.player_record_id);
+  if (child && !state.parentFeedbackLoaded) loadParentFeedback(child.player_record_id);
 }
 
-function nextSessionHtml(session) {
+function nextSessionHtml(session, hasChild) {
   if (!session) {
+    // Without a linked child there is no session to find yet, so the
+    // empty state points at adding one rather than at a picker that
+    // would be refused server-side.
     return sectionHead('Next Session') +
-      emptyCard('No session booked yet', 'Once your child is on a session it’ll show here with the time, venue and coach.') +
-      '<button class="secondary-btn" data-action="parent-find-session">Find a session</button>';
+      (hasChild
+        ? emptyCard('No session booked yet', 'Once your child is on a session it’ll show here with the time, venue and coach.') +
+          '<button class="secondary-btn" data-action="parent-find-session">Find a session</button>'
+        : emptyCard('No sessions yet', 'Add your child to see schedule and session information.'));
   }
   var dates = nextOccurrences(session.day, 1);
   // The date line already carries the day, so the meta lines drop it.
@@ -218,7 +252,11 @@ function updatesHtml() {
     }).join('');
 }
 
-function recentFeedbackHtml(latest) {
+function recentFeedbackHtml(latest, hasChild) {
+  if (!hasChild) {
+    return sectionHead('Recent Feedback') +
+      emptyCard('No feedback yet', 'Once your child is added, published coach feedback will appear here.');
+  }
   if (!state.parentFeedbackLoaded) {
     return sectionHead('Recent Feedback') + '<section class="card ph-empty"><b>Loading feedback…</b></section>';
   }
@@ -247,7 +285,15 @@ function feedbackSnippetHtml(f) {
 export function renderParentSessions() {
   state.screen = 'parent-sessions';
   var child = activeChild();
-  if (!child) { root.innerHTML = noChildHtml(); return; }
+  if (!child) {
+    root.innerHTML =
+      heroHtml('Parent & Player Hub', 'Sessions', 'Everything you need to know about where they are going and when.',
+        'No children linked yet', 'Add your child to get started', null) +
+      sectionHead('Upcoming Sessions') +
+      emptyCard('No sessions yet', 'Add your child to see schedule and session information.') +
+      addChildHtml();
+    return;
+  }
   var sessions = child.active_sessions || [];
   var ended = child.ended_sessions || [];
   var pending = child.pending_requests || [];
@@ -385,7 +431,15 @@ export function loadParentFeedback(playerRecordId) {
 export function renderParentDevelopment() {
   state.screen = 'parent-development';
   var child = activeChild();
-  if (!child) { root.innerHTML = noChildHtml(); return; }
+  if (!child) {
+    root.innerHTML =
+      heroHtml('Parent & Player Hub', 'Development', 'Published coach feedback and where their development is right now.',
+        'No children linked yet', 'Add your child to get started', null) +
+      sectionHead('Latest Feedback') +
+      emptyCard('No published feedback yet', 'Once your child is added, published coach feedback will appear here.') +
+      addChildHtml();
+    return;
+  }
   if (!state.parentFeedbackLoaded) {
     root.innerHTML = heroHtml(child.name, 'Development', '', '', '', child) + '<div class="loading">Loading feedback…</div>';
     loadParentFeedback(child.player_record_id);
@@ -648,11 +702,12 @@ export function openRequestSessionSheet(playerId, playerName) {
   var activeIds = {}; (child.active_sessions || []).forEach(function (s) { activeIds[s.session_record_id] = true });
   var pendingIds = {}; (child.pending_requests || []).forEach(function (s) { pendingIds[s.session_record_id] = true });
   var requestable = all.filter(function (s) { return !activeIds[s.session_record_id] });
+  var labels = sessionOptionLabels(requestable);
   var pickedFirst = false;
-  var options = requestable.map(function (s) {
+  var options = requestable.map(function (s, i) {
     var pending = !!pendingIds[s.session_record_id];
     var selectAttr = (!pending && !pickedFirst) ? (pickedFirst = true, ' selected') : '';
-    return '<option value="' + esc(s.session_record_id) + '"' + (pending ? ' disabled' : '') + selectAttr + '>' + esc(sessionOptionLabel(s)) + (pending ? ' (already requested)' : '') + '</option>';
+    return '<option value="' + esc(s.session_record_id) + '" data-session-id="' + esc(s.session_id || '') + '"' + (pending ? ' disabled' : '') + selectAttr + '>' + esc(labels[i]) + (pending ? ' (already requested)' : '') + '</option>';
   }).join('');
   var anySelectable = pickedFirst;
   sheet.hidden = false;

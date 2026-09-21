@@ -143,7 +143,7 @@ module.exports.start = function (port) {
         pending_requests: sessionRequests.filter(sr => sr.playerId === l.playerId && sr.status === 'Pending').map(sr => ({ request_id: sr.id, session_record_id: sr.sessionId, session_name: (SESSIONS.find(s => s.id === sr.sessionId) || {}).name || '', requested_date: '2026-01-01' })),
       }));
       const pendingClaims = mine.filter(l => l.status !== 'Verified').map(l => ({ link_id: l.id, player_name: l.playerName || 'Claim submitted', status: l.status, relationship: l.relationship }));
-      const availableSessions = SESSIONS.map(s => ({ session_record_id: s.id, session_name: s.name, day: s.day || '', time: s.time || '', venue: s.venue || '', age_group: s.age_group || '', programme: s.programme || '' }));
+      const availableSessions = SESSIONS.map(s => ({ session_record_id: s.id, session_id: s.session_id || s.id, session_name: s.name, day: s.day || '', time: s.time || '', venue: s.venue || '', age_group: s.age_group || '', programme: s.programme || '' }));
       return send(r, 200, { parent_id: 'PARENT-' + caller.email, children, pending_claims: pendingClaims, available_sessions: availableSessions });
     }
     // Mirrors the real function's three gates: parent role (above), the
