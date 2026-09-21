@@ -1,0 +1,29 @@
+Make these three changes in `core.js`.
+
+1) CHANGE the feedback import from:
+
+import { renderFeedbackForm, renderFeedbackHistory, renderFeedbackRecord, renderPlayerProfile } from './feedback.js';
+
+TO:
+
+import { renderCoachDrafts, renderFeedbackForm, renderFeedbackHistory, renderFeedbackRecord, renderPlayerProfile } from './feedback.js';
+
+
+2) CHANGE the two URL helpers from:
+
+export function approveCoachUrl(){return (CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/approve-coach')}
+export function playerFeedbackUrl(){return (CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/player-feedback')}
+
+TO:
+
+export function approveCoachUrl(){return CFG.approveCoachApiUrl||(CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/approve-coach')}
+export function playerFeedbackUrl(){return CFG.playerFeedbackApiUrl||(CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/player-feedback')}
+
+
+3) In `render()`, find the end of the screen-routing chain:
+
+else if(state.screen==='feedback-history')renderFeedbackHistory(state.fbPlayerId,state.fbSessionRecordId);syncBackButton()}
+
+CHANGE it to:
+
+else if(state.screen==='feedback-history')renderFeedbackHistory(state.fbPlayerId,state.fbSessionRecordId);else if(state.screen==='feedback-drafts')renderCoachDrafts();syncBackButton()}
