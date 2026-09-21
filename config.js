@@ -21,6 +21,9 @@ supabaseUrl: "https://bkkukymqaxawnudoxdjs.supabase.co",
 supabasePublishableKey: "sb_publishable_DP7dm6PyNAp3YYNg1gvz1A_tsSX2QIA",
    
   contentApiUrl: "https://bkkukymqaxawnudoxdjs.supabase.co/functions/v1/hub-content",
+  // Trial branch only: isolated endpoints for features being tested before main.
+  approveCoachApiUrl: "https://bkkukymqaxawnudoxdjs.supabase.co/functions/v1/approve-coach-trial",
+  playerFeedbackApiUrl: "https://bkkukymqaxawnudoxdjs.supabase.co/functions/v1/player-feedback-trial",
   /* Published CSV URL for the "Sessions" tab. Public — safe to share. */
   sessionsCsvUrl: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQj4giL7oEoZLLfC74Sq97bnUGIdMqnG_ECOkNyRis-Drz4yH1OUssQ-YBRbCR6ajiJBvV05JjzOi8I/pub?gid=349419235&single=true&output=csv",
 

@@ -331,6 +331,7 @@ export function renderMyPlayers(){
  });
  order.sort(function(a,b){return groups[a].name.localeCompare(groups[b].name)});
  root.innerHTML='<div class="page-title"><h1>Player Hub</h1><p>Players linked to your sessions.</p></div>'+
+  '<button class="secondary-btn" data-nav="feedback-drafts" style="width:100%;margin-bottom:12px">Drafts · Continue unfinished feedback</button>'+
   (order.length?'<div class="card player-session-list">'+order.map(function(key){
     var g=groups[key],open=state.expandedPlayerSession===key;
     return '<div class="player-session-group">'+

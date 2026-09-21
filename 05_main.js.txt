@@ -1,0 +1,36 @@
+Make these changes in `main.js`.
+
+1) CHANGE the management import from:
+
+import { approveCoach, approveParentClaim, approveSessionRequest, commitMigration, rejectParentClaim, rejectSessionRequest, syncSessions, unlock } from './management.js';
+
+TO:
+
+import { approveCoach, approveParentClaim, approveSessionRequest, commitMigration, declineCoach, rejectParentClaim, rejectSessionRequest, syncSessions, unlock } from './management.js';
+
+
+2) CHANGE the feedback import from:
+
+import { openFeedbackHistory, openLatestFeedback, openPlayerProfile, selectRating, startAddFeedback, submitFeedback, viewFeedbackRecord } from './feedback.js';
+
+TO:
+
+import { continueFeedbackDraft, openFeedbackHistory, openLatestFeedback, openPlayerProfile, selectRating, startAddFeedback, submitFeedback, viewFeedbackRecord } from './feedback.js';
+
+
+3) In the click handler, directly after:
+
+if(act==='approve-coach'){approveCoach(a.dataset.userId,a);return}
+
+ADD:
+
+if(act==='decline-coach'){declineCoach(a.dataset.userId,a);return}
+
+
+4) Near the feedback actions, directly after:
+
+if(act==='view-feedback-record'){viewFeedbackRecord(a.dataset.feedbackId);return}
+
+ADD:
+
+if(act==='continue-feedback-draft'){continueFeedbackDraft(a.dataset.feedbackId);return}

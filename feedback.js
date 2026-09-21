@@ -165,6 +165,62 @@ function feedbackPreviewCardHtml(f){
  '</button>';
 }
 
+export function fetchCoachDrafts(){
+ return withAccessToken().then(function(token){
+  return fetch(playerFeedbackUrl()+'/drafts',{headers:{Authorization:'Bearer '+token}});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){
+   if(!r.ok)throw new Error(body&&body.error||'Could not load your drafts.');
+   return body.drafts||[];
+  });
+ });
+}
+
+export function renderCoachDrafts(){
+ state.screen='feedback-drafts';
+ root.innerHTML='<div class="page-title"><h1>Drafts</h1><p>Your unfinished player feedback.</p></div>'+
+  '<button class="back-btn" data-action="app-back" style="margin:0 2px 12px">‹ Back to Player Hub</button>'+
+  '<div id="coach-drafts-list"><div class="loading">Loading drafts…</div></div>';
+
+ fetchCoachDrafts().then(function(drafts){
+  var slot=document.getElementById('coach-drafts-list');
+  if(!slot)return;
+  if(!drafts.length){
+   slot.innerHTML='<div class="empty-state"><span class="empty-state-icon">✓</span><b>No drafts waiting</b><p>Feedback you save as a draft will appear here until it is published.</p></div>';
+   return;
+  }
+  slot.innerHTML='<div class="pf-history-list">'+drafts.map(function(d){
+   return '<button class="card pf-feedback-card" data-action="continue-feedback-draft" data-feedback-id="'+esc(d.feedback_id)+'">'+
+    '<div class="pf-fb-topline"><h3>'+esc(d.player_name||d.title||'Feedback draft')+'</h3><span class="pf-pill is-draft">DRAFT</span></div>'+
+    '<p><strong>Session:</strong> '+esc(d.session_name||'Session')+'</p>'+
+    (d.date?'<footer>Draft date · '+esc(formatFeedbackDate(d.date))+'</footer>':'')+
+    '<div style="margin-top:10px"><span class="primary-btn" style="display:inline-block">Continue Draft</span></div>'+
+   '</button>';
+  }).join('')+'</div>';
+ }).catch(function(e){
+  var slot=document.getElementById('coach-drafts-list');
+  if(slot)slot.innerHTML='<div class="error"><b>Couldn’t load drafts.</b><br>'+esc(e.message||'')+'</div>';
+ });
+}
+
+export function continueFeedbackDraft(feedbackId){
+ Promise.all([fetchFramework(),fetchFeedbackRecord(feedbackId)]).then(function(results){
+  var f=results[1];
+  var p=findPlayerRow(f.player_record_id,f.session_record_id);
+  if(!p)throw new Error('You no longer have access to this player/session.');
+  pushNavState();
+  state.fbPlayerId=f.player_record_id;
+  state.fbSessionRecordId=f.session_record_id;
+  state.fbEditingId=f.feedback_id;
+  state.fbDraft=draftFromRecord(f);
+  state.fbError='';
+  state.screen='feedback-form';
+  render();
+ }).catch(function(e){
+  toast(e.message||'Could not open this draft.');
+ });
+}
+
 export function openPlayerProfile(playerRecordId,sessionRecordId){
  pushNavState();state.fbPlayerId=playerRecordId;state.fbSessionRecordId=sessionRecordId;state.screen='player-profile';render();
 }
