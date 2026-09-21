@@ -202,6 +202,13 @@ export function render(){document.getElementById('app').classList.remove('auth-m
   * parent-* screen means "start at the parent's Home".
   */
  if(state.role==='parent'&&state.screen.indexOf('parent-')!==0)state.screen='parent-home';
+ /**
+  * The four parent tabs are top level - there is nothing "back" to go to
+  * from them. Landing on one clears any drill-down history left over from
+  * a Session/Feedback/Policy detail, so Back only ever appears on the
+  * screens you actually drilled into.
+  */
+ if(state.role==='parent'&&PARENT_TAB_SCREENS[state.screen])state.navStack=[];
  setNav(state.screen);if(state.role==='parent'){renderParentScreen();syncBackButton();window.scrollTo(0,0);return}if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();else if(state.screen==='session-requests')renderSessionRequests();else if(state.screen==='player-migration')renderPlayerMigration();else if(state.screen==='parent-claims')renderParentClaims();else if(state.screen==='player-profile')renderPlayerProfile(state.fbPlayerId,state.fbSessionRecordId);else if(state.screen==='feedback-form')renderFeedbackForm();else if(state.screen==='feedback-record')renderFeedbackRecord(state.fbRecordId);else if(state.screen==='feedback-history')renderFeedbackHistory(state.fbPlayerId,state.fbSessionRecordId);syncBackButton()}
 
 export function openProfileSheet(){

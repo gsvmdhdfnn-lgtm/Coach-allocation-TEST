@@ -46,16 +46,55 @@ export function formatIsoDate(iso) {
   return formatLongDate(new Date(+m[1], +m[2] - 1, +m[3], 12));
 }
 
+function sameText(a, b) { return String(a || '').trim().toLowerCase().replace(/\s+/g, ' ') === String(b || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+
+/**
+ * The session/programme name is always the identifier a parent sees.
+ * Several real sessions share a venue - the schedule currently has three
+ * separate "Daneshill" entries - so the venue can never be the title on
+ * its own, and everything that actually tells two of them apart (day,
+ * time, age group) has to travel with it.
+ */
+export function sessionTitle(s) {
+  return (s && (s.session_name || s.category || s.programme)) || 'Session';
+}
+
+/**
+ * Venue, day/time, age group and coach, in that order, as separate
+ * lines. A blank field is dropped, and a venue that merely repeats the
+ * title is dropped too rather than printed twice.
+ */
+export function sessionMetaLines(s, opts) {
+  if (!s) return [];
+  opts = opts || {};
+  var title = sessionTitle(s), lines = [];
+  if (s.venue && !sameText(s.venue, title)) lines.push(s.venue);
+  var when = [opts.noDay ? '' : s.day, s.time].filter(Boolean).join(' · ');
+  if (when) lines.push(when);
+  if (s.age_group) lines.push(s.age_group);
+  if (!opts.noCoach && (s.coaches || []).length) lines.push('Coach: ' + s.coaches.join(', '));
+  return lines;
+}
+
+/** Single-line form for a <select> option, which can't carry markup. */
+export function sessionOptionLabel(s) {
+  var bits = sessionMetaLines(s, { noCoach: true });
+  return bits.length ? sessionTitle(s) + ' — ' + bits.join(' · ') : sessionTitle(s);
+}
+
 export function activeChild() {
   var children = (state.parentHub && state.parentHub.children) || [];
   if (!children.length) return null;
   return children.find(function (c) { return c.player_record_id === state.parentChildId; }) || children[0];
 }
 
+/** Never implies a single programme when the child is on several - the strip summarises instead of naming just the first. */
 export function childSubtitle(child) {
-  var s = (child && child.active_sessions && child.active_sessions[0]) || null;
-  if (!s) return 'No active session yet';
-  return [s.venue, s.age_group].filter(Boolean).join(' · ') || s.session_name;
+  var sessions = (child && child.active_sessions) || [];
+  if (!sessions.length) return 'No active session yet';
+  if (sessions.length > 1) return sessions.length + ' programmes';
+  var s = sessions[0];
+  return [sessionTitle(s), s.age_group].filter(Boolean).join(' · ');
 }
 
 function avatarHtml(child) {
@@ -149,16 +188,15 @@ function nextSessionHtml(session) {
       '<button class="secondary-btn" data-action="parent-find-session">Find a session</button>';
   }
   var dates = nextOccurrences(session.day, 1);
-  var when = [session.day, session.time].filter(Boolean).join(' · ');
+  // The date line already carries the day, so the meta lines drop it.
+  var meta = dates.length ? sessionMetaLines(session, { noDay: true }) : sessionMetaLines(session);
   return sectionHead('Next Session', 'View all') +
     '<section class="ph-next">' +
     '<span class="ph-pill">UPCOMING</span>' +
-    '<h3>' + esc(session.session_name) + '</h3>' +
+    '<h3>' + esc(sessionTitle(session)) + '</h3>' +
     '<div class="ph-next-meta">' +
     (dates.length ? '<div>' + esc(formatDayDate(dates[0])) + '</div>' : '') +
-    (when ? '<div>' + esc(when) + '</div>' : '') +
-    (session.venue ? '<div>' + esc(session.venue) + '</div>' : '') +
-    ((session.coaches || []).length ? '<div>Coach: ' + esc(session.coaches.join(', ')) + '</div>' : '') +
+    meta.map(function (l) { return '<div>' + esc(l) + '</div>' }).join('') +
     '</div>' +
     '<button class="primary-btn" data-action="parent-session-detail" data-session="' + esc(session.session_record_id) + '">View session</button>' +
     '</section>';
@@ -215,12 +253,17 @@ export function renderParentSessions() {
   var pending = child.pending_requests || [];
 
   root.innerHTML =
-    heroHtml(child.name, 'Sessions', 'Everything you need to know about where they are going and when.', 'Current programme', childSubtitle(child), child) +
+    heroHtml(child.name, 'Sessions', 'Everything you need to know about where they are going and when.',
+      (child.active_sessions || []).length === 1 ? 'Current programme' : 'Your programmes', childSubtitle(child), child) +
     (sessions.length ? sectionHead('Upcoming Sessions', 'Next 3') + '<section class="card">' + upcomingRowsHtml(sessions) + '</section>'
       : sectionHead('Upcoming Sessions') + emptyCard('No active sessions', 'Once a session request is approved, upcoming dates will show here.')) +
     (pending.length ? sectionHead('Awaiting approval') + '<section class="card">' + pending.map(function (p) {
+      var requested = (state.parentHub && state.parentHub.available_sessions || []).find(function (a) { return a.session_record_id === p.session_record_id }) || p;
+      var lines = sessionMetaLines(requested, { noCoach: true });
       return '<div class="ph-row"><div class="ph-datebox ph-datebox-muted"><small>REQ</small><b>·</b></div>' +
-        '<div><div class="ph-row-title">' + esc(p.session_name) + '</div><div class="ph-row-sub">Requested ' + esc(formatIsoDate(p.requested_date) || 'recently') + ' · waiting for approval</div></div><div></div></div>';
+        '<div><div class="ph-row-title">' + esc(sessionTitle(requested)) + '</div><div class="ph-row-sub">' +
+        (lines.length ? lines.map(esc).join('<br>') + '<br>' : '') +
+        'Requested ' + esc(formatIsoDate(p.requested_date) || 'recently') + ' · waiting for approval</div></div><div></div></div>';
     }).join('') + '</section>' : '') +
     sectionHead('Find Another Session') +
     '<section class="card ph-feedback"><b>Looking for another session?</b>' +
@@ -228,7 +271,10 @@ export function renderParentSessions() {
     '<button class="primary-btn" data-action="parent-find-session">Find a session</button></section>' +
     sectionHead('Past & Current') +
     '<div class="ph-grid2">' +
-    '<div class="ph-mini"><b>Current programme</b><small>' + esc(sessions.length ? sessions.map(function (s) { return s.session_name }).join(', ') : 'None yet') + '</small></div>' +
+    // Named individually rather than collapsed into one "current
+    // programme" - a child can be on several at once.
+    '<div class="ph-mini"><b>' + (sessions.length === 1 ? 'Current programme' : 'Your programmes') + '</b><small>' +
+    (sessions.length ? sessions.map(function (s) { return esc(sessionTitle(s)) }).join('<br>') : 'None yet') + '</small></div>' +
     '<div class="ph-mini"><b>Previous sessions</b><small>' + esc(ended.length ? ended.length + ' completed' : 'None yet') + '</small></div>' +
     '</div>';
 }
@@ -246,13 +292,14 @@ function upcomingRowsHtml(sessions) {
     return sessions.map(function (s) {
       return '<button class="ph-row" data-action="parent-session-detail" data-session="' + esc(s.session_record_id) + '">' +
         '<div class="ph-datebox ph-datebox-muted"><small>—</small><b>·</b></div>' +
-        '<div><div class="ph-row-title">' + esc(s.session_name) + '</div><div class="ph-row-sub">' + esc([s.time, s.venue].filter(Boolean).join('<br>')) + '</div></div>' +
+        '<div><div class="ph-row-title">' + esc(sessionTitle(s)) + '</div><div class="ph-row-sub">' + sessionMetaLines(s).map(esc).join('<br>') + '</div></div>' +
         '<div class="ph-chev">›</div></button>';
     }).join('');
   }
   return rows.slice(0, 3).map(function (r) {
     var s = r.session;
-    var sub = [s.time, s.venue, (s.coaches || []).length ? 'Coach: ' + s.coaches.join(', ') : ''].filter(Boolean).map(esc).join('<br>');
+    // The date box carries the day, so it isn't repeated in the sub-lines.
+    var sub = sessionMetaLines(s, { noDay: true }).map(esc).join('<br>');
     return '<button class="ph-row" data-action="parent-session-detail" data-session="' + esc(s.session_record_id) + '">' +
       '<div class="ph-datebox"><small>' + esc(['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'][r.date.getDay()]) + '</small><b>' + r.date.getDate() + '</b><em>' + esc(MONTHS[r.date.getMonth()].slice(0, 3).toUpperCase()) + '</em></div>' +
       '<div><div class="ph-row-title">' + esc(s.session_name) + '</div><div class="ph-row-sub">' + sub + '</div></div>' +
@@ -274,14 +321,14 @@ export function renderParentSessionDetail(sessionRecordId) {
   // Only rows the real schedule/venue records actually carry - a blank
   // field is omitted entirely rather than shown as "—" or filled in.
   var rows = [
-    ['Time', session.time],
     ['Day', session.day],
+    ['Time', session.time],
     ['Venue', session.venue],
     ['Address', v.address || session.address],
     ['Postcode', v.postcode],
+    ['Age group', session.age_group],
     ['Coach', (session.coaches || []).join(', ')],
     ['Programme', session.programme],
-    ['Age group', session.age_group],
     ['Meeting point', v.meeting_point],
     ['Parking', v.parking],
     ['Access', v.access],
@@ -291,8 +338,8 @@ export function renderParentSessionDetail(sessionRecordId) {
   root.innerHTML =
     '<section class="ph-detail-hero">' +
     (dates.length ? '<div class="ph-eyebrow">' + esc(formatDayDate(dates[0])) + '</div>' : '') +
-    '<h1>' + esc(session.session_name) + '</h1>' +
-    (session.venue ? '<p>' + esc(session.venue) + '</p>' : '') +
+    '<h1>' + esc(sessionTitle(session)) + '</h1>' +
+    '<p>' + esc([session.venue, session.age_group].filter(Boolean).join(' · ')) + '</p>' +
     '</section>' +
     sectionHead('Session Details') +
     '<section class="card ph-detail-list">' +
@@ -605,8 +652,7 @@ export function openRequestSessionSheet(playerId, playerName) {
   var options = requestable.map(function (s) {
     var pending = !!pendingIds[s.session_record_id];
     var selectAttr = (!pending && !pickedFirst) ? (pickedFirst = true, ' selected') : '';
-    var label = s.session_name + (s.day ? ' — ' + s.day : '') + (s.time ? ' ' + s.time : '');
-    return '<option value="' + esc(s.session_record_id) + '"' + (pending ? ' disabled' : '') + selectAttr + '>' + esc(label) + (pending ? ' (already requested)' : '') + '</option>';
+    return '<option value="' + esc(s.session_record_id) + '"' + (pending ? ' disabled' : '') + selectAttr + '>' + esc(sessionOptionLabel(s)) + (pending ? ' (already requested)' : '') + '</option>';
   }).join('');
   var anySelectable = pickedFirst;
   sheet.hidden = false;

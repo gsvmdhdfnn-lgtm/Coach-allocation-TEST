@@ -19,18 +19,34 @@ const SESSIONS = [
   { id: 'sess1', name: 'U9/10 Development', day: 'Wednesday', time: '4:00pm - 5:30pm', venue: "City of London Freemen's", address: 'Ashtead, Surrey', coaches: ['David'], age_group: 'U9/10', programme: 'Evening',
     venue_info: { address: 'Park Lane, Ashtead', postcode: 'KT21 1ET', parking: 'Use the main school car park.', meeting_point: 'Astro gate', access: '', notes: '' } },
   { id: 'sess2', name: 'U11/12 Academy', day: 'Thursday', time: '6:00pm - 7:30pm', venue: 'Therfield School', address: 'Leatherhead', coaches: ['David', 'Charlie'], age_group: 'U11/12', programme: 'Evening', venue_info: null },
-  { id: 'sess3', name: 'U13/14 Development', day: '', time: '', venue: '', address: '', coaches: [], age_group: '', programme: '', venue_info: null }
+  { id: 'sess3', name: 'U13/14 Development', day: '', time: '', venue: '', address: '', coaches: [], age_group: '', programme: '', venue_info: null },
+  // Two real-world-shaped rows whose session_name IS just the venue, so
+  // they are indistinguishable by name alone - exactly the "Daneshill"
+  // problem in the live schedule.
+  { id: 'sess4', name: 'Daneshill', day: 'Monday', time: '3:30pm - 4:30pm', venue: 'Daneshill', address: 'Leatherhead', coaches: ['Tom'], age_group: 'Years 1-2', programme: 'Day', venue_info: null },
+  { id: 'sess5', name: 'Daneshill', day: 'Thursday', time: '4:30pm - 5:30pm', venue: 'Daneshill', address: 'Leatherhead', coaches: ['Tom'], age_group: 'Years 5-6', programme: 'Day', venue_info: null }
 ];
+
+// Accounts that have a proper human display name set (mirrors Supabase
+// profiles.display_name, which the real function reads by Coach User ID).
+const PROFILE_DISPLAY_NAMES = { 'uid-davidcole': 'David Cole' };
 
 // Published+Active is the ONLY thing a parent may see - the draft and the
 // archived record below must never reach the parent client.
+// fb-pub-1 deliberately carries DUPLICATE rating rows for the same
+// framework item (the real Feedback Ratings table still does, left by an
+// older coach save path) so the dedupe is genuinely exercised: newest
+// createdTime wins.
 const FEEDBACK = [
-  { id: 'fb-pub-1', playerId: 'plyr1', date: '2026-09-20', coach: 'Coach David', published: true, active: true, session_name: 'U9/10 Development',
+  { id: 'fb-pub-1', playerId: 'plyr1', date: '2026-09-20', coach: 'davidcole.surrey', coach_user_id: 'uid-davidcole', published: true, active: true, session_name: 'U9/10 Development',
     keep_doing: 'Being you.', big_focus: 'Hard work.', summary: 'Been a joy to coach this year.',
     ratings: [
-      { framework_item_id: 'fi1', name: 'Winners', group: 'Characteristics', sort_order: 1, rating: 'Green', notes: '' },
-      { framework_item_id: 'fi2', name: 'Movers', group: 'Characteristics', sort_order: 2, rating: 'Blue', notes: '' },
-      { framework_item_id: 'fi3', name: 'Passing & Receiving', group: 'Football Pillars', sort_order: 3, rating: 'Amber', notes: '' }
+      { framework_item_id: 'fi1', name: 'Winners', group: 'Characteristics', sort_order: 1, rating: 'Red', notes: '', created: '2026-09-20T10:00:00.000Z' },
+      { framework_item_id: 'fi1', name: 'Winners', group: 'Characteristics', sort_order: 1, rating: 'Green', notes: '', created: '2026-09-20T12:00:00.000Z' },
+      { framework_item_id: 'fi2', name: 'Movers', group: 'Characteristics', sort_order: 2, rating: 'Amber', notes: '', created: '2026-09-20T10:00:00.000Z' },
+      { framework_item_id: 'fi2', name: 'Movers', group: 'Characteristics', sort_order: 2, rating: 'Blue', notes: '', created: '2026-09-20T11:00:00.000Z' },
+      { framework_item_id: 'fi2', name: 'Movers', group: 'Characteristics', sort_order: 2, rating: 'Blue', notes: '', created: '2026-09-20T11:30:00.000Z' },
+      { framework_item_id: 'fi3', name: 'Passing & Receiving', group: 'Football Pillars', sort_order: 3, rating: 'Amber', notes: '', created: '2026-09-20T10:00:00.000Z' }
     ] },
   { id: 'fb-pub-2', playerId: 'plyr1', date: '2026-08-31', coach: 'Demo Coach', published: true, active: true, session_name: 'U9/10 Development',
     keep_doing: 'Great attitude.', big_focus: 'First touch.', summary: 'Second review showing progress.', ratings: [] },
@@ -41,6 +57,18 @@ const FEEDBACK = [
   { id: 'fb-other-child', playerId: 'plyr2', date: '2026-09-19', coach: 'Coach David', published: true, active: true, session_name: 'U11/12 Academy',
     keep_doing: 'OTHER-CHILD-KEEP-DOING', big_focus: 'OTHER-CHILD-FOCUS', summary: 'OTHER-CHILD-SUMMARY', ratings: [] }
 ];
+
+// Mirrors the real function's parent-facing name rules.
+function presentableName(v) {
+  const s = String(v || '').trim();
+  if (!s) return '';
+  if (s.indexOf('@') >= 0) return '';
+  if (!/\s/.test(s) && /[._\d]/.test(s)) return '';
+  return s;
+}
+function parentFacingCoachName(displayName, coachName) {
+  return presentableName(displayName) || presentableName(coachName) || 'Your coach';
+}
 
 const FEEDBACK_SETTINGS = {
   framework_name: 'Player Development Framework', intro_text: '',
@@ -128,13 +156,24 @@ module.exports.start = function (port) {
       if (!owns) return send(r, 403, { error: 'You can only view feedback for your own verified children.' });
       const feedback = FEEDBACK
         .filter(f => f.playerId === playerId && f.published === true && f.active === true)
-        .map(f => ({
-          feedback_id: f.id, date: f.date, title: '', coach_name: f.coach, session_name: f.session_name,
-          summary: FEEDBACK_SETTINGS.show_general_feedback ? f.summary : '',
-          keep_doing: FEEDBACK_SETTINGS.show_keep_doing ? f.keep_doing : '',
-          big_focus: FEEDBACK_SETTINGS.show_my_focus ? f.big_focus : '',
-          ratings: f.ratings || []
-        }))
+        .map(f => {
+          // Same dedupe the real function does: one row per framework
+          // item, newest createdTime wins.
+          const newestByItem = new Map();
+          for (const rt of (f.ratings || [])) {
+            const prev = newestByItem.get(rt.framework_item_id);
+            if (!prev || String(rt.created || '') > String(prev.created || '')) newestByItem.set(rt.framework_item_id, rt);
+          }
+          return {
+            feedback_id: f.id, date: f.date, title: '',
+            coach_name: parentFacingCoachName(PROFILE_DISPLAY_NAMES[f.coach_user_id], f.coach),
+            session_name: f.session_name,
+            summary: FEEDBACK_SETTINGS.show_general_feedback ? f.summary : '',
+            keep_doing: FEEDBACK_SETTINGS.show_keep_doing ? f.keep_doing : '',
+            big_focus: FEEDBACK_SETTINGS.show_my_focus ? f.big_focus : '',
+            ratings: [...newestByItem.values()].sort((a, b) => a.sort_order - b.sort_order)
+          };
+        })
         .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
       return send(r, 200, { settings: FEEDBACK_SETTINGS, feedback });
     }

@@ -101,6 +101,26 @@ async function logOut(page) {
   const selectedDots = await page.locator('.ph-dot.is-selected').count();
   ck('The published ratings render as selected dots', selectedDots === 3, String(selectedDots));
 
+  // --- No duplicate development rows ----------------------------------
+  // The mock feeds SIX rating rows covering only THREE framework items
+  // (the live table carries the same duplicates), so this fails loudly if
+  // the dedupe regresses.
+  const rateNames = await page.locator('.ph-rate b').allInnerTexts();
+  const trimmedNames = rateNames.map(s => s.trim());
+  ck('Each development item renders exactly once', trimmedNames.length === new Set(trimmedNames).size, JSON.stringify(trimmedNames));
+  ck('...and all three distinct items are present', trimmedNames.length === 3, JSON.stringify(trimmedNames));
+  ck('Winners appears once, not four times', trimmedNames.filter(n => n === 'Winners').length === 1, JSON.stringify(trimmedNames));
+  ck('The newest saved rating wins for a de-duplicated item (Winners = Green)',
+    await page.locator('.ph-rate', { hasText: 'Winners' }).locator('.ph-dot.ph-green.is-selected').count() === 1);
+  ck('No rating row is merely hidden by CSS rather than removed',
+    await page.locator('.ph-rate').evaluateAll(els => els.every(e => getComputedStyle(e).display !== 'none')));
+
+  // --- Parent-facing coach name ----------------------------------------
+  const devHtmlForName = await page.locator('#screen-root').innerText();
+  ck('A system-style username is never shown to a parent', !/davidcole\.surrey/.test(devHtmlForName), devHtmlForName.slice(0, 160));
+  ck('The proper coach name is shown instead', /David Cole/.test(devHtmlForName));
+  ck('No email address leaks into the parent view', !/@/.test(devHtmlForName), devHtmlForName.slice(0, 160));
+
   // --- SESSIONS -------------------------------------------------------
   await page.click('.parent-nav [data-nav="parent-sessions"]');
   await page.waitForSelector('.ph-row, .ph-empty', { timeout: 8000 });
@@ -119,6 +139,39 @@ async function logOut(page) {
   ck('Session detail shows the real coach', /David/.test(detailText));
   ck('Session detail invents nothing for absent fields (no empty dashes)', !/—\s*$/m.test(detailText));
   ck('Back button is available from session detail', await page.locator('#app-back').isVisible());
+
+  // --- Back button belongs to drill-downs only -------------------------
+  for (const tab of ['parent-home', 'parent-sessions', 'parent-development', 'parent-more']) {
+    await page.click('.parent-nav [data-nav="' + tab + '"]');
+    await page.waitForTimeout(150);
+    ck('No Back button on the top-level ' + tab + ' tab', await page.locator('#app-back').isHidden());
+  }
+  // Drilling in again still offers Back, and returning to a tab clears it.
+  await page.click('.parent-nav [data-nav="parent-sessions"]');
+  await page.waitForSelector('.ph-row[data-action="parent-session-detail"]', { timeout: 8000 });
+  await page.click('.ph-row[data-action="parent-session-detail"]');
+  await page.waitForSelector('.ph-detail-hero', { timeout: 8000 });
+  ck('Back returns on a drill-down after visiting the tabs', await page.locator('#app-back').isVisible());
+  await page.click('#app-back');
+  await page.waitForSelector('.ph-hero', { timeout: 8000 });
+  ck('Back from session detail lands on a tab with no Back button left', await page.locator('#app-back').isHidden());
+
+  // --- Session labelling where venue names repeat ----------------------
+  await page.click('.parent-nav [data-nav="parent-sessions"]');
+  await page.waitForSelector('[data-action="parent-find-session"]', { timeout: 8000 });
+  await page.click('[data-action="parent-find-session"]');
+  await page.waitForSelector('#request-session-select', { timeout: 8000 });
+  const optionLabels = await page.locator('#request-session-select option').allInnerTexts();
+  const daneshill = optionLabels.map(s => s.trim()).filter(s => /Daneshill/.test(s));
+  ck('Both same-venue sessions are offered', daneshill.length === 2, JSON.stringify(optionLabels));
+  ck('The two "Daneshill" sessions are NOT identical entries', daneshill.length === 2 && daneshill[0] !== daneshill[1], JSON.stringify(daneshill));
+  ck('Same-venue options are distinguished by day/time/age group',
+    daneshill.every(l => /Monday|Thursday/.test(l)) && daneshill.some(l => /Years 1-2/.test(l)) && daneshill.some(l => /Years 5-6/.test(l)),
+    JSON.stringify(daneshill));
+  ck('An option never repeats the venue when it is already the title',
+    !daneshill.some(l => (l.match(/Daneshill/g) || []).length > 1), JSON.stringify(daneshill));
+  await page.click('[data-action="close-sheet"]');
+  await page.waitForTimeout(150);
 
   // --- MORE ------------------------------------------------------------
   await page.click('.parent-nav [data-nav="parent-more"]');
