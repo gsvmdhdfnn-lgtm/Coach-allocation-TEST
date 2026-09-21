@@ -38,7 +38,10 @@ export function renderPendingCoachList(list){
   var when=u.created_at?new Date(u.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'';
   return '<div class="pending-row" data-pending-row="'+esc(u.user_id)+'">'+
    '<span><b>'+esc(u.email||'(no email on file)')+'</b><small>Signed up '+esc(when)+'</small><small class="pending-error" hidden></small></span>'+
-   '<button class="primary-btn approve-btn" data-action="approve-coach" data-user-id="'+esc(u.user_id)+'">Approve</button>'+
+   '<div class="request-actions">'+
+    '<button class="primary-btn approve-btn" data-action="approve-coach" data-user-id="'+esc(u.user_id)+'">Approve</button>'+
+    '<button class="secondary-btn reject-btn" data-action="decline-coach" data-user-id="'+esc(u.user_id)+'">Decline</button>'+
+   '</div>'+
   '</div>';
  }).join('')+'</div>';
 }
@@ -61,6 +64,28 @@ export function approveCoach(userId,btn){
   if(errEl){errEl.hidden=false;errEl.textContent=e.message||'Could not approve this coach.'}
  });
 }
+export function declineCoach(userId,btn){
+ var row=btn.closest('.pending-row'),errEl=row&&row.querySelector('.pending-error');
+ if(!confirm('Decline this coach account? They will not be given Hub access. Nothing will be deleted.'))return;
+ if(row)row.querySelectorAll('button').forEach(function(b){b.disabled=true});
+ btn.textContent='Declining…';
+ if(errEl){errEl.hidden=true;errEl.textContent=''}
+ withAccessToken().then(function(token){
+  return fetch(approveCoachUrl()+'/decline',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({user_id:userId})});
+ }).then(function(r){
+  return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw new Error(body&&body.error||'Could not decline this coach.');return body});
+ }).then(function(){
+  toast('Coach account declined');
+  if(row)row.remove();
+  var list=document.querySelector('.pending-list');
+  if(list&&!list.children.length)renderPendingCoachList([]);
+ }).catch(function(e){
+  if(row)row.querySelectorAll('button').forEach(function(b){b.disabled=false});
+  btn.textContent='Decline';
+  if(errEl){errEl.hidden=false;errEl.textContent=e.message||'Could not decline this coach.'}
+ });
+}
+
 /**
  * Management-only: review Pending Player Session Requests (created by a
  * parent choosing sessions for their child - Phase 2, not built yet; for

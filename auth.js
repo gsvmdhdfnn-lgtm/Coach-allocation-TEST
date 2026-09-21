@@ -358,7 +358,7 @@ export function renderAuth(){
 
 export function authSubmit(){
  var emailEl=document.getElementById('auth-email'),pwEl=document.getElementById('auth-password');
- var email=(emailEl&&emailEl.value||'').trim(),password=pwEl&&pwEl.value||'';
+ var email=(emailEl&&emailEl.value||'').trim().toLowerCase(),password=pwEl&&pwEl.value||'';
  state.authEmail=email;
  if(!email||!password){state.authError='Enter your email and password.';renderAuth();return}
  if(!supabaseClient){state.authError='Sign-in is not configured.';renderAuth();return}
@@ -393,6 +393,7 @@ export function onSignedIn(session){
    state.role=(me.role||'pending').toLowerCase();
    state.me={name:me.display_name||'',email:me.email||'',userId:me.user_id,airtablePersonId:me.airtable_person_id};
    if(state.role==='pending'){renderAuthMessage('Waiting for approval','Thanks for signing up. Josh or David will approve your account shortly — come back and refresh once you’ve heard from them.',true);return}
+   if(state.role==='rejected'){renderAuthMessage('Account not approved','This coach account has not been approved. If you think this is a mistake, please contact Josh or David.',true);return}
    load();
   })
   .catch(function(e){renderAuthMessage('Could not load your profile',e.message||'Please try again.',true)});

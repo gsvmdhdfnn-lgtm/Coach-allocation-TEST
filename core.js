@@ -1,7 +1,7 @@
 import { renderHome, renderMyPlayers, renderResources, renderSchedule, renderSupport, renderVenueDetail, renderVenues, venueKey } from './coach.js';
 import { renderCoachManagement, renderManagement, renderParentClaims, renderPlayerMigration, renderSessionRequests } from './management.js';
 import { renderParentHub, renderParentScreen } from './parent.js';
-import { renderFeedbackForm, renderFeedbackHistory, renderFeedbackRecord, renderPlayerProfile } from './feedback.js';
+import { renderCoachDrafts, renderFeedbackForm, renderFeedbackHistory, renderFeedbackRecord, renderPlayerProfile } from './feedback.js';
 
 export let CFG=window.APP_CONFIG||{};
 
@@ -209,7 +209,7 @@ export function render(){document.getElementById('app').classList.remove('auth-m
   * screens you actually drilled into.
   */
  if(state.role==='parent'&&PARENT_TAB_SCREENS[state.screen])state.navStack=[];
- setNav(state.screen);if(state.role==='parent'){renderParentScreen();syncBackButton();window.scrollTo(0,0);return}if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();else if(state.screen==='session-requests')renderSessionRequests();else if(state.screen==='player-migration')renderPlayerMigration();else if(state.screen==='parent-claims')renderParentClaims();else if(state.screen==='player-profile')renderPlayerProfile(state.fbPlayerId,state.fbSessionRecordId);else if(state.screen==='feedback-form')renderFeedbackForm();else if(state.screen==='feedback-record')renderFeedbackRecord(state.fbRecordId);else if(state.screen==='feedback-history')renderFeedbackHistory(state.fbPlayerId,state.fbSessionRecordId);syncBackButton()}
+ setNav(state.screen);if(state.role==='parent'){renderParentScreen();syncBackButton();window.scrollTo(0,0);return}if(state.role!=='coach'&&state.role!=='management'){root.innerHTML='<div class="page-title"><h1>'+esc(state.role.charAt(0).toUpperCase()+state.role.slice(1))+' Hub</h1><p>This role shell is ready for its own screens. Coach screens remain separate.</p></div>';syncBackButton();return}if(TAB_SCREENS[state.screen]){ensureTabShell();renderIntoPane(state.screen,{home:renderHome,schedule:renderSchedule,resources:renderResources,players:renderMyPlayers}[state.screen]);Object.keys(panes).forEach(function(k){panes[k].hidden=(k!==state.screen)});window.scrollTo(0,0)}else if(state.screen==='venues')renderVenues();else if(state.screen==='venue-detail')renderVenueDetail(state.selectedVenue);else if(state.screen==='support')renderSupport();else if(state.screen==='management')renderManagement();else if(state.screen==='coach-management')renderCoachManagement();else if(state.screen==='session-requests')renderSessionRequests();else if(state.screen==='player-migration')renderPlayerMigration();else if(state.screen==='parent-claims')renderParentClaims();else if(state.screen==='player-profile')renderPlayerProfile(state.fbPlayerId,state.fbSessionRecordId);else if(state.screen==='feedback-form')renderFeedbackForm();else if(state.screen==='feedback-record')renderFeedbackRecord(state.fbRecordId);else if(state.screen==='feedback-history')renderFeedbackHistory(state.fbPlayerId,state.fbSessionRecordId);else if(state.screen==='feedback-drafts')renderCoachDrafts();syncBackButton()}
 
 export function openProfileSheet(){
  var m=state.me||{},roleLabel=(state.role||'coach').replace(/^./,function(c){return c.toUpperCase()});
@@ -247,11 +247,11 @@ export function openMoreSheet(){
  sheetContent.innerHTML='<div class="calendar-sheet"><h3>More</h3><div class="card more-list" style="margin-top:6px">'+rows.map(function(r){return '<button class="more-row" '+(r[3]?'data-nav="'+r[3]+'"':'')+(r[4]?' data-action="'+r[4]+'"':'')+'><span class="support-icon">'+r[0]+'</span><span><b>'+r[1]+'</b><small>'+esc(r[2])+'</small></span><span>›</span></button>'}).join('')+'</div></div>';
 }
 
-export function approveCoachUrl(){return (CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/approve-coach')}
+export function approveCoachUrl(){return CFG.approveCoachApiUrl||(CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/approve-coach')}
 
 export function playerSessionsUrl(){return (CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/player-sessions')}
 
-export function playerFeedbackUrl(){return (CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/player-feedback')}
+export function playerFeedbackUrl(){return CFG.playerFeedbackApiUrl||(CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/player-feedback')}
 /** Resolves to the current Supabase access token, or null if signed out/unconfigured. Never rejects. */
 
 export function accessToken(){
