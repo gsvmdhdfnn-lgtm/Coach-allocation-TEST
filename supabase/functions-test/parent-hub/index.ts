@@ -306,6 +306,40 @@ function extractClaimedNameDob(notes: string): { name: string; dob: string } | n
 }
 
 /**
+ * The link's lifecycle status.
+ *
+ * `Link Lifecycle Status` is the canonical field. The old `Link Status`
+ * was renamed `LEGACY — Link Status` in Airtable, so reading the old
+ * name alone returns undefined for every row - and because the caller
+ * defaulted undefined to "Pending", every link silently read as Pending,
+ * including verified ones and ended ones. Both names are read here,
+ * canonical first, so this behaves correctly against a base that has
+ * migrated and one that has not.
+ *
+ * `LINK_WRITE_FIELD` is what approve/reject write back. Writing to the
+ * retired name would 422, since that field no longer exists.
+ */
+const LINK_WRITE_FIELD = "Link Lifecycle Status";
+function linkStatus(fields: Record<string, any>): string {
+  return (
+    selectName(fields[LINK_WRITE_FIELD]) ||
+    selectName(fields["LEGACY — Link Status"]) ||
+    selectName(fields["Link Status"]) ||
+    "Pending"
+  );
+}
+
+/**
+ * A link that has been ended is not merely "not verified": the parent's
+ * access was deliberately removed, so nothing about that child may be
+ * returned to them - not a session, not a claim row, not the child's
+ * name. Ended links are dropped before anything is built from them.
+ */
+function isEndedLink(fields: Record<string, any>): boolean {
+  return linkStatus(fields) === "Ended";
+}
+
+/**
  * THE parent access gate, used by every parent-facing read below: returns
  * the Player record ids this parent is allowed to see, which is only ever
  * their own Verified links. A Pending or Needs Review claim grants
@@ -318,7 +352,7 @@ function verifiedPlayerIds(linkRows: any[], parentRecordId: string): Set<string>
   const ids = new Set<string>();
   for (const l of linkRows) {
     if (!(l.fields["Parent / Guardian"] || []).includes(parentRecordId)) continue;
-    if (l.fields["Link Status"] !== "Verified") continue;
+    if (linkStatus(l.fields) !== "Verified") continue;
     for (const pid of l.fields["Player"] || []) ids.add(pid);
   }
   return ids;
@@ -461,7 +495,10 @@ async function handleParentMe(caller: { userId: string; email: string }) {
   const children: any[] = [];
   const pendingClaims: any[] = [];
   for (const link of myLinks) {
-    const status = link.fields["Link Status"] || "Pending";
+    // Ended first, and with `continue`, so no branch below can put this
+    // child's name into the response.
+    if (isEndedLink(link.fields)) continue;
+    const status = linkStatus(link.fields);
     const playerIds: string[] = link.fields["Player"] || [];
     const player = playerIds[0] ? playerById[playerIds[0]] : null;
     if (status === "Verified" && player) {
@@ -746,7 +783,9 @@ async function handleCreateClaim(caller: { userId: string; email: string }, body
   const norm = normalizeName(playerName);
 
   const myOpenLinks = existingLinks.filter(
-    (l: any) => (l.fields["Parent / Guardian"] || []).includes(parentRecord.id) && l.fields["Link Status"] !== "Rejected"
+    (l: any) =>
+      (l.fields["Parent / Guardian"] || []).includes(parentRecord.id) &&
+      !["Rejected", "Ended"].includes(linkStatus(l.fields))
   );
   const alreadyClaimed = myOpenLinks.some((l: any) => {
     const linkedIds: string[] = l.fields["Player"] || [];
@@ -775,7 +814,7 @@ async function handleCreateClaim(caller: { userId: string; email: string }, body
       "Parent / Guardian": [parentRecord.id],
       Player: [matches[0].id],
       Relationship: relationship,
-      "Link Status": "Pending",
+      [LINK_WRITE_FIELD]: "Pending",
       "Signup Source": "Parent signup",
     });
     return jsonResponse({ ok: true, status: "Pending" });
@@ -790,7 +829,7 @@ async function handleCreateClaim(caller: { userId: string; email: string }, body
     "Link ID": linkId,
     "Parent / Guardian": [parentRecord.id],
     Relationship: relationship,
-    "Link Status": "Needs Review",
+    [LINK_WRITE_FIELD]: "Needs Review",
     "Signup Source": "Parent signup",
     Notes: note,
   });
@@ -814,14 +853,14 @@ async function handleListClaims() {
     .sort((a: any, b: any) => a.player_name.localeCompare(b.player_name));
 
   const pending = linkRows
-    .filter((l: any) => ["Pending", "Needs Review"].includes(l.fields["Link Status"]))
+    .filter((l: any) => ["Pending", "Needs Review"].includes(linkStatus(l.fields)))
     .map((l: any) => {
       const parent = parentById[(l.fields["Parent / Guardian"] || [])[0]];
       const playerIds: string[] = l.fields["Player"] || [];
       const player = playerIds[0] ? playerById[playerIds[0]] : null;
       return {
         link_id: l.id,
-        status: l.fields["Link Status"],
+        status: linkStatus(l.fields),
         parent_name: parent ? parent.fields["Parent / Guardian Name"] || "" : "(unknown parent)",
         parent_email: parent ? parent.fields["Email"] || "" : "",
         player_record_id: player ? player.id : "",
@@ -837,11 +876,11 @@ async function handleListClaims() {
 async function handleApproveClaim(linkId: string, body: any) {
   const link = await getAirtableRecord(TBL_PARENT_PLAYER_LINKS, linkId);
   if (!link) return jsonResponse({ error: "Claim not found" }, 404);
-  if (!["Pending", "Needs Review"].includes(link.fields["Link Status"])) {
-    return jsonResponse({ error: `Claim is already ${link.fields["Link Status"]}` }, 400);
+  if (!["Pending", "Needs Review"].includes(linkStatus(link.fields))) {
+    return jsonResponse({ error: `Claim is already ${linkStatus(link.fields)}` }, 400);
   }
   const overridePlayerId = body && body.player_record_id ? String(body.player_record_id) : "";
-  const fields: Record<string, unknown> = { "Link Status": "Verified" };
+  const fields: Record<string, unknown> = { [LINK_WRITE_FIELD]: "Verified" };
   if (overridePlayerId) {
     fields["Player"] = [overridePlayerId];
   } else if (!(link.fields["Player"] || []).length) {
@@ -854,10 +893,10 @@ async function handleApproveClaim(linkId: string, body: any) {
 async function handleRejectClaim(linkId: string, body: any) {
   const link = await getAirtableRecord(TBL_PARENT_PLAYER_LINKS, linkId);
   if (!link) return jsonResponse({ error: "Claim not found" }, 404);
-  if (!["Pending", "Needs Review"].includes(link.fields["Link Status"])) {
-    return jsonResponse({ error: `Claim is already ${link.fields["Link Status"]}` }, 400);
+  if (!["Pending", "Needs Review"].includes(linkStatus(link.fields))) {
+    return jsonResponse({ error: `Claim is already ${linkStatus(link.fields)}` }, 400);
   }
-  const fields: Record<string, unknown> = { "Link Status": "Rejected" };
+  const fields: Record<string, unknown> = { [LINK_WRITE_FIELD]: "Rejected" };
   if (body && body.note) {
     fields["Notes"] = ((link.fields["Notes"] || "") + "\n\nRejected: " + String(body.note).slice(0, 500)).trim();
   }
