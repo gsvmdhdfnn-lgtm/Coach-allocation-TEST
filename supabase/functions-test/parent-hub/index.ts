@@ -39,13 +39,13 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const TBL_PARENTS = "tbl2NC4oLuC4ZUFvD";
 const TBL_PARENT_PLAYER_LINKS = "tblMrzy6TmiNPXqUG";
 
-// Same "publish to web" Sessions CSV the Coach hub and player-feedback
-// already read - the schedule's own source of truth for day/time/venue/
-// coach. Airtable's Sessions table is only the access-control anchor
-// (Session ID + Session Name), so parent-facing session detail has to
-// join the two rather than inventing fields in Airtable.
-const SESSIONS_CSV_URL =
-  "https://docs.google.com/spreadsheets/d/e/2PACX-1vQj4giL7oEoZLLfC74Sq97bnUGIdMqnG_ECOkNyRis-Drz4yH1OUssQ-YBRbCR6ajiJBvV05JjzOi8I/pub?gid=349419235&single=true&output=csv";
+// TEST DEPLOYMENT: this function no longer reads the published Sessions
+// CSV at all. Session name, default day, default start/end time and
+// venue now come from the Sessions and Venues records themselves - the
+// agreed architecture is Airtable owns the operational schedule, Google
+// Sheets is finance/reporting only. See TEST-ENV.md for the exact field
+// mapping and what was deliberately left out of this repair (coach names,
+// and resolving "next session" from dated Session Occurrences).
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -173,57 +173,6 @@ function presentableName(v: any): string {
 /** The coach's account display name wins, then their Coach record name, then a neutral label - never the raw identifier. */
 function parentFacingCoachName(displayName: any, coachName: any): string {
   return presentableName(displayName) || presentableName(coachName) || "Your coach";
-}
-
-// --- Sessions CSV (schedule source of truth) -------------------------
-
-function parseCsvRows(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let q = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i], n = text[i + 1];
-    if (q) {
-      if (c === '"' && n === '"') { field += '"'; i++; }
-      else if (c === '"') { q = false; }
-      else field += c;
-    } else {
-      if (c === '"') q = true;
-      else if (c === ",") { row.push(field); field = ""; }
-      else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
-      else if (c !== "\r") field += c;
-    }
-  }
-  row.push(field);
-  if (row.some(Boolean)) rows.push(row);
-  return rows;
-}
-function csvHeaderKey(s: string): string {
-  return String(s || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-}
-function csvObjects(text: string): Record<string, string>[] {
-  const rows = parseCsvRows(text);
-  const headers = (rows.shift() || []).map(csvHeaderKey);
-  return rows.map((r) => {
-    const o: Record<string, string> = {};
-    headers.forEach((k, i) => { if (k) o[k] = (r[i] || "").trim(); });
-    return o;
-  });
-}
-/** Never throws - a schedule outage degrades session detail to the Airtable name only, it never breaks the whole hub. */
-async function fetchSessionsCsv(): Promise<Record<string, string>[]> {
-  try {
-    const res = await fetch(SESSIONS_CSV_URL, { cache: "no-store" });
-    if (!res.ok) return [];
-    return csvObjects(await res.text());
-  } catch (e) {
-    console.error("Sessions CSV unavailable", e);
-    return [];
-  }
-}
-function splitCoaches(s: string): string[] {
-  return String(s || "").split(",").map((x) => x.trim()).filter(Boolean);
 }
 
 function makeParentId(userId: string): string {
@@ -394,59 +343,52 @@ function verifiedPlayerIds(linkRows: any[], parentRecordId: string): Set<string>
   return ids;
 }
 
-/** Session record id -> the schedule row for its Session ID, when the sheet still carries one. */
-function buildScheduleBySessionRecordId(sessionRows: any[], csvRows: Record<string, string>[]) {
-  const csvBySessionId: Record<string, Record<string, string>> = {};
-  for (const r of csvRows) {
-    const sid = r.session_id;
-    if (sid && !csvBySessionId[sid]) csvBySessionId[sid] = r;
-  }
-  const out: Record<string, Record<string, string>> = {};
-  for (const s of sessionRows) {
-    const sid = s.fields["Session ID"];
-    if (sid && csvBySessionId[sid]) out[s.id] = csvBySessionId[sid];
-  }
-  return out;
-}
-
-/** Venue name -> the editable Venues record, for the parent-facing address/parking/meeting-point rows. */
-function buildVenueByName(venueRows: any[]) {
+/**
+ * Venue RECORD ID -> the Venues record, for the parent-facing venue name
+ * and address/parking/meeting-point rows. Keyed by id rather than by
+ * name-matching a free-text sheet column: Sessions links straight to its
+ * Venue record, so there is nothing to mismatch.
+ */
+function buildVenueByRecordId(venueRows: any[]) {
   const out: Record<string, any> = {};
   for (const v of venueRows) {
     if (v.fields["Active"] !== true) continue;
-    const name = v.fields["Venue Name"];
-    if (name) out[normalizeName(name)] = v.fields;
+    out[v.id] = v.fields;
   }
   return out;
 }
 
 /**
- * One session as a parent should see it: the Airtable access anchor
- * (record id / name) plus the real schedule row and the real venue
- * record. Every field is passed through exactly as published - nothing
- * is invented, and a field the sheet/venue record doesn't carry comes
- * back as "" so the client can omit that row rather than print a
- * placeholder.
+ * One session as a parent should see it, read entirely from Sessions and
+ * its linked Venue record - no Google Sheet involved. A field the
+ * Sessions/Venue record does not carry comes back as "" so the client
+ * omits that row rather than printing a placeholder.
+ *
+ * `coaches` is deliberately empty here: there is no canonical source
+ * wired into this repair yet. The old CSV had a free-text coach column;
+ * the canonical replacement is Session Staff (Session -> Coach -> Role),
+ * which this function does not read. Left as a known gap rather than
+ * silently reinstating the Sheet - see TEST-ENV.md.
  */
-function sessionPayload(session: any, schedule: Record<string, string> | undefined, venueByName: Record<string, any>) {
-  const sched = schedule || {};
-  const venueName = sched.venue || "";
-  const venue = venueName ? venueByName[normalizeName(venueName)] : null;
+function sessionPayload(session: any, venueByRecordId: Record<string, any>) {
+  const dayName = selectName(session.fields["Default Day"]);
+  const startTime = String(session.fields["Default Start Time"] || "").trim();
+  const endTime = String(session.fields["Default End Time"] || "").trim();
+  const time = [startTime, endTime].filter(Boolean).join(" – ");
+  const venueId = firstLink(session.fields, "Venue");
+  const venue = venueId ? venueByRecordId[venueId] : null;
   return {
     session_record_id: session.id,
     session_id: session.fields["Session ID"] || "",
     session_name: session.fields["Session Name"] || "",
-    programme: sched.programme || "",
-    category: sched.category || "",
-    age_group: sched.age_group || "",
-    day: sched.day || "",
-    time: sched.time || "",
-    venue: venueName,
-    address: sched.address || "",
-    // Schedule coach names are free text, so they get the same
-    // presentable-name check as feedback authors - a login-style entry is
-    // dropped rather than shown to a parent.
-    coaches: splitCoaches(sched.coaches || "").map(presentableName).filter(Boolean),
+    programme: session.fields["Programme"] || "",
+    category: session.fields["Category"] || "",
+    age_group: session.fields["Age Group"] || "",
+    day: dayName,
+    time,
+    venue: venue ? String(venue["Venue Name"] || "") : "",
+    address: venue ? String(venue["Address"] || "") : "",
+    coaches: [] as string[],
     venue_info: venue
       ? {
           address: venue["Address"] || "",
@@ -509,22 +451,20 @@ async function handleParentMe(caller: { userId: string; email: string }) {
     console.error("Could not sync profiles.airtable_person_id", e);
   }
 
-  const [linkRows, playerRows, sessionRows, sessionLinkRows, sessionRequests, venueRows, csvRows] = await Promise.all([
+  const [linkRows, playerRows, sessionRows, sessionLinkRows, sessionRequests, venueRows] = await Promise.all([
     getAirtableRecords(TBL_PARENT_PLAYER_LINKS),
     getAirtableRecords("Players"),
     getAirtableRecords("Sessions"),
     getAirtableRecords("Player Session Links"),
     fetchSessionRequests(),
     getAirtableRecords("Venues"),
-    fetchSessionsCsv(),
   ]);
   const requestRows = sessionRequests.rows;
   const playerById: Record<string, any> = {};
   for (const p of playerRows) playerById[p.id] = p;
   const sessionById: Record<string, any> = {};
   for (const s of sessionRows) sessionById[s.id] = s;
-  const scheduleBySessionRecordId = buildScheduleBySessionRecordId(sessionRows, csvRows);
-  const venueByName = buildVenueByName(venueRows);
+  const venueByRecordId = buildVenueByRecordId(venueRows);
 
   const myLinks = linkRows.filter((l: any) => (l.fields["Parent / Guardian"] || []).includes(parentRecord.id));
 
@@ -549,7 +489,7 @@ async function handleParentMe(caller: { userId: string; email: string }) {
           const session = sessionById[firstLink(l.fields, "Session")];
           if (!session) return null;
           return {
-            ...sessionPayload(session, scheduleBySessionRecordId[session.id], venueByName),
+            ...sessionPayload(session, venueByRecordId),
             start_date: l.fields["Start Date"] || "",
           };
         })
@@ -564,7 +504,7 @@ async function handleParentMe(caller: { userId: string; email: string }) {
           const session = sessionById[firstLink(l.fields, "Session")];
           if (!session) return null;
           return {
-            ...sessionPayload(session, scheduleBySessionRecordId[session.id], venueByName),
+            ...sessionPayload(session, venueByRecordId),
             paused_from: l.fields["Pause Start Date"] || "",
             returns_on: l.fields["Pause Return Date"] || "",
           };
@@ -629,20 +569,23 @@ async function handleParentMe(caller: { userId: string; email: string }) {
   const availableSessions = sessionRows
     .filter((s: any) => sessionIsActive(s.fields))
     .map((s: any) => {
-      const sched = scheduleBySessionRecordId[s.id] || {};
+      const venueId = firstLink(s.fields, "Venue");
+      const venue = venueId ? venueByRecordId[venueId] : null;
+      const startTime = String(s.fields["Default Start Time"] || "").trim();
+      const endTime = String(s.fields["Default End Time"] || "").trim();
       return {
         session_record_id: s.id,
-        // The schedule's own Session ID, used only to tell two otherwise
+        // The Session's own Session ID, used only to tell two otherwise
         // identical-looking picker options apart. It is NOT unique in
         // this table (D13 exists twice), so the record id above stays the
         // identity every write is validated against.
         session_id: s.fields["Session ID"] || "",
         session_name: s.fields["Session Name"] || "",
-        day: sched.day || "",
-        time: sched.time || "",
-        venue: sched.venue || "",
-        age_group: sched.age_group || "",
-        programme: sched.programme || "",
+        day: selectName(s.fields["Default Day"]),
+        time: [startTime, endTime].filter(Boolean).join(" – "),
+        venue: venue ? String(venue["Venue Name"] || "") : "",
+        age_group: s.fields["Age Group"] || "",
+        programme: s.fields["Programme"] || "",
       };
     })
     .sort((a: any, b: any) => a.session_name.localeCompare(b.session_name));

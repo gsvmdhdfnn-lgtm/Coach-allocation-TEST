@@ -126,3 +126,70 @@ Real calls to `/parent-hub/me` on the test project (parent-hub v3):
 `paused_sessions` is returned by the API but no screen renders it yet -
 the Parent Sessions screen has no paused section. That is a frontend
 change, which is deferred.
+
+## Google Sheets dependency removed from sessionPayload — 2026-09-26
+
+TEST only. Confirmed field mapping before changing anything, as asked:
+
+| Item | Backend source |
+|---|---|
+| Session name | `Sessions.Session Name` (already a direct field; was always read this way) |
+| Default day | `Sessions.Default Day` (singleSelect: Monday…Sunday) |
+| Default start/end time | `Sessions.Default Start Time` + `Sessions.Default End Time` (both free-text), joined as one display string |
+| Venue | `Sessions.Venue` → linked `Venues` record (Venue Name, Address, Postcode, Parking, Meeting Point, Access, Notes) |
+| Programme / Category / Age Group | Also direct `Sessions` fields — these were being taken from the Sheet too although Airtable already carried them; folded into the same repair since the source was already fetched |
+
+Also removed: `SESSIONS_CSV_URL`, the CSV parser, and the Session-ID-keyed
+join that matched a Sessions row to a Sheet row. `sessionPayload` no
+longer fetches or references the Sheet in any way. Venue resolution now
+follows the real Airtable link (`Sessions.Venue` → record id), not a
+name-match against a free-text sheet column — a link cannot silently
+mismatch the way a name string can.
+
+**Left out of this repair, deliberately:** `coaches` is now `[]`. The old
+CSV had a free-text coach-names column; there is no canonical replacement
+wired into `sessionPayload`. The canonical source is `Session Staff`
+(Session → Coach → Role), which this function does not read. Not fixed
+here because it needs its own Airtable fetch and a per-session join, which
+goes beyond the four fields asked for. Flagged as a known follow-up.
+
+### Stopped, not built: "Next Session" from dated occurrences
+
+Checked before changing anything. **Parent Home's "Next Session" does not
+use `Session Occurrences` at all, in TEST or in the archived production
+source.** `nextSessionHtml()` in `parent.js` calls `nextOccurrences(session.day,
+1)` — a pure client-side projection of the next calendar date matching the
+session's recurring weekday name. It has no concept of a cancelled,
+postponed or rescheduled date, because it never reads a dated record.
+
+Resolving "next session" from `Session Occurrences` instead is an
+occurrence-level change, not a field-source swap:
+
+1. **No `Session Occurrences` records exist in the test base yet** — none
+   were seeded. Whether the live base generates them ahead of each
+   session, and how far ahead, is unknown from here and needs answering
+   before backend logic can rely on them existing.
+2. It needs new backend logic: for each session a child is on, fetch its
+   `Session Occurrences`, filter to `Date >= today` and a `Status` that is
+   not Cancelled, and take the earliest — plus a decision on what happens
+   when no such occurrence exists yet for a session (fall back to the
+   recurring projection? show nothing?).
+3. It is a frontend change too — `nextOccurrences()` would need replacing
+   or bypassing, which is out of scope for this TEST-only backend repair
+   and was asked not to be touched yet.
+
+**Not built.** Reported per the instruction to stop rather than proceed
+into occurrence-level work.
+
+### Verified with real Parent Hub calls — parent-hub v4 (TEST)
+
+- **parent.a** → 200. Archie's current session now reads: day **Monday**,
+  time **17:00 – 18:00**, venue **Test Park**, with venue_info populated
+  (postcode TE5 7ST, meeting point "Blue gate"). Previously all of these
+  were blank.
+- `available_sessions` (2 rows) both now carry real day/time/venue instead
+  of blanks.
+- The verified-link, paused-membership and ended-link-privacy fixes from
+  the previous two repairs were re-checked in the same calls and still
+  hold: Archie a child, Bella pending, Dylan paused, `parent.ended` sees
+  nothing.
