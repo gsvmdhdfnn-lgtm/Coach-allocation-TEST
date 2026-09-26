@@ -108,6 +108,35 @@ cannot stand in for a mechanical byte-diff.
 `--check` treats it as CommonJS and will not strip TypeScript syntax; it was
 verified with a temporary prepended import. The archived file is unmodified.
 
+## Airtable base — verified 2026-09-26
+
+The deployed functions read **`apprptFotQuVL1mhs` (Josh Evans Hub)**.
+
+Established by digest comparison, not by inference. The SHA-256 of the
+`AIRTABLE_BASE_ID` secret on project `bkkukymqaxawnudoxdjs`, read from the
+Supabase dashboard, is:
+
+```
+8bf46c787790a7bdc508dca10d19754037f0922ad33cf8b232cc8f8d706aac98
+```
+
+which is SHA-256 of the exact 17 bytes `apprptFotQuVL1mhs` with no trailing
+newline. A hash match against a specific candidate plaintext cannot occur by
+coincidence, so this identifies the value itself.
+
+Earlier attempts that did **not** establish it, recorded so they are not
+repeated: a token's permitted-bases list (says what a token *may* reach, not
+what the deployment uses); `ezbr_sha256` (build metadata, not content);
+response sizes (infers nothing).
+
+All six Airtable-reading functions resolve the base the same way —
+`Deno.env.get("AIRTABLE_BASE_ID")`, with no literal base ID anywhere in the
+source — so the one secret governs every one of them. (`me` does not touch
+Airtable.)
+
+Consequence for testing: `apprptFotQuVL1mhs` and `app6ex6UHY2RRO2Ak`
+(Master Copy) are both on the refusal list in `tests/support/base-guard.js`.
+
 ## Known-broken at capture
 
 Recorded so the baseline is not mistaken for a healthy system. The first
