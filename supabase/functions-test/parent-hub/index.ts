@@ -306,6 +306,42 @@ function extractClaimedNameDob(notes: string): { name: string; dob: string } | n
 }
 
 /**
+ * A membership's lifecycle status.
+ *
+ * `Membership Lifecycle Status` is canonical. The old `Status` was renamed
+ * `LEGACY — Status`, so reading the old name alone returns undefined for
+ * every row and no membership ever matches "Active" - which is why a
+ * verified child showed no sessions at all.
+ *
+ * The canonical field carries five values where the old one carried two.
+ * Per the agreed rules: Paused is shown separately and read-only, while
+ * Cancellation Pending and Ending Scheduled stay with the current
+ * sessions, because the player is still attending.
+ */
+function membershipStatus(fields: Record<string, any>): string {
+  return (
+    selectName(fields["Membership Lifecycle Status"]) ||
+    selectName(fields["LEGACY — Status"]) ||
+    selectName(fields["Status"]) ||
+    ""
+  );
+}
+const STILL_ATTENDING = ["Active", "Cancellation Pending", "Ending Scheduled"];
+
+/**
+ * Whether a Session is open. `Session Lifecycle Status` is canonical; the
+ * old `Active` checkbox was renamed `LEGACY — Active`, so the old read
+ * returned undefined for every session and the "Find Another Session"
+ * list came back empty.
+ */
+function sessionIsActive(fields: Record<string, any>): boolean {
+  const canonical = selectName(fields["Session Lifecycle Status"]);
+  if (canonical) return canonical === "Active";
+  if (typeof fields["LEGACY — Active"] === "boolean") return fields["LEGACY — Active"] === true;
+  return fields["Active"] === true;
+}
+
+/**
  * The link's lifecycle status.
  *
  * `Link Lifecycle Status` is the canonical field. The old `Link Status`
@@ -508,7 +544,7 @@ async function handleParentMe(caller: { userId: string; email: string }) {
       const myLinkRows = sessionLinkRows.filter((l: any) => (l.fields["Player"] || []).includes(player.id));
 
       const activeSessions = myLinkRows
-        .filter((l: any) => l.fields["Status"] === "Active")
+        .filter((l: any) => STILL_ATTENDING.includes(membershipStatus(l.fields)))
         .map((l: any) => {
           const session = sessionById[firstLink(l.fields, "Session")];
           if (!session) return null;
@@ -519,15 +555,35 @@ async function handleParentMe(caller: { userId: string; email: string }) {
         })
         .filter((x: any) => x);
 
+      // Paused is its own bucket: still a membership, but nothing about it
+      // is actionable from here, so the client shows it read-only rather
+      // than mixed in with the sessions the child is currently attending.
+      const pausedSessions = myLinkRows
+        .filter((l: any) => membershipStatus(l.fields) === "Paused")
+        .map((l: any) => {
+          const session = sessionById[firstLink(l.fields, "Session")];
+          if (!session) return null;
+          return {
+            ...sessionPayload(session, scheduleBySessionRecordId[session.id], venueByName),
+            paused_from: l.fields["Pause Start Date"] || "",
+            returns_on: l.fields["Pause Return Date"] || "",
+          };
+        })
+        .filter((x: any) => x);
+
       const endedSessions = myLinkRows
-        .filter((l: any) => l.fields["Status"] === "Ended")
+        .filter((l: any) => membershipStatus(l.fields) === "Ended")
         .map((l: any) => {
           const session = sessionById[firstLink(l.fields, "Session")];
           if (!session) return null;
           return {
             session_record_id: session.id,
             session_name: session.fields["Session Name"] || "",
-            end_date: l.fields["End Date"] || "",
+            // The date it ACTUALLY ended. Scheduled End Date is what was
+            // planned and is deliberately reported separately - a plan is
+            // not an outcome, and former access is judged on the real end.
+            end_date: l.fields["LEGACY — End Date"] || l.fields["End Date"] || "",
+            scheduled_end_date: l.fields["Scheduled End Date"] || "",
           };
         })
         .filter((x: any) => x)
@@ -553,6 +609,7 @@ async function handleParentMe(caller: { userId: string; email: string }) {
         photo_url: attachmentUrl(player.fields, "Profile Photo"),
         relationship: link.fields["Relationship"] || "",
         active_sessions: activeSessions,
+        paused_sessions: pausedSessions,
         ended_sessions: endedSessions,
         pending_requests: pendingRequests,
       });
@@ -570,7 +627,7 @@ async function handleParentMe(caller: { userId: string; email: string }) {
   // browser is a public-style list of what's on offer, never a window
   // into who else is in a session or anything operational.
   const availableSessions = sessionRows
-    .filter((s: any) => s.fields["Active"] === true)
+    .filter((s: any) => sessionIsActive(s.fields))
     .map((s: any) => {
       const sched = scheduleBySessionRecordId[s.id] || {};
       return {
@@ -928,7 +985,7 @@ async function handleParentSessionRequest(caller: { userId: string; email: strin
   }
 
   const session = await getAirtableRecord("Sessions", sessionRecordId);
-  if (!session || session.fields["Active"] !== true) return jsonResponse({ error: "That session is not available." }, 400);
+  if (!session || !sessionIsActive(session.fields)) return jsonResponse({ error: "That session is not available." }, 400);
 
   const [sessionLinks, sessionRequests] = await Promise.all([
     getAirtableRecords("Player Session Links"),
@@ -946,7 +1003,7 @@ async function handleParentSessionRequest(caller: { userId: string; email: strin
     (l: any) =>
       (l.fields["Player"] || []).includes(playerRecordId) &&
       (l.fields["Session"] || []).includes(sessionRecordId) &&
-      l.fields["Status"] === "Active"
+      STILL_ATTENDING.includes(membershipStatus(l.fields))
   );
   if (alreadyActive) return jsonResponse({ error: "This child is already linked to that session." }, 400);
 
