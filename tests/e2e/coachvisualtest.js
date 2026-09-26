@@ -33,6 +33,16 @@ function makeServer(opts) {
     if (u === '/hub-content/coach-support') { r.writeHead(200, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify(opts.support || [])); }
     if (u === '/hub-content/public-pages') { r.writeHead(200, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify([])); }
     if (u === '/hub-content/what-we-offer') { r.writeHead(200, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify([])); }
+    // An EMPTY Player Hub means the read succeeded and returned nothing -
+    // which is what the Player Hub scenario below is checking. Without
+    // this route the request 404s, and a failed read is now (correctly) an
+    // error state rather than "No players yet".
+    if (u === '/hub-content/players') {
+      const auth = q.headers['authorization'] || '';
+      if (!auth) { r.writeHead(401, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify({ error: 'Missing or invalid Authorization header' })); }
+      r.writeHead(200, { 'Content-Type': 'application/json' });
+      return r.end(JSON.stringify(opts.players || []));
+    }
     if (u === '/hub-content/session-participants') {
       const auth = q.headers['authorization'] || '';
       if (!auth) { r.writeHead(401, { 'Content-Type': 'application/json' }); return r.end(JSON.stringify({ error: 'Missing or invalid Authorization header' })); }

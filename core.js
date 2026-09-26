@@ -7,7 +7,7 @@ export let CFG=window.APP_CONFIG||{};
 
 export let DEMO=new URLSearchParams(location.search).get('demo')==='1';
 
-export let state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],participantCounts:{},airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,expandedPlayerSession:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[],whatWeOffer:[],parentHub:null,parentHubLoaded:false,parentChildId:null,parentSessionId:null,parentFeedback:{},parentFeedbackLoaded:false,parentFeedbackError:'',parentFeedbackId:null,parentPolicy:'',parentUpdates:[],fbPlayerId:null,fbSessionRecordId:null,fbFramework:null,fbHistory:{},fbRecord:null,fbEditingId:null,fbDraft:null,fbBusy:false,fbError:'',fbRecordId:null};
+export let state={sessions:[],coaches:[],calendar:{},changes:[],terms:[],themes:{},venueInfo:{},resources:[],coachSupport:[],players:[],playersError:'',participantCounts:{},airtableVenues:{},me:null,role:'coach',screen:'home',week:null,financials:null,unlocked:false,scheduleView:'today',scheduleWeekOffset:0,calendarCursor:null,calendarSelected:null,expandedDay:null,expandedPlayerSession:null,virtualSessions:{},sessionDate:null,selectedVenue:null,venueQuery:'',navStack:[],authScreen:'login',authEmail:'',authError:'',authBusy:false,authAccountType:'staff',publicPages:[],whatWeOffer:[],parentHub:null,parentHubLoaded:false,parentChildId:null,parentSessionId:null,parentFeedback:{},parentFeedbackLoaded:false,parentFeedbackError:'',parentFeedbackId:null,parentPolicy:'',parentUpdates:[],fbPlayerId:null,fbSessionRecordId:null,fbFramework:null,fbHistory:{},fbRecord:null,fbEditingId:null,fbDraft:null,fbBusy:false,fbError:'',fbRecordId:null};
 
 export let supabaseClient=(!DEMO&&window.supabase&&CFG.supabaseUrl&&CFG.supabasePublishableKey)?window.supabase.createClient(CFG.supabaseUrl,CFG.supabasePublishableKey):null;
 
@@ -116,6 +116,22 @@ export function demoData(){
  state.unlocked=true;
 }
 
+/**
+ * Players is the one collection whose read failure must NOT be swallowed
+ * into an empty list: every other collection here degrades to "nothing to
+ * show", but an empty player list is a meaningful, believable state ("no
+ * players on your sessions yet"), so a connection or permission failure
+ * rendered as [] is indistinguishable from the real thing. loadPlayers
+ * throws on a non-2xx or a network failure and only resolves for a 200,
+ * so the two are separable at the source - this keeps the raw reason out
+ * of the coach-facing copy (it can name internals like a status code)
+ * while still logging it for diagnosis.
+ */
+export function playersErrorText(e){
+ if(e)console.error('Player Hub load failed:',e);
+ return 'This is usually just a weak connection - check your signal and try again.';
+}
+
 export function load(){
  if(DEMO){demoData();render();return}
  root.innerHTML='<div class="loading">Loading your hub…</div>';
@@ -128,7 +144,7 @@ export function load(){
  HubContent.loadResources().catch(function(){return []}),
  HubContent.loadVenues().catch(function(){return []}),
  HubContent.loadCoachSupport().catch(function(){return []}),
- HubContent.loadPlayers(token).catch(function(){return []}),
+ HubContent.loadPlayers(token).then(function(list){return {players:list||[]}},function(e){return {error:playersErrorText(e)}}),
  HubContent.loadSessionParticipants(token).catch(function(){return []})
 ])}).then(function(all){
 
@@ -138,7 +154,7 @@ export function load(){
   state.resources=all[5]||[];
   (all[6]||[]).forEach(function(v){if(!v.name)return;state.venueInfo[venueKey(v.name)]={venue:v.name,address:v.address||'',postcode:v.postcode||'',parking:v.parking||'',meetingPoint:v.meeting_point||'',access:v.access||'',notes:v.notes||'',heroImageUrl:v.hero_image_url||'',parkingImageUrl:v.parking_image_url||'',siteMapUrl:v.site_map_url||''}});
   state.coachSupport=all[7]||[];
-  state.players=all[8]||[];
+  var playersResult=all[8]||{};state.players=playersResult.players||[];state.playersError=playersResult.error||'';
   state.participantCounts={};(all[9]||[]).forEach(function(r){if(r.session_id)state.participantCounts[r.session_id]=r.participants});
   state.week=iso(mondayOf(new Date()));render();
  }).catch(function(e){root.innerHTML='<div class="error"><b>Couldn’t load your Hub.</b><br>This is usually just a weak connection - check your signal and try again.<br>'+

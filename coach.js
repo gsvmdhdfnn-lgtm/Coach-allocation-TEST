@@ -1,4 +1,4 @@
-import { CFG, DAY_ORDER, accessToken, changesWarningBanner, esc, hubName, icons, iso, mondayOf, money, nameKey, parseDate, playerSessionsUrl, reRenderMyPlayers, root, setNav, sheet, sheetContent, state, toast, withAccessToken } from './core.js';
+import { CFG, DAY_ORDER, accessToken, changesWarningBanner, esc, hubName, icons, iso, mondayOf, money, nameKey, parseDate, playerSessionsUrl, playersErrorText, reRenderMyPlayers, root, setNav, sheet, sheetContent, state, toast, withAccessToken } from './core.js';
 
 export function mine(){return state.sessions.filter(function(s){return !state.me||s.coaches.some(function(c){return nameKey(c)===nameKey(state.me.name)})})}
 
@@ -321,8 +321,15 @@ export function playerRowHtml(p){
  * for a legacy/unmigrated row, which has no session id) is exactly right.
  */
 
+/**
+ * The empty state is only reachable when the players read actually
+ * succeeded and came back with nothing. A failed read sets
+ * state.playersError instead (see core.js's playersErrorText) and shows
+ * that, so a connection or permission problem can never be mistaken for
+ * "this coach has no players".
+ */
 export function renderMyPlayers(){
- var rows=state.players||[];
+ var rows=state.playersError?[]:(state.players||[]);
  var groups={},order=[];
  rows.forEach(function(p){
   var key=p.session_record_id||('legacy:'+p.session_name);
@@ -338,11 +345,27 @@ export function renderMyPlayers(){
      '<button class="player-session-head" data-action="toggle-player-session" data-key="'+esc(key)+'"><span class="player-session-icon">'+icons.users+'</span><span class="player-session-name">'+esc(g.name)+'</span><span class="player-session-count">'+g.players.length+(open?' ▾':' ▸')+'</span></button>'+
      (open?g.players.map(playerRowHtml).join(''):'')+
     '</div>';
-   }).join('')+'</div>':'<div class="empty-state"><span class="empty-state-icon">'+icons.users+'</span><b>No players yet</b><p>Players linked to your sessions will appear here.</p></div>');
+   }).join('')+'</div>':state.playersError?
+   '<div class="error players-error"><b>Couldn’t load your players.</b>'+esc(state.playersError)+
+    '<button class="primary-btn error-retry" data-action="retry-players">Try again</button></div>':
+   '<div class="empty-state"><span class="empty-state-icon">'+icons.users+'</span><b>No players yet</b><p>Players linked to your sessions will appear here.</p></div>');
 }
 
-export function reloadPlayers(){
- return accessToken().then(function(token){return HubContent.loadPlayers(token)}).then(function(rows){state.players=rows||[];reRenderMyPlayers()}).catch(function(){});
+/**
+ * Re-reads only the players collection and re-renders that one pane -
+ * used by the Player Hub's own Try again button and after ending a
+ * membership. The rest of the Hub already loaded, so there is nothing to
+ * gain from tearing it all down. A failure is recorded in
+ * state.playersError rather than swallowed: previously a failed refresh
+ * left a silently stale list, and a failed first load showed "No players
+ * yet".
+ */
+export function reloadPlayers(btn){
+ if(btn){btn.disabled=true;btn.textContent='Trying again…'}
+ return accessToken().then(function(token){return HubContent.loadPlayers(token)})
+  .then(function(rows){state.players=rows||[];state.playersError=''})
+  .catch(function(e){state.playersError=playersErrorText(e)})
+  .then(function(){reRenderMyPlayers()});
 }
 /**
  * Management-only: a player has left this session. Snapshots the
