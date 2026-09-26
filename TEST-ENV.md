@@ -1568,3 +1568,99 @@ showing wrong times routinely once Slice 6 lands, not just in one
 edge-case test. Recommend deciding the Parent Hub fix (TEST only, or
 TEST+production) before or alongside starting Slice 6, rather than
 after.
+
+## Parent Hub occurrence-time display fix - TEST only - 2026-09-26
+
+Fixes the Slice 5 section E defect: `nextOccurrencePayload()` in
+`supabase/functions-test/parent-hub/index.ts` displayed the raw UTC
+digits of an occurrence's `Start Date & Time`/`End Date & Time`
+(`startIso.slice(11, 16)`) instead of converting to Europe/London, so
+any occurrence dated within BST showed a time 1 hour behind the real
+local time.
+
+### Fix
+
+Added `formatUkTime(iso: string): string`, using
+`Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", hour:
+"2-digit", minute: "2-digit", hour12: false }).formatToParts(...)` -
+the same double-format approach already used the other direction in
+`schedule-utils.ts`. Fails closed to `""` for blank/unparseable input
+(this file's existing convention). Normalises Intl's occasional
+midnight `"24"` to `"00"`. `nextOccurrencePayload()` now calls
+`formatUkTime()` for both `startTime`/`endTime` instead of slicing the
+raw ISO string.
+
+**Scope, confirmed via `grep` before changing anything**: this was the
+only site reading an occurrence's ISO timestamp for display. The other
+two `startTime`/`endTime` usages (`sessionPayload()`'s recurring-day
+payload, and the `available_sessions` builder) read `Session.Default
+Start Time`/`Default End Time` - plain `"HH:MM"` strings, not ISO
+instants - and were correctly left untouched, so recurring Session
+time fields are unaffected. `resolveNextOccurrence()` (which occurrence
+*wins*) was not touched at all - only how the winning occurrence's time
+is formatted for display. The Session Occurrence generator
+(`generator.ts`/`schedule-utils.ts`) was not touched.
+
+Same fix duplicated in the hand-kept Node-runnable test copy
+`tests/support/next-occurrence.test.ts` (existing convention, same as
+`player-access.ts`). Corrected one pre-existing assertion whose
+expected value had baked in the old bug (`replacement3`'s stored
+16:30Z on 7 Oct, within BST, now correctly asserted as displaying
+`17:30`, not `16:30`).
+
+### New focused tests (in `tests/support/next-occurrence.test.ts`)
+
+- A BST-period UTC instant converts 1 hour ahead: `13:00Z` in July ->
+  `14:00`.
+- A GMT-period UTC instant converts with no offset: `13:00Z` in
+  January -> `13:00`.
+- The real 2026 UK autumn clock-change boundary, same nominal UTC hour
+  (`17:00Z`) on both sides: 24 Oct (Saturday, still BST) -> `18:00`;
+  25 Oct (Sunday, already GMT) -> `17:00`.
+- `formatUkTime` fails closed to `""` for blank/unparseable input.
+
+`node --experimental-strip-types tests/support/next-occurrence.test.ts`
+-> **19/19 passing** (14 pre-existing `resolveNextOccurrence()` tests,
+unchanged and still green, + 5 new/corrected for this fix).
+
+### Deployment
+
+TEST `parent-hub` redeployed: **v7 -> v8**. Production `parent-hub`
+confirmed unchanged at **v6** (not touched by this task).
+
+### Real TEST-data verification (real HTTP via `pg_net`, fresh
+`parent.a@test.invalid` sign-in, `GET /parent-hub/me`)
+
+- **TEST-B occurrence, BST/GMT display**: Archie's `next_occurrence` for
+  TEST-B (`recgmyAOR0KCQ9G9V`, 2026-10-01, BST) now shows
+  `"time":"18:00 – 19:00"` - correct, matches the Session's real
+  Default Start/End Time. Previously wrong `"17:00 – 18:00"`.
+- **TEST-A rescheduled occurrence**: Archie's `next_occurrence` for
+  TEST-A resolves to the 7 Oct replacement (`recszcwKC52pdXqfW`) and
+  now shows `"time":"17:30 – 18:30"` (16:30Z stored, BST, +1h) -
+  correct, and `"rescheduled":true` still set. The reschedule-chain
+  resolution itself (cancelled/postponed skipped, replacement wins) is
+  identical to Slice 5's baseline - only the displayed time changed.
+- **Clock-change boundary dates**: covered by the two new focused unit
+  tests above using the real 24/25 Oct 2026 transition dates against
+  the exact deployed `formatUkTime()` logic; not re-exercised over
+  HTTP because Parent Hub only ever surfaces the single *next*
+  occurrence for "today" (26 Sep 2026), so the already-generated
+  29-Oct-onward TEST-B rows aren't reachable as a `next_occurrence`
+  without artificially changing "today."
+- **Membership behaviour unchanged**: same real response shows Dylan's
+  paused TEST-B session, Archie's active TEST-A/TEST-B and ended
+  TEST-B entries, and the pending Bella claim - structurally identical
+  to the Slice 5 baseline, both `day`/`venue`/`rescheduled` fields and
+  the recurring-pattern `time` fields (which read `Default Start/End
+  Time`, untouched by this fix) all correct.
+- **`resolveNextOccurrence()` unchanged**: not modified; the same
+  winning occurrence is selected as in Slice 5, confirmed by the
+  unchanged `occurrence_record_id`s above.
+- **Full TEST suite**: `node tests/run-all.js` -> **48/48 test files
+  passed**, unchanged from the Slice 5 baseline.
+- **Lock table**: `generation_locks` still 0 rows (no generation calls
+  made during this verification).
+- **Production untouched**: `parent-hub` on `bkkukymqaxawnudoxdjs`
+  confirmed still at v6; no other production function, Airtable base,
+  frontend, Google Sheets, or finance file touched.
