@@ -85,3 +85,44 @@ cannot reach `supabase.co` directly:
    root cause: with `Link Status` unreadable, an Ended link is
    indistinguishable from a Pending one. Access is correctly withheld;
    name disclosure is not.
+
+## Sessions repair verified — 2026-09-26
+
+Real calls to `/parent-hub/me` on the test project (parent-hub v3):
+
+- **parent.a** → 200. `Archie Atkinson`: current session **Monday Juniors
+  (TEST A)**, start 2026-09-01; ended **Thursday Juniors (TEST B)** with
+  `end_date` **2026-09-12** and `scheduled_end_date` **2026-09-30**
+  reported separately. `Dylan Davies`: **paused** on Thursday Juniors,
+  `paused_from` 2026-09-15, `returns_on` 2026-10-20, and **not** listed as
+  current. `Bella Brown` still under pending claims. `available_sessions`
+  now returns 2 where it returned 0.
+- **parent.ended** → 200, `children: []`, `pending_claims: []`, and a
+  search of the whole payload for the ended child's name returns false.
+  The privacy fix still holds.
+
+### Found along the way
+
+1. **Day, time and venue still come from Google Sheets.** `sessionPayload`
+   joins each session to the published Sessions CSV, so a session that is
+   not in that sheet has blank day/time/venue/programme/age group - which
+   is what the test sessions show. Airtable now holds `Default Day`,
+   `Default Start Time`, `Default End Time` and a `Venue` link, and none
+   of them are read. This contradicts the agreed direction that Airtable
+   owns the schedule. Not changed: outside the two fields named for this
+   repair.
+2. **`Players.Active` is still read in two places** - claim matching in
+   `handleCreateClaim`, and the management claim list. That field is now
+   `LEGACY — Active` with no canonical replacement, by the agreed
+   decision that a player's active state is derived from current
+   memberships. The code has not been changed to derive it, so a new
+   parent claim currently matches no player and always lands as "Needs
+   Review". Not changed: outside this repair's scope.
+3. A saved access token expired mid-verification and returned 401. That
+   was the test method, not the product; re-signing in resolved it.
+
+### Not yet visible on the phone
+
+`paused_sessions` is returned by the API but no screen renders it yet -
+the Parent Sessions screen has no paused section. That is a frontend
+change, which is deferred.
