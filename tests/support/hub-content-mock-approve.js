@@ -1,7 +1,8 @@
 // Patched copy of hub-content-mock.js that also simulates the approve-coach
-// Edge Function (GET /approve-coach/pending, POST /approve-coach), so the
-// new Coach Management screen can be exercised end to end without hitting
-// the real deployed function (blocked by sandbox network egress).
+// Edge Function (GET /approve-coach/pending, POST /approve-coach, POST
+// /approve-coach/decline), so the new Coach Management screen can be
+// exercised end to end without hitting the real deployed function
+// (blocked by sandbox network egress).
 const http = require('http'), fs = require('fs'), path = require('path');
 const { serveStatic } = require('./serve-static.js');
 const ROOT = process.env.SP_SERVE;
@@ -62,6 +63,32 @@ module.exports.start = function (port) {
         pending.splice(idx, 1);
         r.writeHead(200, {'Content-Type':'application/json'});
         return r.end(JSON.stringify({ ok: true, airtable_person_id: 'recFAKE123' }));
+      });
+      return;
+    }
+    if (u === '/approve-coach/decline' && q.method === 'POST') {
+      var email = emailFromAuth(q);
+      if (!email) { r.writeHead(401, {'Content-Type':'application/json'}); return r.end(JSON.stringify({ error: 'Missing Authorization header' })); }
+      if (!/^mgmt/.test(email)) { r.writeHead(403, {'Content-Type':'application/json'}); return r.end(JSON.stringify({ error: 'Management access required' })); }
+      let rawD = '';
+      q.on('data', (c) => { rawD += c; });
+      q.on('end', () => {
+        let body = {};
+        try { body = JSON.parse(rawD || '{}'); } catch (e) {}
+        var userId = String(body.user_id || '');
+        // Mirrors handleDecline()'s guard: only a pending signup can be
+        // declined, and an already-approved coach is refused outright.
+        if (userId === 'uid-alreadycoach@test.com' && !pending.some(function (p) { return p.user_id === userId; })) {
+          r.writeHead(400, {'Content-Type':'application/json'});
+          return r.end(JSON.stringify({ error: 'Only a pending coach signup can be declined (current role: "coach").' }));
+        }
+        var idx = pending.findIndex(function (p) { return p.user_id === userId; });
+        if (idx === -1) { r.writeHead(404, {'Content-Type':'application/json'}); return r.end(JSON.stringify({ error: 'Profile not found' })); }
+        // The profile is deactivated, never deleted and never given a
+        // 'rejected' role, so it simply drops out of the pending queue.
+        pending.splice(idx, 1);
+        r.writeHead(200, {'Content-Type':'application/json'});
+        return r.end(JSON.stringify({ ok: true, status: 'declined' }));
       });
       return;
     }

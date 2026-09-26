@@ -384,6 +384,13 @@ export function authSubmit(){
  }).catch(function(){state.authBusy=false;state.authError='Something went wrong. Please try again.';renderAuth()});
 }
 
+/**
+ * The inactive check must come before the pending one. A declined signup
+ * is not given a 'rejected' role - the profiles_role_check constraint only
+ * permits pending/management/coach/parent - it keeps role 'pending' and is
+ * deactivated instead, so checking role first would show a declined coach
+ * "Waiting for approval" forever.
+ */
 export function onSignedIn(session){
  renderAuthMessage('Loading your hub','One moment…',false);
  var meUrl=(CFG.contentApiUrl||'').replace(/\/hub-content\/?$/,'/me');
@@ -392,8 +399,8 @@ export function onSignedIn(session){
   .then(function(me){
    state.role=(me.role||'pending').toLowerCase();
    state.me={name:me.display_name||'',email:me.email||'',userId:me.user_id,airtablePersonId:me.airtable_person_id};
+   if(me.status==='inactive'){renderAuthMessage('Account not approved','This coach account has not been approved. If you think this is a mistake, please contact Josh or David.',true);return}
    if(state.role==='pending'){renderAuthMessage('Waiting for approval','Thanks for signing up. Josh or David will approve your account shortly — come back and refresh once you’ve heard from them.',true);return}
-   if(state.role==='rejected'){renderAuthMessage('Account not approved','This coach account has not been approved. If you think this is a mistake, please contact Josh or David.',true);return}
    load();
   })
   .catch(function(e){renderAuthMessage('Could not load your profile',e.message||'Please try again.',true)});

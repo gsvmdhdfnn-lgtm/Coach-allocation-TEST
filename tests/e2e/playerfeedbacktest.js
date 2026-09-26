@@ -272,6 +272,13 @@ async function withPage(port, fn) {
     await page.waitForSelector('.fb-hero, .pf-hero');
     // Back from the record lands on Player Profile (no double-push through the form)
     await page.waitForSelector('.pf-hero');
+    // The Latest Feedback slot renders a "Loading feedback…" placeholder
+    // first and is filled when its own fetch resolves, so the assertion
+    // has to wait for that rather than read the placeholder.
+    await page.waitForFunction(() => {
+      const el = document.getElementById('pf-latest-slot');
+      return el && !el.querySelector('.loading');
+    }, { timeout: 8000 });
     ck('Latest Feedback now shows the just-published record for the correct player', /Great pressing/.test(await page.locator('#pf-latest-slot').textContent()), await page.locator('#pf-latest-slot').textContent());
     await page.click('[data-action="app-back"]');
     // The players pane keeps its own expanded/collapsed state across

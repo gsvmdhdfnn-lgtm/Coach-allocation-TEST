@@ -75,6 +75,38 @@ const ck = (n, c, x) => { R.push([c ? 'PASS' : 'FAIL', n, x || '']); if (!c) pro
     const btnEnabled = await p.$eval('[data-pending-row="uid-multi@test.com"] .approve-btn', el => !el.disabled && el.textContent === 'Approve');
     ck('The Approve button resets so it can be retried after resolving in Airtable', btnEnabled);
 
+    // --- Decline: a pending signup is deactivated, not given a 'rejected'
+    // role (the profiles_role_check constraint has no such role) and not
+    // deleted, so the row just leaves the queue. ---
+    const dismissOnce = d => { p.off('dialog', dismissOnce); d.dismiss(); };
+    p.on('dialog', dismissOnce);
+    await p.click('[data-pending-row="uid-alreadycoach@test.com"] .reject-btn');
+    await p.waitForTimeout(300);
+    ck('Cancelling the Decline confirmation leaves the sign-up pending', await p.$('[data-pending-row="uid-alreadycoach@test.com"]') !== null);
+    const declineBtnReset = await p.$eval('[data-pending-row="uid-alreadycoach@test.com"] .reject-btn', el => !el.disabled && el.textContent === 'Decline');
+    ck('...and the Decline button is still usable', declineBtnReset);
+
+    p.on('dialog', d => d.accept());
+    await p.click('[data-pending-row="uid-alreadycoach@test.com"] .reject-btn');
+    await p.waitForFunction(() => !document.querySelector('[data-pending-row="uid-alreadycoach@test.com"]'), { timeout: 5000 });
+    ck('Declining a sign-up removes it from the pending list', true);
+    const declineToast = await p.$eval('#toast', el => el.textContent);
+    ck('A confirmation toast is shown for a decline', declineToast === 'Coach account declined', declineToast);
+    const afterDecline = await p.$$eval('.pending-row', els => els.length);
+    ck('Only the unresolved sign-up remains after the decline', afterDecline === 1, String(afterDecline));
+
+    // Leaving and re-entering the screen refetches /approve-coach/pending,
+    // so this checks the queue the server returns, not just the DOM row.
+    await p.click('#app-back');
+    await p.waitForSelector('.coach-home', { timeout: 8000 });
+    await p.click('[data-action="open-more"]');
+    await p.waitForSelector('.more-row:has-text("Coach Management")', { timeout: 5000 });
+    await p.click('.more-row:has-text("Coach Management")');
+    await p.waitForSelector('.pending-row', { timeout: 5000 });
+    const reloaded = await p.$$eval('.pending-row b', els => els.map(e => e.textContent));
+    ck('The declined sign-up stays out of the queue on a refetch', reloaded.indexOf('alreadycoach@test.com') === -1, reloaded.join(', '));
+    ck('The approved sign-up also stays out of the queue on a refetch', reloaded.indexOf('newcoach@test.com') === -1, reloaded.join(', '));
+
     ck('no console/page errors (management)', errs.length === 0, errs.join(' | '));
     await ctx.close();
   }
