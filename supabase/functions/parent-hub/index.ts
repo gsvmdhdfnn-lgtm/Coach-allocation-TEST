@@ -366,16 +366,33 @@ function sessionPayload(session: any, schedule: Record<string, string> | undefin
 }
 
 /**
- * Session requests are one optional slice of the Parent Hub, not a
- * prerequisite for it. This table was being read inside the same
- * Promise.all as everything else, so when it started returning 403
- * INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND one unavailable feature took the
+ * Session requests are switched OFF at the source while the feature is
+ * rebuilt against Player & Parent Requests. The Management screen that
+ * processes them is hidden, so a request accepted now would land in a
+ * queue nobody reads.
+ *
+ * That is why this is a deliberate flag and not just "did the read
+ * succeed". The old table currently returns 403
+ * INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND, but if that cleared on its own
+ * a read-driven check would quietly re-open the form while the
+ * Management side was still gone. Turning this back on has to be a
+ * decision taken when BOTH ends work, never a side effect of a
+ * permissions error resolving.
+ */
+const SESSION_REQUESTS_ENABLED = false;
+
+/**
+ * Also contains the read itself. This table was being read inside the
+ * same Promise.all as everything else, so when it began failing, one
+ * unavailable optional feature rejected the whole handler and took the
  * entire Parent Home down - Next Session, schedule and development
- * included. Reading it through this wrapper keeps the failure contained:
- * the hub still loads and the requests feature reports itself
- * unavailable, instead of the whole page becoming an error.
+ * included. Both guards report the same way, so the client has one
+ * answer to render regardless of which applied.
  */
 async function fetchSessionRequests(): Promise<{ rows: any[]; available: boolean }> {
+  // Disabled means we do not even ask - one fewer Airtable call on every
+  // Parent Hub load, and no 403 noise in the logs for a known state.
+  if (!SESSION_REQUESTS_ENABLED) return { rows: [], available: false };
   try {
     return { rows: await getAirtableRecords("Player Session Requests"), available: true };
   } catch (e) {
