@@ -11,27 +11,49 @@
  * is the one function to edit, then redeploy it into each copy.
  *
  * LOCKED DATA RESPONSIBILITIES (do not blur these):
- *  - Google Sheets Sessions = authoritative source for which coaches are
- *    scheduled on a session (the `coaches` column).
+ *  - Airtable Session Staff (Session <-> Coach <-> Role) = authoritative
+ *    source for which coach currently has a standing place on a session,
+ *    and what ROLE they hold there. This replaced the published Sessions
+ *    Google Sheet's free-text `coaches` column as the access authority -
+ *    the Sheet is no longer consulted for this at all.
  *  - Airtable Player Session Links = authoritative source for which
- *    players belong to a session (Status=Active / Ended).
- *  - Airtable Coach Roles (via each Coach's "Coach Role" link) =
- *    authoritative source for what a scheduled/covering coach is
- *    permitted to access/do. A coach being scheduled or covering NEVER
- *    grants player access on its own - Can View Players must also be
- *    true, every time, server-side. Nothing here trusts a client-
- *    supplied coach/session relationship, role, or capability.
+ *    players belong to a session (Membership Lifecycle Status, canonical;
+ *    `LEGACY -` / original names read only as compatibility fallbacks).
+ *  - Airtable Coach Roles (via a Session Staff row's own "Role" link) =
+ *    authoritative source for what a coach is permitted to access/do ON
+ *    THAT SESSION. A coach can legitimately hold different roles on
+ *    different sessions - capabilities are resolved per (coach, session)
+ *    pair, never once globally per coach. Lead Coach and Coach may be
+ *    granted player-data access; Learning Coach never is - enforced here
+ *    directly via PLAYER_ACCESS_ROLES, not left to the Can View Players
+ *    checkbox alone, since that checkbox is an editable Airtable value
+ *    and this is a hard product rule, not a preference. A coach being
+ *    staffed or covering NEVER grants player access on its own - the
+ *    role must also be in PLAYER_ACCESS_ROLES AND Can View Players must
+ *    be true, every time, server-side.
  *
- * COACH IDENTITY (schedule name matching): the Sessions Google Sheet
- * names coaches in free text (e.g. "David"), which does not have to equal
- * an Airtable Coach's own "Coach Name" field (e.g. a coach onboarded as
- * "davidcole.surrey"). Rather than hardcoding per-person name pairs in
- * code, coachIdentityKeys() below draws on two already-existing, reusable
- * identity sources, configured once per coach (never per session):
+ * COVER (Occurrence Staff) IS DELIBERATELY STILL SEPARATE. Dated cover is
+ * not yet resolved from Occurrence Staff - it still comes from the
+ * published Changes Google Sheet, matched by coach identity (see
+ * coachIdentityKeys() below), exactly as before. Migrating cover onto
+ * Occurrence Staff needs its own fetch, its own session/date index, and a
+ * decision on how Occurrence Staff's Assignment Type/Attendance fields
+ * should affect display - a materially bigger change than restoring the
+ * current-session path above, so it stays out of this repair on purpose.
+ * A coach covering a session they hold no Session Staff row on is given
+ * their own STANDING capabilities (their highest-priority role across any
+ * of their own current Session Staff rows - see coachOwnStandingCapabilities())
+ * rather than nothing, since the old single "Coach Role" field on the
+ * Coach record this used to read is itself retired (LEGACY - Coach Role).
+ *
+ * COACH IDENTITY (schedule name matching, cover-tier only): the Changes
+ * Google Sheet names coaches in free text (e.g. "David"), which does not
+ * have to equal an Airtable Coach's own "Coach Name" field. Rather than
+ * hardcoding per-person name pairs in code, coachIdentityKeys() below
+ * draws on two already-existing, reusable identity sources, configured
+ * once per coach (never per session):
  *   1. The coach's own Supabase profiles.display_name, set once when
- *      their account is approved - this is the authenticated account's
- *      own human-facing name, exactly the kind of thing the schedule
- *      uses, and requires no new Airtable field.
+ *      their account is approved.
  *   2. STATIC_COACH_ALIASES, a small hand-maintained fallback for a
  *      schedule name that doesn't match either the Coach Name or any
  *      known display_name (mirrors config.js's own `coachAliases`).
@@ -70,6 +92,42 @@ function attachmentUrl(fields: Record<string, any>, fieldName: string): string {
   return list[0].url || "";
 }
 
+function firstLink(fields: Record<string, any>, name: string): string {
+  const list = fields[name];
+  return Array.isArray(list) && list.length ? list[0] : "";
+}
+
+/**
+ * Airtable's REST API returns a singleSelect as the plain option-name
+ * string, never an {id,name,color} object - handled defensively both ways
+ * here too, same reasoning and the same helper shape as parent-hub's own
+ * selectName() (duplicated rather than imported, per this file's own
+ * "no shared filesystem across functions" convention).
+ */
+function selectName(v: any): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  return v.name || "";
+}
+
+/**
+ * A Player Session Link's membership status. `Membership Lifecycle
+ * Status` is canonical; `LEGACY - Status` and the pre-rename `Status`
+ * are read only as compatibility fallbacks, in that order - the exact
+ * pattern parent-hub's membershipStatus() already established. Reading
+ * the plain `Status` name alone (what this file did until this repair)
+ * returns undefined for every row against the current TEST schema, which
+ * is why /hub-content/players returned zero rows for every coach.
+ */
+function membershipStatus(fields: Record<string, any>): string {
+  return (
+    selectName(fields["Membership Lifecycle Status"]) ||
+    selectName(fields["LEGACY — Status"]) ||
+    selectName(fields["Status"]) ||
+    ""
+  );
+}
+
 function daysSince(today: Date, past: Date): number {
   const a = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
   const b = Date.UTC(past.getFullYear(), past.getMonth(), past.getDate());
@@ -96,6 +154,10 @@ export function splitCoachNames(coachesColumnValue: string): string[] {
  * fixing this via the coach's display_name (set once at approval) or
  * Coach Name over adding entries here where possible - this exists for
  * the cases neither covers.
+ *
+ * Cover-tier identity matching only (see file header) - no longer used
+ * for current-session access, which Session Staff now resolves directly
+ * by linked Coach record, needing no name matching at all.
  */
 export const STATIC_COACH_ALIASES: Record<string, string> = {
   jack: "Jacko",
@@ -103,14 +165,14 @@ export const STATIC_COACH_ALIASES: Record<string, string> = {
 
 /**
  * Every name a specific coach could plausibly appear under on the
- * published Sessions/Changes sheets: their Airtable Coach Name, their
- * Supabase account's display_name (set once at approval - see the
- * file-level comment above), and any STATIC_COACH_ALIASES entry whose
- * canonical target is their own Coach Name. `displayName` is optional -
- * pass it when known (always available for the authenticated caller via
- * their own profile; for other coaches, e.g. building a Coaches-At-End
- * snapshot, pass it when resolved, omit otherwise - falls back to
- * Coach Name + static aliases only).
+ * published Changes sheet (cover-tier identity matching only - see file
+ * header): their Airtable Coach Name, their Supabase account's
+ * display_name (set once at approval), and any STATIC_COACH_ALIASES entry
+ * whose canonical target is their own Coach Name. `displayName` is
+ * optional - pass it when known (always available for the authenticated
+ * caller via their own profile; for other coaches, e.g. building a
+ * Coaches-At-End snapshot, pass it when resolved, omit otherwise - falls
+ * back to Coach Name + static aliases only).
  */
 export function coachIdentityKeys(coachRecord: any, displayName?: string | null): Set<string> {
   const set = new Set<string>();
@@ -137,14 +199,12 @@ function namesIntersect(a: Set<string>, b: Set<string> | undefined): boolean {
 /**
  * Session ID (text, e.g. "E01") -> the set of normalised coach name keys
  * scheduled on it, read verbatim from the published Sessions Google
- * Sheet - the authoritative source for "who is scheduled on this
- * session", replacing Airtable Sessions -> Permanent Coaches as the
- * runtime authority. No alias resolution happens here on purpose: the
- * schedule text is kept exactly as published, and matching instead asks
- * "does this specific coach's own identity set include any of these
- * names" (see coachIdentityKeys()) - so a name that matches nobody's
- * Coach Name, display_name, or alias simply matches nobody, rather than
- * silently resolving to the wrong coach.
+ * Sheet. Retained only for eligibleCoachIdsForSessionSnapshot() below
+ * (used by player-sessions, which has no TEST copy yet) - no longer read
+ * by resolvePlayerAccess()'s current-session tier, which uses Session
+ * Staff directly. Left untouched rather than removed, so this file keeps
+ * working the moment player-sessions is ported into TEST; it will need
+ * its own Session Staff-based repair at that point.
  */
 export function buildScheduledCoachNameKeysBySessionId(
   sessionsCsvRows: Record<string, string>[]
@@ -163,6 +223,10 @@ export function buildScheduledCoachNameKeysBySessionId(
 
 export interface CoachRoleCapabilities {
   active: boolean;
+  /** Coach Roles' own "Role Name" (singleLineText, display wording only - e.g. "Lead Coach"). Never matched against for access control; see roleKey. */
+  roleName: string;
+  /** Coach Roles' own "Role Key" (singleLineText, e.g. "lead_coach") - the STABLE identifier this file gates access on, so renaming a role's display "Role Name" in Airtable can never silently change who has player access. */
+  roleKey: string;
   canViewPlayers: boolean;
   canAddFeedback: boolean;
   canEditDevelopmentPlans: boolean;
@@ -175,6 +239,8 @@ export function roleCapabilitiesById(coachRoleRows: any[]): Record<string, Coach
   for (const r of coachRoleRows) {
     map[r.id] = {
       active: r.fields["Active"] === true,
+      roleName: String(r.fields["Role Name"] || ""),
+      roleKey: String(r.fields["Role Key"] || ""),
       canViewPlayers: r.fields["Can View Players"] === true,
       canAddFeedback: r.fields["Can Add Feedback"] === true,
       canEditDevelopmentPlans: r.fields["Can Edit Development Plans"] === true,
@@ -185,11 +251,112 @@ export function roleCapabilitiesById(coachRoleRows: any[]): Record<string, Coach
 }
 
 /**
- * A coach's own current capabilities, resolved via their linked Coach
- * Role - never via the legacy singleSelect Role field (display wording
- * only, preserved for backward compatibility, never a permissions
- * source). No role linked, or the linked role isn't Active, means no
- * capabilities at all (fail closed), not full access.
+ * Only these two roles may ever be granted player-data access, whatever
+ * a Coach Roles row's own Can View Players checkbox says - a hard product
+ * rule (Learning Coach must never receive player profile/data access),
+ * checked here directly rather than trusted to an editable Airtable
+ * value alone. Keyed by Role Key (stable), not Role Name (display text,
+ * renameable) - renaming "Lead Coach" to "Head Coach" in Airtable must
+ * never silently strip everyone with that role of player access. The
+ * order (0, 1) is also this file's role-priority order, used by
+ * coachOwnStandingCapabilities() below to pick a coach's single best
+ * "standing" role when they hold more than one across sessions.
+ */
+const PLAYER_ACCESS_ROLE_PRIORITY: Record<string, number> = { lead_coach: 0, coach: 1 };
+
+function isPlayerAccessRole(caps: CoachRoleCapabilities | null): boolean {
+  return !!caps && caps.active && caps.canViewPlayers === true && Object.prototype.hasOwnProperty.call(PLAYER_ACCESS_ROLE_PRIORITY, caps.roleKey);
+}
+
+/**
+ * Session RECORD id -> Coach RECORD id -> that coach's own Active Session
+ * Staff row for that session. A coach can hold different roles on
+ * different sessions (Lead Coach on one, Learning Coach on another), so
+ * this is looked up per session, never once globally per coach. If a
+ * coach somehow has two Active rows on the same session (a data-entry
+ * duplicate), the later one in Airtable's own return order wins - the
+ * same tolerance resolveSessionCoachNames() in parent-hub already applies
+ * to the equivalent duplicate case.
+ */
+export function buildActiveSessionStaffByCoachAndSession(sessionStaffRows: any[]): Record<string, Record<string, any>> {
+  const map: Record<string, Record<string, any>> = {};
+  for (const row of sessionStaffRows) {
+    if (row.fields["Active"] !== true) continue;
+    const sessionId = firstLink(row.fields, "Session");
+    const coachId = firstLink(row.fields, "Coach");
+    if (!sessionId || !coachId) continue;
+    if (!map[sessionId]) map[sessionId] = {};
+    map[sessionId][coachId] = row;
+  }
+  return map;
+}
+
+/**
+ * A coach's capabilities FOR ONE SESSION, from their own Active Session
+ * Staff row on that session - never a role fixed to the Coach record.
+ * Returns null (no access) when the coach has no Active row on this
+ * session, their row's Role doesn't resolve, the role isn't Active, Can
+ * View Players is false, or the role isn't in PLAYER_ACCESS_ROLE_PRIORITY
+ * (Learning Coach, or anything unrecognised) - fail closed in every case.
+ */
+export function sessionStaffCapabilitiesForSession(
+  sessionId: string,
+  coachId: string,
+  sessionStaffBySessionAndCoach: Record<string, Record<string, any>>,
+  roleCapsById: Record<string, CoachRoleCapabilities>
+): CoachRoleCapabilities | null {
+  const row = (sessionStaffBySessionAndCoach[sessionId] || {})[coachId];
+  if (!row) return null;
+  const roleId = firstLink(row.fields, "Role");
+  const caps = roleId ? roleCapsById[roleId] : null;
+  return isPlayerAccessRole(caps) ? caps : null;
+}
+
+/**
+ * A coach's own STANDING capabilities - their highest-priority
+ * player-access-eligible role across ANY of their own current Active
+ * Session Staff rows, regardless of session. Used only for the cover
+ * tier: a coach covering a session they hold no Session Staff row on
+ * still needs some capability floor, and their normal standing role is
+ * the closest replacement for what the old single "Coach Role" field on
+ * the Coach record used to provide (that field is now retired - LEGACY -
+ * Coach Role - and was never a per-session concept anyway). Null means
+ * the coach holds no player-access-eligible role anywhere right now.
+ */
+export function coachOwnStandingCapabilities(
+  coachId: string,
+  sessionStaffRows: any[],
+  roleCapsById: Record<string, CoachRoleCapabilities>
+): CoachRoleCapabilities | null {
+  let best: CoachRoleCapabilities | null = null;
+  let bestPriority = Infinity;
+  for (const row of sessionStaffRows) {
+    if (row.fields["Active"] !== true) continue;
+    if (firstLink(row.fields, "Coach") !== coachId) continue;
+    const roleId = firstLink(row.fields, "Role");
+    const caps = roleId ? roleCapsById[roleId] : null;
+    if (!isPlayerAccessRole(caps)) continue;
+    const priority = PLAYER_ACCESS_ROLE_PRIORITY[(caps as CoachRoleCapabilities).roleKey];
+    if (priority < bestPriority) {
+      bestPriority = priority;
+      best = caps;
+    }
+  }
+  return best;
+}
+
+/**
+ * A coach's own current capabilities from the single legacy "Coach Role"
+ * link on their Coach record (never the display-only singleSelect "Role"
+ * field). Retained only for the legacy Assigned Coaches fallback in
+ * hub-content/index.ts and eligibleCoachIdsForSessionSnapshot() below -
+ * both already-broken, out-of-scope paths this repair deliberately does
+ * not touch (see TEST-ENV.md). NOT used by resolvePlayerAccess() any
+ * more; sessionStaffCapabilitiesForSession()/coachOwnStandingCapabilities()
+ * above replace it there. "Coach Role" was itself renamed to "LEGACY -
+ * Coach Role" in the same schema migration that broke the fields this
+ * repair fixes, so this function currently always returns null too - left
+ * exactly as-is because fixing it is a different task (see report).
  */
 export function capabilitiesForCoach(
   coachRecord: any,
@@ -224,16 +391,16 @@ export function legacyFallbackPerms(
 export interface ResolveInput {
   role: string;
   coachRecordId: string | null;
-  /** Every name this caller could appear under on the schedule - see coachIdentityKeys(). */
-  coachNameKeys: Set<string>;
-  /** The caller's own resolved role capabilities - null means no capabilities at all. */
-  coachCapabilities: CoachRoleCapabilities | null;
+  /** The caller's own standing capabilities (coachOwnStandingCapabilities()) - used only for the cover tier. Null means no player-access-eligible role anywhere right now. */
+  coachCoverCapabilities: CoachRoleCapabilities | null;
   players: any[];
   sessions: any[];
   links: any[];
-  /** Session ID (text) -> scheduled coach name keys, from buildScheduledCoachNameKeysBySessionId(). */
-  scheduledCoachNameKeysBySessionId: Record<string, Set<string>>;
-  /** Airtable Session RECORD ids the caller is covering today (date-specific, from the Changes sheet) - unchanged mechanism. */
+  /** Session RECORD id -> Coach RECORD id -> Active Session Staff row, from buildActiveSessionStaffByCoachAndSession(). */
+  sessionStaffBySessionAndCoach: Record<string, Record<string, any>>;
+  /** Coach Roles record id -> capabilities, from roleCapabilitiesById(). */
+  roleCapsById: Record<string, CoachRoleCapabilities>;
+  /** Airtable Session RECORD ids the caller is covering today (date-specific, from the Changes sheet) - unchanged mechanism, deliberately still separate from Session Staff (see file header). */
   coverSessionIds: Set<string>;
   today: Date;
 }
@@ -244,33 +411,42 @@ export interface ResolveInput {
  * to appears twice, once per session, each with its own tier - access is
  * always evaluated per session membership, never globally per player.
  *
- * Current-session access (tier "permanent") no longer depends on the
- * manually-maintained Sessions -> Permanent Coaches Airtable link; it is
- * resolved from the Sessions Google Sheet's own `coaches` column, matched
- * against every name this caller is known to appear under (see
- * coachIdentityKeys()). Being scheduled or covering NEVER grants a row on
- * its own - the caller's Coach Role must also have Can View Players =
- * true, checked fresh on every call, never trusted from the client.
+ * Current-session access (tier "permanent") is resolved from the caller's
+ * own Active Session Staff row on THAT session - Lead Coach and Coach
+ * roles only, Learning Coach never, checked fresh via
+ * sessionStaffCapabilitiesForSession() on every call. Cover access (tier
+ * "cover") stays on the pre-existing Changes-sheet mechanism (see file
+ * header) and uses the caller's own standing capabilities instead, since
+ * they hold no Session Staff row on the session they're covering.
+ *
+ * A Player Session Link with any status other than "Ended" counts as
+ * current for this purpose (Active, Paused, Cancellation Pending, Ending
+ * Scheduled all still mean the player genuinely belongs on that session -
+ * the same "not Ended" reading handleListClaims() in parent-hub already
+ * uses for "does this player currently belong anywhere"). A link with no
+ * resolvable status at all grants nothing, fail closed.
  *
  * Former-coach access is unchanged in shape: it is still evaluated
- * against the link's own frozen "Coaches At End" snapshot (see
- * player-sessions' handleEndLink), not live scheduling or a coach's
- * current role - so a coach reassigned onto the session later never
- * inherits a former player's 28-day window, a coach later demoted to a
- * non-viewing role doesn't retroactively lose access they were already
- * granted for that window, and a coach moved off the session doesn't
- * lose access to players who left while they were still on it.
+ * against the link's own frozen "Coaches At End" snapshot (now read from
+ * its current field name, LEGACY - Coaches At End - see
+ * membershipStatus()'s own comment for why there is no non-legacy
+ * replacement for this yet), not live scheduling or a coach's current
+ * role - so a coach reassigned onto the session later never inherits a
+ * former player's 28-day window, a coach later demoted to a non-viewing
+ * role doesn't retroactively lose access they were already granted for
+ * that window, and a coach moved off the session doesn't lose access to
+ * players who left while they were still on it.
  */
 export function resolvePlayerAccess(input: ResolveInput): PlayerAccessRow[] {
   const {
     role,
     coachRecordId,
-    coachNameKeys,
-    coachCapabilities,
+    coachCoverCapabilities,
     players,
     sessions,
     links,
-    scheduledCoachNameKeysBySessionId,
+    sessionStaffBySessionAndCoach,
+    roleCapsById,
     coverSessionIds,
     today,
   } = input;
@@ -315,9 +491,11 @@ export function resolvePlayerAccess(input: ResolveInput): PlayerAccessRow[] {
 
   if (role === "management") {
     // Management keeps its existing admin behaviour, unaffected by the
-    // Coach Roles model (management isn't a "coach" in this sense).
+    // Coach Roles model (management isn't a "coach" in this sense) -
+    // just reading the link's status canonically now.
     for (const link of links) {
-      if (link.fields["Status"] !== "Active") continue;
+      const status = membershipStatus(link.fields);
+      if (!status || status === "Ended") continue;
       const sessionIds: string[] = link.fields["Session"] || [];
       const playerIds: string[] = link.fields["Player"] || [];
       for (const sid of sessionIds) {
@@ -330,42 +508,33 @@ export function resolvePlayerAccess(input: ResolveInput): PlayerAccessRow[] {
 
   if (!coachRecordId) return rows;
 
-  const canView = !!coachCapabilities && coachCapabilities.canViewPlayers === true;
-  const currentPerms = coachCapabilities
-    ? {
-        can_edit_feedback: coachCapabilities.canAddFeedback,
-        can_edit_idp: coachCapabilities.canEditDevelopmentPlans,
-        can_edit_attendance: coachCapabilities.canRecordAttendance,
-      }
-    : null;
-
   for (const link of links) {
     const sessionIds: string[] = link.fields["Session"] || [];
     const playerIds: string[] = link.fields["Player"] || [];
-    const status = link.fields["Status"];
+    const status = membershipStatus(link.fields);
+    if (!status) continue;
 
     for (const sid of sessionIds) {
       const session = sessionById[sid];
       if (!session) continue;
 
-      if (status === "Active") {
-        // A coach merely being scheduled/covering must NEVER grant
-        // access if their role/capabilities prohibit it - checked
-        // before anything else, every call.
-        if (!canView || !currentPerms) continue;
+      if (status !== "Ended") {
+        // A coach merely being staffed/covering must NEVER grant access
+        // if their role/capabilities prohibit it - checked before
+        // anything else, every call, every session.
+        const staffCaps = sessionStaffCapabilitiesForSession(sid, coachRecordId, sessionStaffBySessionAndCoach, roleCapsById);
+        const isStaffed = !!staffCaps;
+        const isCovering = !isStaffed && coverSessionIds.has(sid);
+        const caps = isStaffed ? staffCaps : isCovering ? coachCoverCapabilities : null;
+        if (!caps) continue;
 
-        const sessionIdText = session.fields["Session ID"] || "";
-        const scheduledNames = scheduledCoachNameKeysBySessionId[sessionIdText];
-        const isScheduled = namesIntersect(coachNameKeys, scheduledNames);
-        const isCovering = coverSessionIds.has(sid);
-        if (!isScheduled && !isCovering) continue;
-
-        const tier: AccessTier = isScheduled ? "permanent" : "cover";
-        for (const pid of playerIds) pushRow(pid, sid, link.id, tier, null, currentPerms);
-      } else if (status === "Ended") {
-        const coachesAtEnd: string[] = link.fields["Coaches At End"] || [];
+        const tier: AccessTier = isStaffed ? "permanent" : "cover";
+        const perms = { can_edit_feedback: caps.canAddFeedback, can_edit_idp: caps.canEditDevelopmentPlans, can_edit_attendance: caps.canRecordAttendance };
+        for (const pid of playerIds) pushRow(pid, sid, link.id, tier, null, perms);
+      } else {
+        const coachesAtEnd: string[] = link.fields["LEGACY — Coaches At End"] || [];
         if (!coachesAtEnd.includes(coachRecordId)) continue;
-        const endDateStr: string = link.fields["End Date"];
+        const endDateStr: string = link.fields["LEGACY — End Date"];
         if (!endDateStr) continue;
         const end = new Date(endDateStr + "T00:00:00Z");
         const since = daysSince(today, end);
@@ -386,8 +555,16 @@ export function resolvePlayerAccess(input: ResolveInput): PlayerAccessRow[] {
  * Player Session Link's "Coaches At End" snapshot for a given session at
  * the moment its membership ends: scheduled on that session per the live
  * Sessions Google Sheet (matched via coachIdentityKeys(), same as the
- * main resolver), AND currently holding a role with Can View Players =
- * true. Never the whole roster, and never based on Permanent Coaches.
+ * main resolver used to), AND currently holding a role with Can View
+ * Players = true. Never the whole roster, and never based on Permanent
+ * Coaches.
+ *
+ * NOT updated to Session Staff in this repair - it is only called from
+ * player-sessions' handleEndLink, which has no TEST copy yet (see
+ * capabilitiesForCoach()'s own comment). Whoever ports player-sessions
+ * into TEST should switch this to sessionStaffCapabilitiesForSession()
+ * at the same time, for the same reason the main resolver just was.
+ *
  * `displayNameByCoachId` is optional, resolved by the caller (e.g. via a
  * service-role profiles lookup) when available - a coach with no known
  * display_name still matches via their Coach Name/static aliases alone.

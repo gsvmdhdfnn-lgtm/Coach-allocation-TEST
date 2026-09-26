@@ -1,8 +1,9 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import {
-  buildScheduledCoachNameKeysBySessionId,
+  buildActiveSessionStaffByCoachAndSession,
   capabilitiesForCoach,
   coachIdentityKeys,
+  coachOwnStandingCapabilities,
   legacyFallbackPerms,
   nameKey,
   resolvePlayerAccess,
@@ -398,31 +399,34 @@ const LEGACY_ADMIN_PERMS = { can_edit_feedback: true, can_edit_idp: true, can_ed
  * with none/invalid, returns nothing.
  *
  * Access is resolved once, centrally, by resolvePlayerAccess() (see
- * player-access.ts): who's scheduled on a session now comes from the
- * published Sessions Google Sheet (not the manually-maintained Airtable
- * Sessions -> Permanent Coaches link), and what a scheduled/covering
- * coach can actually do comes from their Coach Role's capabilities, not
- * from being scheduled alone. A player who isn't in the new system yet
- * (no Player Session Links at all) still falls back to the legacy
- * Assigned Coaches link on their own Players record - gated by the
- * "legacy_assigned_coaches" Feature Control flag (default on). That
- * fallback is a different SOURCE of rows for players not yet migrated,
- * but obeys the exact same Coach Role capability model as everything
- * else (see legacyFallbackPerms() in player-access.ts): no valid active
- * Coach Role, or Can View Players = false, means no legacy rows either.
+ * player-access.ts): a coach's current-session access now comes from
+ * their own Active Session Staff row on that session (Lead Coach/Coach
+ * only, Learning Coach never - see player-access.ts), never the
+ * published Sessions Google Sheet. Cover access is unchanged and still
+ * comes from the Changes sheet, matched by coach identity - see
+ * player-access.ts's file header for why that stays separate for now.
+ *
+ * A player who isn't in the new system yet (no Player Session Links at
+ * all) still falls back to the legacy Assigned Coaches link on their own
+ * Players record - gated by the "legacy_assigned_coaches" Feature
+ * Control flag (default on). That fallback is left exactly as it was:
+ * it still reads Players.Active/Assigned Coaches by their pre-rename
+ * names (now LEGACY - Active / LEGACY - Assigned Coaches in this base),
+ * so it still returns no rows here, same as before this repair - fixing
+ * it is a different task (see TEST-ENV.md).
  */
 async function handlePlayers(authHeader: string | null) {
   const caller = await resolveCaller(authHeader);
   if (!caller) return [];
 
-  const [playerRows, coachRows, sessionRows, linkRows, featureRows, coachRoleRows, sessionsCsvRows] = await Promise.all([
+  const [playerRows, coachRows, sessionRows, linkRows, featureRows, coachRoleRows, sessionStaffRows] = await Promise.all([
     getAirtableRecords("Players"),
     getAirtableRecords("Coaches"),
     getAirtableRecords("Sessions"),
     getAirtableRecords("Player Session Links"),
     getAirtableRecords("Feature Controls"),
     getAirtableRecords("Coach Roles"),
-    fetchCsvObjects(SESSIONS_CSV_URL),
+    getAirtableRecords("Session Staff"),
   ]);
 
   const coachRecordById: Record<string, any> = {};
@@ -436,9 +440,14 @@ async function handlePlayers(authHeader: string | null) {
 
   const roleCapsById = roleCapabilitiesById(coachRoleRows);
   const callerCoachRecord = caller.airtablePersonId ? coachRecordById[caller.airtablePersonId] : null;
+  // Cover-tier identity matching only (still Changes-sheet based - see player-access.ts).
   const coachNameKeys = coachIdentityKeys(callerCoachRecord, caller.displayName);
+  // Legacy Assigned Coaches fallback only (see this function's own docstring) - deliberately untouched.
   const coachCapabilities = capabilitiesForCoach(callerCoachRecord, roleCapsById);
-  const scheduledCoachNameKeysBySessionId = buildScheduledCoachNameKeysBySessionId(sessionsCsvRows);
+  const sessionStaffBySessionAndCoach = buildActiveSessionStaffByCoachAndSession(sessionStaffRows);
+  const coachCoverCapabilities = caller.airtablePersonId
+    ? coachOwnStandingCapabilities(caller.airtablePersonId, sessionStaffRows, roleCapsById)
+    : null;
 
   const today = new Date();
   const coverSessionIds =
@@ -449,12 +458,12 @@ async function handlePlayers(authHeader: string | null) {
   const rows = resolvePlayerAccess({
     role: caller.role,
     coachRecordId: caller.airtablePersonId,
-    coachNameKeys,
-    coachCapabilities,
+    coachCoverCapabilities,
     players: playerRows,
     sessions: sessionRows,
     links: linkRows,
-    scheduledCoachNameKeysBySessionId,
+    sessionStaffBySessionAndCoach,
+    roleCapsById,
     coverSessionIds,
     today,
   });
