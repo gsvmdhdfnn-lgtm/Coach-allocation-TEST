@@ -18,6 +18,8 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { generateForSession } from "./orchestrator.ts";
 import { fetchSession, type AirtableConfig } from "./repository.ts";
 import { createSupabaseLockClient } from "./lock-client.ts";
+import { propagateForSession, type PropagateChanges } from "./propagation-orchestrator.ts";
+import { parseHHMM, weekdayIndexFromName } from "./schedule-utils.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
 const AIRTABLE_BASE_ID = Deno.env.get("AIRTABLE_BASE_ID")!;
@@ -161,6 +163,108 @@ async function handleGenerate(req: Request): Promise<Response> {
   }
 }
 
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Validates the shape of the request body's `changes` object before it
+ * ever reaches propagateForSession() - the same "index.ts owns HTTP-
+ * boundary validation, orchestrator/repository trust their inputs"
+ * convention as handleGenerate()'s isValidAirtableRecordId() check.
+ * Returns a human-readable error string, or null if the shape is valid
+ * and at least one change type is present.
+ */
+function validatePropagateChanges(changes: any): string | null {
+  if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
+    return "changes is required and must be an object";
+  }
+  const knownKeys = ["time", "venue", "capacity", "dayOfWeek", "endDate"];
+  if (!knownKeys.some((k) => changes[k] != null)) {
+    return `changes must include at least one of: ${knownKeys.join(", ")}`;
+  }
+
+  if (changes.time != null) {
+    const { newStartTime, newEndTime } = changes.time;
+    if (!parseHHMM(newStartTime) || !parseHHMM(newEndTime)) {
+      return `changes.time.newStartTime/newEndTime must both be "HH:MM"`;
+    }
+  }
+  if (changes.venue != null) {
+    const ids = changes.venue.newVenueRecordIds;
+    if (!Array.isArray(ids) || !ids.every((id: unknown) => isValidAirtableRecordId(id))) {
+      return "changes.venue.newVenueRecordIds must be an array of valid Airtable record IDs (may be empty)";
+    }
+  }
+  if (changes.capacity != null) {
+    const cap = changes.capacity.newCapacity;
+    if (cap !== null && typeof cap !== "number") {
+      return "changes.capacity.newCapacity must be a number or null";
+    }
+  }
+  if (changes.dayOfWeek != null) {
+    if (weekdayIndexFromName(changes.dayOfWeek.newDayName) == null) {
+      return "changes.dayOfWeek.newDayName must be a recognised weekday name";
+    }
+    const eff = changes.dayOfWeek.effectiveFromDateIso;
+    if (eff != null && !ISO_DATE_RE.test(eff)) {
+      return "changes.dayOfWeek.effectiveFromDateIso must be \"YYYY-MM-DD\" if provided";
+    }
+  }
+  if (changes.endDate != null) {
+    if (!ISO_DATE_RE.test(changes.endDate.newEndDateIso)) {
+      return "changes.endDate.newEndDateIso must be \"YYYY-MM-DD\"";
+    }
+  }
+  return null;
+}
+
+async function handlePropagate(req: Request): Promise<Response> {
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!caller.active || caller.role !== "management") {
+    return jsonResponse({ error: "Management access required" }, 403);
+  }
+
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  const sessionRecordId = body?.sessionRecordId;
+  if (!isValidAirtableRecordId(sessionRecordId)) {
+    return jsonResponse({ error: "sessionRecordId is required and must be a valid Airtable record ID" }, 400);
+  }
+
+  const validationError = validatePropagateChanges(body?.changes);
+  if (validationError) {
+    return jsonResponse({ error: validationError }, 400);
+  }
+
+  let exists: boolean;
+  try {
+    exists = await sessionExists(sessionRecordId);
+  } catch (error) {
+    console.error(error);
+    return jsonResponse({ error: `Failed to look up Session: ${error instanceof Error ? error.message : "Unknown error"}` }, 502);
+  }
+  if (!exists) {
+    return jsonResponse({ error: `No Session found for id ${sessionRecordId}` }, 404);
+  }
+
+  try {
+    const outcome = await propagateForSession(
+      { airtable: airtableConfig, lock: lockClient },
+      sessionRecordId,
+      body.changes as PropagateChanges
+    );
+    return jsonResponse(outcome, 200);
+  } catch (error) {
+    console.error(error);
+    return jsonResponse({ error: error instanceof Error ? error.message : "Unknown error" }, 500);
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -173,6 +277,10 @@ Deno.serve(async (req) => {
     if (route === "generate") {
       if (req.method !== "POST") return jsonResponse({ error: "Method not allowed - use POST" }, 405);
       return await handleGenerate(req);
+    }
+    if (route === "propagate") {
+      if (req.method !== "POST") return jsonResponse({ error: "Method not allowed - use POST" }, 405);
+      return await handlePropagate(req);
     }
     return jsonResponse({ error: `Unknown route: ${route}` }, 404);
   } catch (error) {

@@ -159,3 +159,30 @@ export function computeOccurrenceKey(sessionRecordId: string, dateIso: string): 
 export function computeReplacementOccurrenceKey(sessionRecordId: string, dateIso: string, originOccurrenceRecordId: string): string {
   return `${computeOccurrenceKey(sessionRecordId, dateIso)}:R:${originOccurrenceRecordId}`;
 }
+
+/**
+ * Whole-occurrence freeze test - Slice 6 (see TEST-ENV.md). An occurrence
+ * is frozen (must never be changed by normal recurring propagation) iff
+ * its Start Date & Time is already <= now, OR its Status is Completed,
+ * Cancelled or Postponed - regardless of Confirmation State/Register
+ * State, which never affect freezing. A past Scheduled occurrence freezes
+ * automatically from the time check alone, even if nothing ever set it to
+ * Completed - this function never trusts Status to reflect the passage of
+ * time on its own.
+ *
+ * Compares real instants, not calendar dates - an occurrence starting
+ * later today is not frozen yet; one that has already started (even by a
+ * minute) is. Callers pass the real "now" instant, not a UTC-midnight
+ * calendar date (contrast with the generator's todayIso, which only ever
+ * needs calendar-date granularity).
+ */
+export function isFrozen(occ: { fields: Record<string, any> }, now: Date): boolean {
+  const status = selectName(occ.fields["Status"]);
+  if (status === "Completed" || status === "Cancelled" || status === "Postponed") return true;
+  const startIso = occ.fields["Start Date & Time"];
+  if (typeof startIso === "string" && startIso) {
+    const start = new Date(startIso);
+    if (!isNaN(start.getTime()) && start.getTime() <= now.getTime()) return true;
+  }
+  return false;
+}

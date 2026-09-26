@@ -1664,3 +1664,226 @@ confirmed unchanged at **v6** (not touched by this task).
 - **Production untouched**: `parent-hub` on `bkkukymqaxawnudoxdjs`
   confirmed still at v6; no other production function, Airtable base,
   frontend, Google Sheets, or finance file touched.
+
+## Slice 6 - recurring-edit propagation - TEST only - 2026-09-26
+
+Goal, per your instruction: answer "what should happen to already-
+generated future Session Occurrence rows when the recurring Session
+itself changes?" - the first slice allowed to change existing rows.
+Built as a separate pure planner (`propagation.ts`), never inside the
+generator, exactly per the ratified design.
+
+### Architecture
+
+- **`propagation.ts`** (new) - pure planner, `planRecurringEdit()`. No
+  Airtable/Supabase/network call, no read of Occurrence Staff/cover/
+  Session History. Takes `existingOccurrences`, a real `now` instant,
+  and any combination of `timeChange`/`venueChange`/`capacityChange`/
+  `dayOfWeekChange`/`endDateChange`. Returns `{ toUpdate, toCancel,
+  toCrystallise, skippedOverrides, manualReview, backfillNeeded }` -
+  exactly the shape you specified.
+- **`isFrozen()`** (new, added to the shared `schedule-utils.ts`, per
+  your "shared utilities are fine" note) - `Start Date & Time <= now`
+  OR `Status` in `{Completed, Cancelled, Postponed}`. Confirmation
+  State/Register State never consulted. A past `Scheduled` row freezes
+  from the time check alone, with no need for anything to have marked
+  it `Completed`.
+- **`propagation-repository.ts`** (new) - the Airtable PATCH layer.
+  Deliberately a separate file from `repository.ts`, whose header
+  states, as a structural property, that it is create-only; adding
+  PATCH there would falsify that claim.
+- **`propagation-orchestrator.ts`** (new) - `propagateForSession()`.
+  Reuses the exact same per-Session lock/`LockClient` as generation (no
+  new lock, no new RPCs) - generation and propagation can never race
+  for the same Session. Never invokes the generator itself, even when
+  `backfillNeeded` is true - that is always a separate, explicit
+  `/generate` call, per "propagation must not itself create the new
+  weekday rows."
+- **`index.ts`** - extended with a second manual, Management-only,
+  TEST-only route, `POST /session-occurrences/propagate`, alongside the
+  existing `/generate` - same auth/production-guard/validation
+  conventions as Slice 4. Still no automatic trigger, no cron.
+
+### Rules implemented (all in `propagation.ts`)
+
+- **Time change**: future, `Scheduled`, `Standard` (blank or
+  `"Standard"` `Schedule Change State`), non-frozen, non-`Time
+  Overridden` occurrences get a new Start/End Date & Time, recomputed
+  BST/GMT-safe per-date via the same `buildUkDateTimeIso()` the
+  generator uses. `Schedule Change State` is never written - these
+  rows remain `Standard`. `Time Overridden = true` always wins,
+  regardless of `Schedule Change State`.
+- **Venue / Capacity change**: pure historical crystallisation, no
+  write to any future row at all - a future row with a blank
+  Venue/Capacity Override already inherits the new Session default
+  automatically at read time (the existing fallback), so writing
+  anything to it would be wrong. Only **frozen** rows with a blank
+  value get the **old** effective value crystallised onto them, so
+  their historical record can't silently start showing the new
+  default. A frozen row with its own explicit value is reported in
+  `skippedOverrides`, untouched. A frozen row with nothing of its own
+  AND no old Session default to crystallise (edge case discovered
+  during throwaway testing) is reported in `manualReview` instead of
+  silently doing nothing.
+- **Day-of-week change**: future, `Scheduled`, `Standard`, non-frozen
+  rows dated on the OLD weekday (from an effective date, default
+  today) are cancelled (`Status: Cancelled`, `Schedule Change State:
+  Changed`) - matching the exact convention of the real hand-seeded
+  cancelled TEST-A row. Never deleted. `backfillNeeded: true` is always
+  returned; the planner never creates the new weekday's rows itself.
+- **Operating End Date shortened**: future, `Scheduled`, `Standard`
+  rows now dated beyond the new End Date are cancelled the same way.
+  A non-`Standard` row beyond the new End Date (an explicit override or
+  reschedule) is **not** auto-cancelled - flagged in `manualReview`
+  instead, since whether it should still run is a real judgement call
+  the planner won't guess.
+- **Independence**: Venue/Capacity overrides and Occurrence Staff never
+  block Time/Venue/Capacity propagation for the same row - guaranteed
+  by construction (the planner never reads Occurrence Staff at all, and
+  each change type's eligibility check is independent of the others'
+  fields), not by extra cross-checks.
+
+### Two real defects found and fixed during throwaway verification
+
+Per your instruction to verify against throwaway Sessions before TEST-A,
+real testing surfaced two genuine bugs before anything touched TEST-A:
+
+1. **A row eligible for both Venue and Capacity crystallisation in the
+   same call produced two separate `toCrystallise` entries against the
+   same occurrence record.** Airtable's batch update API rejects a
+   request naming the same record twice (`422 INVALID_RECORDS`), so the
+   very first real combined Venue+Capacity call failed outright. Fixed
+   by extending the existing `dedupeByOccurrence()` merge (already used
+   for `toCancel`, where a day-change and an end-date-change can target
+   the same row) to `toCrystallise` too - a genuinely small, obvious fix
+   in the same family as one already in the code.
+2. **`propagateForSession()` was not safe to retry after a partial
+   failure.** It wrote the Session's own new default fields *before*
+   applying the occurrence-level plan. The first (pre-fix) attempt above
+   wrote the Session's new Venue/Capacity successfully, then crashed on
+   the occurrence PATCH (defect 1). On retry, the orchestrator read the
+   Session's *already-changed* value as if it were still "old", and
+   crystallised the **wrong** value onto the frozen occurrence -
+   corrupting exactly the history crystallisation exists to protect.
+   Fixed by reordering: apply the full occurrence-level plan (updates/
+   cancellations/crystallisation) first, and only write the Session's
+   own new default fields once that has succeeded. A failure now always
+   leaves the Session's defaults untouched, so a retry re-reads the
+   true old values and is safe to repeat. Confirmed by resetting the
+   corrupted throwaway row/Session back to their true original values
+   and re-running the whole scenario clean - the crystallised value was
+   then correctly the true original (`Sample Sports Hall` / `20`), not
+   the new one.
+
+Neither defect ever touched TEST-A or any other real fixture - both were
+caught and fixed against disposable throwaway Sessions, exactly as the
+"throwaway first" instruction is meant to catch.
+
+### Unit tests (`tests/support/propagation.test.ts`, pure, no network)
+
+43/43 passing, covering every category required: Time (future-standard
+updates, Time-Overridden skipped, frozen skipped), Venue and Capacity
+(future-blank untouched, future-explicit untouched, frozen-blank
+crystallises, frozen-explicit skipped, no-old-default -> manualReview),
+Independence (Venue/Capacity override and Occurrence Staff never block
+an unrelated change), Freeze (started-today, later-today-eligible,
+Completed/Cancelled/Postponed always frozen, past-Scheduled-freezes-
+automatically, Confirmation/Register State irrelevant), Day change
+(eligible-cancelled, replacement/cancelled/postponed/other-weekday
+untouched, `backfillNeeded`, no create capability in the plan shape),
+End Date (eligible-cancelled, frozen untouched, exception ->
+manualReview, within-bounds untouched), the two interaction/defect
+regression tests above, and a regression check against the real TEST-A
+reschedule-chain field shapes (only the two genuinely standard rows -
+12 Oct, 19 Oct - update on a permanent time change; cancelled/postponed/
+rescheduled rows never touched).
+
+### Real TEST verification
+
+**Throwaway Sessions (`SLICE6-TIME`, `SLICE6-VENUECAP`, `SLICE6-DAY`,
+`SLICE6-ENDDATE`), all via real HTTP through `pg_net`:**
+
+- **Time**: future standard occurrence updated to the new time
+  (BST/GMT-correct); `Time Overridden` row and frozen (past) row both
+  untouched; Session's own `Default Start/End Time` updated.
+- **Venue + Capacity (combined call)**: frozen blank row crystallised
+  with the true old Venue/Capacity; frozen row with its own explicit
+  Venue/Capacity untouched (reported in `skippedOverrides` x2); future
+  blank row untouched (inherits the new default automatically); Session's
+  own Venue/Default Capacity updated to the new values.
+- **Day-of-week**: eligible old-day future row cancelled
+  (`Cancelled`/`Changed`); already-cancelled row and different-weekday
+  row untouched; `backfillNeeded: true`. Follow-up real `/generate` call
+  created 13 new Wednesday shells (confirmed one landed on 2026-09-30,
+  a real Wednesday, at the Session's existing 17:00-18:00 local time) -
+  proving propagation correctly never creates rows itself and the
+  generator correctly picks up the new day on its own next run.
+- **End Date shortened**: eligible row beyond the new End Date
+  cancelled; frozen row beyond it untouched; the one non-Standard
+  (`Rescheduled`) row beyond it correctly NOT auto-cancelled, reported
+  in `manualReview` instead; row within bounds untouched; Session's own
+  End Date updated.
+- All four throwaway Sessions and every record they held (12 hand-
+  seeded + 13 generator-created during the day-change backfill = 25
+  occurrences + 4 Sessions) deleted by exact record ID after
+  verification.
+- `generation_locks`: 0 rows before and after every call.
+
+**TEST-A (`rec4cME6ncL4IAvlK`), only after all throwaway cases passed:**
+
+Snapshotted the Session's exact fields and all 14 real occurrences
+first. Ran a real, trivially-reversible 5-minute Time change (17:00-
+18:00 -> 17:05-18:05) via the real endpoint:
+
+- Exactly the 11 predicted standard rows updated (the 9 generator-
+  created Mondays from Slice 5 plus the 2 pre-existing standard rows,
+  12 Oct and 19 Oct), each BST/GMT-correct for its own date (12/19 Oct
+  -> `16:05Z`, everything Nov/Dec -> `17:05Z`).
+- The cancelled 28 Sep, postponed 5 Oct, and the 7 Oct replacement
+  (`Rescheduled`) were confirmed byte-for-byte unchanged before and
+  after - never touched.
+- Rolled back immediately after confirming: the Session's `Default
+  Start/End Time` and all 11 occurrences' `Start/End Date & Time`
+  restored to their exact original captured values (17:00/18:00 and
+  each row's original instant). Re-read afterward to confirm the
+  restore matched the original snapshot exactly.
+- `generation_locks`: 0 rows after.
+
+**Regression, real HTTP:**
+
+- `GET /hub-content/players` as `coach.a` - identical to baseline
+  (Archie + Bella, `permanent` tier).
+- `GET /parent-hub/me` as `parent.a` - TEST-A's `next_occurrence` still
+  resolves to the 7 Oct replacement at `"17:30 – 18:30"`; TEST-B's
+  still resolves correctly at `"18:00 – 19:00"` - both exactly as
+  documented after the Slice 5 time-display fix, confirming
+  `resolveNextOccurrence()` and the display fix are both unaffected by
+  Slice 6.
+- `node tests/run-all.js`: **49/49 test files passed** (48 existing +
+  the new `propagationtest.js`).
+
+**Production**: `bkkukymqaxawnudoxdjs` has no `session-occurrences`
+function at all (confirmed via a fresh listing) - Slice 6 was never
+deployed there. No frontend, Google Sheets, or finance file touched.
+
+### Deployment
+
+TEST `session-occurrences`: v2 -> v6 (v3 added the Slice 6 files; v4
+fixed the toCrystallise-dedupe defect; v5 redeployed the same fix after
+an intermediate deploy-shape mistake; v6 fixed the write-ordering
+defect). Final deployed version (v6) is the one all TEST-A verification
+above ran against.
+
+### Verdict
+
+All required change types (Time, Venue, Capacity, Day-of-week, Operating
+End Date), all required test categories (Time, Venue, Capacity,
+Independence, Freeze, Day change, End Date, Regression), and the
+required real-TEST verification sequence (throwaway first, TEST-A only
+after) are complete and green. Two real defects were found and fixed
+during throwaway verification, before either could reach TEST-A or any
+other real fixture. No design ambiguity required stopping - the two
+edge cases this slice did surface (a frozen row with no old default to
+crystallise; a non-Standard row beyond a shortened End Date) are both
+handled by reporting via `manualReview` rather than guessing, per your
+own instruction for exactly this situation.
