@@ -457,3 +457,116 @@ re-running the same duplicate check sequentially against an established
 parent (above) showed duplicate protection working correctly. Flagged as
 a separate, pre-existing finding rather than fixed here - out of this
 repair's scope.
+
+## Repair: Parent Hub coach display now resolves from Session Staff
+
+### Inspection findings (before any change)
+
+- **Session Staff** (`tblkngM72cQNllOux`) is the canonical recurring
+  staffing relationship: `Session` (link to Sessions), `Coach` (link to
+  Coaches), `Role` (link to Coach Roles), `Active` (checkbox). Both TEST
+  Sessions already had exactly one Active Session Staff row each:
+  `SS-TEST-A1` (TEST-A -> Alex Test -> Lead Coach) and `SS-TEST-B1`
+  (TEST-B -> Sam Sample -> Coach).
+- **Coaches** carries the display name in `Coach Name`. Several retired
+  fields sit alongside it (see "Flagged" below) but none of them held the
+  coach's session assignment even before this repair - `Coach Name` was
+  always the right field, `parent-hub` just never read Session Staff to
+  reach it.
+- **Coach Roles** (`tblGoag0ywrXqpClD`) holds `Role Name` (Lead Coach /
+  Coach / Learning Coach) plus six permission checkboxes. None of those
+  checkboxes are read anywhere in `parent-hub` today, including `Can View
+  Player Names` - that flag governs what a Learning **Coach** may see
+  about **players**, in the coach-facing screens, not what a **parent**
+  may see about a coach's own name. It is a different flag for a
+  different direction of visibility, not a parent-facing gate.
+- **Conclusion: Learning Coach is shown to parents.** There is no
+  product rule anywhere in the schema or the codebase that hides it -
+  the only plausible candidate flag doesn't apply to this direction. All
+  three roles display, ordered Lead Coach -> Coach -> Learning Coach.
+
+### What changed
+
+`supabase/functions-test/parent-hub/index.ts` - `handleParentMe` now
+also fetches `Session Staff`, `Coaches` and `Coach Roles`, and both the
+`activeSessions` and `pausedSessions` payload blocks call a new
+`resolveSessionCoachNames()` instead of the sessionPayload default `[]`:
+
+- Reads only `Active: true` Session Staff rows for the session.
+- Dedupes by the **Coach record id**, never by name text - two
+  different coaches who happen to share a name both still appear.
+- Orders by role: Lead Coach, then Coach, then Learning Coach, then
+  anything unrecognised.
+- Drops unpresentable names (login/email-style) via the same
+  `presentableName()` helper used everywhere else in this file.
+
+`availableSessions` and `endedSessions` are unchanged (neither carries a
+`coaches` field; out of scope). Occurrence-specific cover (Occurrence
+Staff) was **not** wired into `next_occurrence` - resolving it needs a
+new fetch, a new session-id/occurrence-id index, and a decision on how
+`Assignment Type`/`Attendance` on Occurrence Staff should affect display,
+none of which the current data model makes trivial. Kept separate, per
+the task's own instruction.
+
+### Tests
+
+New `tests/support/session-coaches.test.ts` (11 cases, all passing):
+real resolution from Session Staff for both TEST sessions' exact data,
+role-priority ordering, Learning Coach inclusion, dedup by Coach id vs.
+by name text (two different coaches sharing a name both appear),
+Active:false rows excluded, zero-Session-Staff sessions return `[]`,
+login/email/blank names dropped, a dangling Coach link degrades to `[]`
+rather than throwing, an unrecognised Role still displays (last).
+
+Full suite: **46/46 test files passed** (45 pre-existing + this one).
+
+### Deploy
+
+`parent-hub` v7 (TEST project `dkqubldmfyeuudecxmvh`), pinned to commit
+`d69e102a6d38f4c0241d41788d17dcfd64d00512` on
+`foundation/test-base-isolation`.
+
+### Verification - real calls against parent-hub v7 (TEST)
+
+- **Archie's sessions return the correct coach names**: TEST-A ->
+  `["Alex Test"]` (his Lead Coach), TEST-B -> `["Sam Sample"]` (its
+  Coach). Both match the live Session Staff rows exactly.
+- **No duplicate coach names** in either list (nor anywhere else in the
+  response).
+- **Session role relationship stays intact**: Alex Test is Lead Coach on
+  TEST-A only, Sam Sample is Coach on TEST-B only - matches the seeded
+  staffing exactly, nothing crossed over.
+- **Dylan's paused TEST-B session** also now carries `coaches: ["Sam
+  Sample"]` - the pausedSessions block resolves the same way.
+- **Bella/Archie/ended-link behaviour unchanged**: `pending_claims` still
+  shows Bella Brown `Pending`; Archie's ended TEST-B entry (from an
+  earlier membership) still carries no `coaches` key and its
+  `end_date`/`scheduled_end_date` are untouched;
+  `parent.ended@test.invalid` still returns `children: []`,
+  `pending_claims: []` - no name or coach data leaks for an ended link.
+- **Session lifecycle / next_occurrence logic still pass**: Archie's
+  TEST-A `next_occurrence` still resolves to the rescheduled
+  2026-10-07/Wednesday/16:30–17:30 occurrence exactly as before; TEST-B's
+  `next_occurrence` is still `null` (no occurrence generated yet).
+- **Full test suite**: 46/46 passing (above).
+
+Production untouched throughout - no writes to `apprptFotQuVL1mhs` or
+`bkkukymqaxawnudoxdjs`, no production Edge Function redeployed.
+
+### Flagged, not touched - remaining retired coach/schedule fields
+
+None of these are read anywhere in `parent-hub` (verified by inspection
+while making this change) - listed here only because the task asked to
+flag, not fix, anything else retired:
+
+- `Coaches.LEGACY — Player Session Requests`, `LEGACY — Schedule
+  Aliases`, `LEGACY — Sessions`, `LEGACY — Coach Role`, `LEGACY —
+  Session Occurrences`, `LEGACY — Players`
+- `Coach Roles.LEGACY — Coaches` (retired direct role link; Session
+  Staff carries the role now)
+- `Sessions.LEGACY — Source Coach Names`, `LEGACY — Permanent Coaches`
+- `Session Occurrences.LEGACY — Source Assigned Coach Names`, `LEGACY —
+  Assigned Coaches` (Occurrence Staff is canonical)
+- `Players.LEGACY — Assigned Coaches` - already flagged in an earlier
+  repair; still gated behind a Feature Control flag, still not read by
+  this file.
