@@ -146,3 +146,16 @@ export function buildUkDateTimeIso(dateIso: string, hhmm: { h: number; m: number
 export function computeOccurrenceKey(sessionRecordId: string, dateIso: string): string {
   return `${sessionRecordId}:${dateIso}`;
 }
+
+/**
+ * Deterministic idempotency key for a reschedule-created replacement
+ * occurrence, at ITS OWN landing date - Slice 3's repository layer uses
+ * this to derive a key for existing "From field: Replacement Occurrence"
+ * rows that pre-date the Occurrence Key field. Deliberately shaped so it
+ * can never string-match the standard key ({session}:{date}) for that
+ * same date, even when a replacement lands back on a date that would
+ * otherwise be a standard recurring slot for the same Session.
+ */
+export function computeReplacementOccurrenceKey(sessionRecordId: string, dateIso: string, originOccurrenceRecordId: string): string {
+  return `${computeOccurrenceKey(sessionRecordId, dateIso)}:R:${originOccurrenceRecordId}`;
+}

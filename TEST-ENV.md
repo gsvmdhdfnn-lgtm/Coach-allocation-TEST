@@ -1053,3 +1053,222 @@ export function computeOccurrenceKey(sessionRecordId: string, dateIso: string): 
 - Production untouched throughout - no writes to `apprptFotQuVL1mhs` or
   `bkkukymqaxawnudoxdjs`, no Edge Function deployed or redeployed (this
   slice deploys nothing).
+
+## Slice 3 - repository, orchestration and concurrency infrastructure (still unexposed)
+
+Scope, per your approval: the Airtable repository/data-access layer,
+safe (create-only) application of Slice 2's pure generator output, the
+TEST Supabase `generation_locks` infrastructure, one shared per-Session
+orchestration path, and atomic lock acquisition/stale-lock reclamation.
+Explicitly out of scope and not touched: frontend, production, any
+deployed/exposed route (that's Slice 4), any scheduled job, recurring-
+edit propagation, Session History writes.
+
+### Amendment 3 - the lock-ownership race, fixed before implementation
+
+Your review caught a real race in the Slice 2 plan's original
+`generation_locks(session_record_id, locked_at)` shape: a stalled
+invocation A could reach its `finally` after its lock had already been
+legitimately reclaimed by invocation B, and `release(session_record_id)`
+would delete B's live lock. Fixed by adding ownership: the table gained
+`lock_token uuid not null`, `acquire_generation_lock` now returns the
+token this call owns (or `null`), and `release_generation_lock` takes
+both `session_record_id` AND `lock_token`, deleting only when both
+match. A stale invocation's own (superseded) token can never match a
+newer owner's row.
+
+### Exact SQL applied (migration `test_generation_locks`, project `dkqubldmfyeuudecxmvh`)
+
+```sql
+create table public.generation_locks (
+  session_record_id text primary key,
+  lock_token uuid not null,
+  locked_at timestamptz not null default now()
+);
+
+alter table public.generation_locks enable row level security;
+-- Zero policies granted: anon/authenticated get no access at all. The
+-- Edge Function (Slice 4+) uses the service-role key, which bypasses
+-- RLS - no policy needed for it to work.
+
+create or replace function public.acquire_generation_lock(p_session_record_id text)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare v_token uuid;
+begin
+  delete from generation_locks
+   where session_record_id = p_session_record_id
+     and locked_at < now() - interval '5 minutes';
+  v_token := gen_random_uuid();
+  insert into generation_locks (session_record_id, lock_token, locked_at)
+  values (p_session_record_id, v_token, now())
+  on conflict (session_record_id) do nothing;
+  if found then return v_token; else return null; end if;
+end; $$;
+
+create or replace function public.release_generation_lock(p_session_record_id text, p_lock_token uuid)
+returns boolean language plpgsql security definer set search_path = public as $$
+begin
+  delete from generation_locks
+   where session_record_id = p_session_record_id and lock_token = p_lock_token;
+  return found;
+end; $$;
+
+revoke execute on function acquire_generation_lock(text) from public, anon, authenticated;
+revoke execute on function release_generation_lock(text, uuid) from public, anon, authenticated;
+grant execute on function acquire_generation_lock(text) to service_role;
+grant execute on function release_generation_lock(text, uuid) to service_role;
+```
+
+Atomicity: the reclaim-then-insert sequence is one PL/pgSQL function
+call (one statement from the caller's side); the primary key + `ON
+CONFLICT DO NOTHING` guarantees exactly one concurrent `INSERT` can ever
+land a row for a given `session_record_id`, regardless of how many
+callers race the stale-reclaim `DELETE` simultaneously.
+
+### Lock semantics - proven with real SQL against the real TEST Supabase project, not just reasoned about
+
+All seven scenarios you required, run for real via `execute_sql` against
+`dkqubldmfyeuudecxmvh` (cleaned up afterward, zero rows left in
+`generation_locks`):
+
+1. First `acquire_generation_lock('TEST-LOCK-SESS-1')` -> a token.
+2. A second, immediate `acquire` for the same id -> `null`.
+3. `release_generation_lock(id, '00000000-...-000000000000')` (wrong
+   token) -> `false`; row count confirmed unchanged (still 1).
+4. `release_generation_lock(id, <the correct token>)` -> `true`.
+5. `acquire` again after that valid release -> a fresh token (a released
+   lock is truly free).
+6. Stale reclaim: manually backdated `locked_at` to 6 minutes ago (>5min
+   threshold), then `acquire` -> a NEW token, different from the
+   previous one - the stale row was reclaimed.
+7. The **original stale owner** then calls `release` with its OLD
+   (superseded) token -> `false`, and the reclaiming owner's row is
+   confirmed still present and unchanged immediately after - proves the
+   exact race from your example cannot happen.
+8. True concurrency (not just sequential ordering): two `acquire` calls
+   for a fresh id (`TEST-LOCK-SESS-2`) fired as genuinely parallel tool
+   calls in the same turn -> exactly one token, one `null`.
+
+### Files added
+
+All portable (no `Deno.*` anywhere) - plain `fetch()` only, so the exact
+same code runs under Node today (nothing is deployed yet) and under Deno
+once Slice 4 wires it into a real Edge Function. Matches the existing
+`player-access.ts` precedent: pure(ish) logic kept separate from
+runtime-specific wiring.
+
+- `supabase/functions-test/session-occurrences/schedule-utils.ts` -
+  additive only: `computeReplacementOccurrenceKey(sessionRecordId,
+  dateIso, originOccurrenceRecordId)`, used by the repository's key
+  derivation below. Nothing existing changed.
+- `supabase/functions-test/session-occurrences/repository.ts` (new) -
+  `fetchSession`, `fetchSessionDatesForSession`,
+  `fetchExistingOccurrencesForSession`, `deriveOccurrenceKey`,
+  `buildOccurrenceCreatePayload`, `formatDisplayDate`,
+  `createOccurrences`. POST/create only - no function in this file can
+  issue a PATCH/PUT/DELETE.
+- `supabase/functions-test/session-occurrences/lock-client.ts` (new) -
+  `createSupabaseLockClient`, calling the two RPC functions above via
+  plain PostgREST `fetch()` (no Supabase client library needed).
+- `supabase/functions-test/session-occurrences/orchestrator.ts` (new) -
+  `generateForSession(deps, sessionRecordId, today)`: acquire -> (if
+  acquired) read + pure plan + create -> release in a `finally`. The one
+  shared per-Session path; nothing else calls the lock, the repository
+  and the generator together.
+- `tests/support/{schedule-utils,session-repository,lock-client,session-orchestrator}.ts` -
+  hand-kept copies, import paths adjusted to this directory's own file
+  names (`session-generator.ts`/`session-repository.ts` in place of
+  `generator.ts`/`repository.ts`) - the only intentional divergence.
+- `tests/support/session-repository.test.ts` (new) - 19 assertions.
+- `tests/e2e/sessionrepositorytest.js` (new) - shim for `tests/run-all.js`.
+
+### The existing-row guarantee: the actual problem, and how it's solved
+
+Read TEST-A's 5 real Session Occurrences rows before writing any code
+(see Slice 2's section above for the full table) - **none of them has an
+`Occurrence Key` value**, since the field didn't exist when they were
+hand-seeded. Feeding them into the Slice 2 generator as-is would make it
+think those dates were free and try to recreate them.
+
+`deriveOccurrenceKey` solves this **in memory only, never written
+back**: an explicit key is used as-is; a row with an incoming `From
+field: Replacement Occurrence` link derives the `:R:` shape at its own
+date; everything else (a plain row, or an origin that was later moved
+away via an *outgoing* `Replacement Occurrence` link) derives the
+standard key at its own date. Unit-tested directly against the 5 real
+rows' exact field shapes (`session-repository.test.ts`, section 5): all
+5 derive exactly the expected keys, and feeding them through the real
+`planGeneration` (section 6) confirms none of the 4 already-occupied
+dates (28 Sep, 5 Oct, 12 Oct, 19 Oct) gets regenerated, while forward
+Mondays from 26 Oct onward do.
+
+Structural guarantee, not just a test result: `repository.ts` has zero
+functions capable of writing to an existing row - `createOccurrences`
+only ever calls the POST-only `airtableBatchCreate`. Re-read TEST-A's 5
+rows via the Airtable API after all of this slice's real-call
+verification below - byte-for-byte identical to the snapshot taken
+before any of it started.
+
+### Real-call verification (no Edge Function deployed - Amendment 1)
+
+Since Slice 3 stays unexposed, verification used the same methodology
+as every other real-call check in this project: the exact same pure
+functions the code contains, computed for real via Node (credential-
+free - `planGeneration` and `buildOccurrenceCreatePayload` need none),
+with the one remaining step (actually sending the computed payload to
+Airtable) performed directly via the Airtable API/MCP rather than
+through a raw `fetch()` this sandbox has no token to make - the payload
+sent is the literal output of the code, not a hand-approximated one.
+
+1. Created a throwaway TEST Session, `SLICE3-VERIFY` (Recurring,
+   Active, Monday, 17:00-18:00, Start Date 2026-09-01) - deliberately
+   NOT TEST-A/TEST-B, so this real-write proof never risks the shared
+   fixtures 47 other tests depend on.
+2. Ran the real `planGeneration` against it (today = 2026-09-26) -> 13
+   shells. Ran the real `buildOccurrenceCreatePayload` on each -> 13
+   exact Airtable field payloads.
+3. Created those exact 13 records for real via the Airtable API, and
+   read them back - identical to the computed payloads.
+4. **Idempotency, for real**: re-ran `planGeneration` with those 13
+   real rows' real Occurrence Key values as `existingOccurrences` ->
+   `toCreate.length === 0`.
+5. **Rollback (Amendment 4)**: deleted exactly those 13 captured record
+   IDs (not a `Created` timestamp cutoff, which could also catch an
+   unrelated legitimate record made in the same window) - confirmed
+   removed - then deleted the throwaway `SLICE3-VERIFY` Session itself.
+6. Re-read TEST-A's 5 hand-seeded rows one final time - unchanged from
+   the pre-Slice-3 snapshot, field for field.
+7. Spot-checked production (`apprptFotQuVL1mhs`) still has none of the
+   Slice 1 schema additions, and confirmed no Edge Function was deployed
+   or redeployed anywhere in this slice.
+
+### Test results
+
+- `node --experimental-strip-types tests/support/session-repository.test.ts`
+  directly: **19/19 passing** - key derivation (explicit key, plain row,
+  origin-with-outgoing-link, replacement-with-incoming-link), the exact
+  5 real TEST-A rows' reconciliation, the full read-through-plan cycle
+  against TEST-A's real config confirming no regeneration of its 4
+  occupied dates while forward Mondays do generate, the Airtable create
+  payload's exact field mapping (including the four deliberately-omitted
+  fields), and `formatDisplayDate`.
+- `node tests/run-all.js` (full TEST suite): **48/48 test files passed**,
+  up from 47 (the new `sessionrepositorytest.js` is the addition; no
+  other file's result changed).
+- Lock semantics verified with 8 real SQL scenarios against
+  `dkqubldmfyeuudecxmvh` directly (see above) - all passed, table left
+  empty afterward.
+- Live write-and-rollback cycle against the real TEST Airtable base (see
+  above) - 13 real rows created from the code's own computed output,
+  read back identical, idempotency re-confirmed against them for real,
+  then all 13 plus the throwaway Session deleted by their exact captured
+  record IDs. Re-confirmed after the fact: zero `SLICE3-VERIFY` rows
+  remain anywhere in the base, TEST-A's 5 hand-seeded rows are still
+  byte-for-byte unchanged, `generation_locks` has 0 rows, the Supabase
+  migration `test_generation_locks` (version `20260926194023`) is
+  recorded applied, and no Edge Function was deployed - `me`,
+  `parent-hub` and `hub-content` are the only three that exist in
+  `dkqubldmfyeuudecxmvh`, same as before this slice.
+- Production (`apprptFotQuVL1mhs` / `bkkukymqaxawnudoxdjs`) untouched
+  throughout - re-checked directly: still none of the Slice 1/3 schema,
+  no new Edge Function.
