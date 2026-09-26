@@ -1,6 +1,8 @@
 // The Session Occurrences resolution logic, as its own copy of what is
 // now in functions-test/parent-hub/index.ts (same duplication convention
-// as player-access.ts).
+// as player-access.ts). Includes formatUkTime(), added in Slice 5 to fix
+// next_occurrence.time displaying the raw UTC digits instead of the real
+// Europe/London local time (see TEST-ENV.md).
 //
 // Agreed behaviour (hybrid option C):
 //  - Recurring Session data is always the pattern: day, time, venue.
@@ -71,11 +73,35 @@ function resolveNextOccurrence(sessionId: string, occurrencesBySessionId: Record
   });
   return usable[0] || null;
 }
+/**
+ * A stored Start/End Date & Time is a UTC instant - "18:00 BST" and
+ * "17:00 GMT" are both correct storage for the same real moment, so the
+ * raw UTC digits are only the right thing to SHOW when the moment
+ * happens to fall in GMT. Converts properly via Intl instead of a plain
+ * string slice, so a BST-dated occurrence displays its true UK local
+ * time rather than the UTC hour. Returns "" for anything unparseable,
+ * matching this file's own fail-closed convention elsewhere. (Slice 5
+ * fix - see TEST-ENV.md.)
+ */
+function formatUkTime(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const parts: Record<string, string> = {};
+  for (const p of new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d)) {
+    parts[p.type] = p.value;
+  }
+  const hour = parts.hour === "24" ? "00" : parts.hour;
+  return hour && parts.minute ? `${hour}:${parts.minute}` : "";
+}
 function nextOccurrencePayload(occ: any, session: any, venueByRecordId: Record<string, any>) {
-  const startIso = String(occ.fields["Start Date & Time"] || "");
-  const endIso = String(occ.fields["End Date & Time"] || "");
-  const startTime = startIso.length >= 16 ? startIso.slice(11, 16) : "";
-  const endTime = endIso.length >= 16 ? endIso.slice(11, 16) : "";
+  const startTime = formatUkTime(String(occ.fields["Start Date & Time"] || ""));
+  const endTime = formatUkTime(String(occ.fields["End Date & Time"] || ""));
   return {
     occurrence_record_id: occ.id,
     date: occ.fields["Date"] || "",
@@ -123,7 +149,7 @@ const bySession = buildOccurrencesBySessionId(rows);
   const payload = nextOccurrencePayload(next, SESSION_A, venueByRecordId);
   ck("Resolved date is the replacement's own date, not the recurring Monday", payload.date === "2026-10-07");
   ck("Resolved weekday is computed from that real date (Wednesday), not the pattern", payload.day === "Wednesday", payload.day);
-  ck("Occurrence-level time OVERRIDES the recurring default", payload.time === "16:30 – 17:30", payload.time);
+  ck("Occurrence-level time OVERRIDES the recurring default, converted to real UK local time (16:30 UTC on 7 Oct, within BST, displays as 17:30)", payload.time === "17:30 – 18:30", payload.time);
   ck("Occurrence-level venue OVERRIDES the recurring default", payload.venue === "Sample Sports Hall");
   ck("rescheduled flag is set on the winning occurrence", payload.rescheduled === true);
 }
@@ -170,6 +196,29 @@ const bySession = buildOccurrencesBySessionId(rows);
   // Two future candidates on the same session, no exceptions - earliest wins.
   ck("Among plain future Scheduled occurrences, the earliest date wins",
     resolveNextOccurrence("sessA", bySession, occurrenceById, "2026-10-13")!.id === "occ5");
+}
+
+// --- formatUkTime: focused BST/GMT/boundary coverage (Slice 5 fix) ---
+{
+  ck("A BST-period UTC instant converts to the correct 1-hour-ahead UK local time (13:00Z in July -> 14:00 BST)",
+    formatUkTime("2026-07-15T13:00:00.000Z") === "14:00", formatUkTime("2026-07-15T13:00:00.000Z"));
+}
+{
+  ck("A GMT-period UTC instant converts with no offset (13:00Z in January -> 13:00 GMT)",
+    formatUkTime("2026-01-15T13:00:00.000Z") === "13:00", formatUkTime("2026-01-15T13:00:00.000Z"));
+}
+{
+  // The real 2026 autumn clock change is 25 Oct 2026, 02:00 BST -> 01:00 GMT.
+  // Same nominal UTC hour (17:00Z) on either side of that date must display
+  // differently - BST the day before, GMT the day of/after.
+  ck("The Saturday before the autumn clock change is still BST (17:00Z -> 18:00 local)",
+    formatUkTime("2026-10-24T17:00:00.000Z") === "18:00", formatUkTime("2026-10-24T17:00:00.000Z"));
+  ck("The Sunday of the autumn clock change is already GMT (17:00Z -> 17:00 local)",
+    formatUkTime("2026-10-25T17:00:00.000Z") === "17:00", formatUkTime("2026-10-25T17:00:00.000Z"));
+}
+{
+  ck("formatUkTime fails closed to empty string for a blank/unparseable input, never a guess",
+    formatUkTime("") === "" && formatUkTime("not-a-date") === "");
 }
 
 console.log(R.map(([s, n, x]) => `${s}  ${n}${x ? "  -- " + x : ""}`).join("\n"));

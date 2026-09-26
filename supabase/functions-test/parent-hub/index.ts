@@ -571,12 +571,37 @@ function resolveNextOccurrence(
   return usable[0] || null;
 }
 
+/**
+ * A stored Start/End Date & Time is a UTC instant - "18:00 BST" and
+ * "17:00 GMT" are both correct storage for the same real moment, so the
+ * raw UTC digits are only the right thing to SHOW when the moment
+ * happens to fall in GMT. Converts properly via Intl instead of a plain
+ * string slice, so a BST-dated occurrence displays its true UK local
+ * time rather than the UTC hour. Returns "" for anything unparseable,
+ * matching this file's own fail-closed convention elsewhere.
+ */
+function formatUkTime(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const parts: Record<string, string> = {};
+  for (const p of new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d)) {
+    parts[p.type] = p.value;
+  }
+  // Intl can render midnight as "24" in some environments; normalise to "00".
+  const hour = parts.hour === "24" ? "00" : parts.hour;
+  return hour && parts.minute ? `${hour}:${parts.minute}` : "";
+}
+
 /** The resolved occurrence, shaped for the client. Time is read from the occurrence's own Start/End Date & Time - present only when a real occurrence won, so it always reflects that date's actual schedule rather than the recurring default. */
 function nextOccurrencePayload(occ: any, session: any, venueByRecordId: Record<string, any>) {
-  const startIso = String(occ.fields["Start Date & Time"] || "");
-  const endIso = String(occ.fields["End Date & Time"] || "");
-  const startTime = startIso.length >= 16 ? startIso.slice(11, 16) : "";
-  const endTime = endIso.length >= 16 ? endIso.slice(11, 16) : "";
+  const startTime = formatUkTime(String(occ.fields["Start Date & Time"] || ""));
+  const endTime = formatUkTime(String(occ.fields["End Date & Time"] || ""));
   return {
     occurrence_record_id: occ.id,
     date: occ.fields["Date"] || "",
