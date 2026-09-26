@@ -570,3 +570,204 @@ flag, not fix, anything else retired:
 - `Players.LEGACY — Assigned Coaches` - already flagged in an earlier
   repair; still gated behind a Feature Control flag, still not read by
   this file.
+
+## Repair: /hub-content/players restored from Session Staff
+
+Follow-up to the legacy/reconciliation audit above, which found
+`hub-content`'s player-access resolver returning `[]` for every coach in
+TEST - not a design gap, a regression from the same field-rename that
+prompted the audit.
+
+### Inspection findings (before any change)
+
+- **Session Staff** carries `Session`, `Coach`, `Role` (link to Coach
+  Roles) and `Active`. A coach can hold different roles on different
+  sessions via different rows - there is no single "the coach's role"
+  concept at the Coach-record level any more (that field, `Coach Role`,
+  was renamed `LEGACY — Coach Role`).
+- **Coach Roles** carries `Role Name` (display text) and `Role Key`
+  (stable snake_case identifier: `lead_coach` / `coach` /
+  `learning_coach`), plus the permission checkboxes. The real TEST data
+  currently has **Can View Players = true on Learning Coach too** (likely
+  a seeding oversight, not corrected here since fixing it is a data
+  change, not a code one) - which made trusting that checkbox alone unsafe.
+- **`player-access.ts`** (`resolvePlayerAccess`, `capabilitiesForCoach`,
+  `eligibleCoachIdsForSessionSnapshot`) read `link.fields["Status"]`,
+  `["Coaches At End"]`, `["End Date"]` (Player Session Links) and
+  `coachRecord.fields["Coach Role"]` (Coaches) - all four renamed to
+  `LEGACY —` prefixes in this base, so every one of these reads returned
+  `undefined`. Confirmed live: `GET /hub-content/players` as
+  `coach.a@test.invalid` (Lead Coach, Active Session Staff on TEST-A)
+  returned `200 []` before this repair.
+- **Former-player access** already had a correct model (the frozen
+  `Coaches At End` snapshot + 28-day window from the actual end date) -
+  only its field names were stale, not its logic.
+
+### What changed
+
+`supabase/functions-test/hub-content/player-access.ts`:
+- Current-session ("permanent") access is now resolved per **(coach,
+  session)** from the caller's own Active Session Staff row on that
+  specific session (`sessionStaffCapabilitiesForSession()`) - never the
+  Sessions Google Sheet, and never a single role fixed to the Coach
+  record.
+- Player-data access is gated by a hard-coded safelist,
+  `PLAYER_ACCESS_ROLE_PRIORITY = { lead_coach: 0, coach: 1 }`, keyed by
+  **Role Key** (stable) rather than Role Name (display text, renameable)
+  or the Can View Players checkbox alone - Learning Coach is excluded by
+  construction, regardless of what any checkbox says now or later.
+- Cover access is **unchanged in mechanism** (still the Changes Google
+  Sheet, matched by coach identity - migrating this to Occurrence Staff
+  is a separately-scoped, materially bigger change, per the task). It
+  now draws its capability floor from `coachOwnStandingCapabilities()` -
+  the covering coach's own highest-priority eligible role across any of
+  their current Session Staff rows - replacing the retired single
+  `Coach Role` field this used to read.
+- Membership status reads `Membership Lifecycle Status` (canonical) with
+  `LEGACY — Status` / `Status` fallbacks, matching parent-hub's own
+  `membershipStatus()` exactly. A link with no resolvable status grants
+  nothing (fail closed). Any status other than `Ended` counts as current
+  (Active, Paused, Cancellation Pending, Ending Scheduled all still mean
+  the player belongs on that session) - the same "not Ended" reading
+  `handleListClaims()` in parent-hub already uses elsewhere.
+- Former-access reads `LEGACY — Coaches At End` / `LEGACY — End Date`
+  (their only current names - there is no canonical replacement for
+  either yet). The 28-day-window logic itself is untouched.
+
+`supabase/functions-test/hub-content/index.ts`'s `handlePlayers()`:
+fetches `Session Staff` instead of the Sessions CSV; builds
+`sessionStaffBySessionAndCoach` and the caller's own
+`coachCoverCapabilities`; passes both into `resolvePlayerAccess()` in
+place of the old `coachNameKeys`/`scheduledCoachNameKeysBySessionId`.
+
+**Deliberately NOT touched** (out of this task's scope, each already
+broken the same way and each unreachable from any currently-deployed
+TEST function):
+- The **legacy Assigned Coaches fallback** in `handlePlayers()` (for
+  Players never migrated onto Session/Player Session Links) - still
+  reads `Players.Active`/`Assigned Coaches` by their pre-rename names
+  (now `LEGACY — Active` / `LEGACY — Assigned Coaches`), so it still
+  contributes zero rows, exactly as before this repair.
+- `capabilitiesForCoach()` and `eligibleCoachIdsForSessionSnapshot()` -
+  only called by `player-sessions`, which has no TEST copy yet. Both
+  still read the retired single `Coach Role` field and the Sessions
+  Sheet respectively; whoever ports `player-sessions` into TEST should
+  switch them to the same Session Staff model at that point.
+
+### Tests
+
+Rewrote `tests/support/access-resolution.test.ts` (31 cases, all
+passing) for the new API and rules: per-session role resolution, Lead
+Coach/Coach granted, Learning Coach denied **even though its own Can
+View Players checkbox is true** (the exact real-data condition), no
+Session Staff row on this session → invisible, no Session Staff row
+anywhere → invisible, management admin tier unaffected, cover tier via
+`coachOwnStandingCapabilities()` (including a Learning-Coach-only
+standing role getting nothing from cover), former access via the
+`LEGACY —` fields with the 28-day window and expiry, the membership
+status fallback chain, an inactive Coach Role/Session Staff row failing
+closed, a mixed-role coach's standing role resolving to their
+highest-priority one, and the untouched
+`eligibleCoachIdsForSessionSnapshot()` still working against the
+extended `CoachRoleCapabilities` shape (with a documented note that it
+does *not* apply the new role-key safelist itself - a pre-existing gap,
+unreachable in TEST, left alone). `tests/support/player-access.ts`
+(hand-kept copy) updated to match. Full suite: **46/46 test files
+passed**.
+
+### Deploy
+
+`hub-content` v3 (TEST project `dkqubldmfyeuudecxmvh`), pinned to commit
+`024dd5ba322670415cd92c4e69eba234b475ee73` on
+`foundation/test-base-isolation`, `verify_jwt: false` (matches the
+existing deployment - the public landing routes stay unauthenticated;
+every route returning coach/player data still checks the JWT inside the
+function). Note: an intermediate v2 deploy briefly defaulted
+`verify_jwt` to `true` by omission and was corrected in v3 before any
+verification call was made against it.
+
+### Verification - real calls against hub-content v3 (TEST)
+
+Two small TEST-data additions were made in Airtable (not code) purely to
+exercise real accounts against every required scenario, both clearly
+labelled:
+- A second Session Staff row, `SS-TEST-A2-VERIFY`: Alex Test (already
+  Lead Coach on TEST-A) also given the Learning Coach role on TEST-B -
+  lets the existing `coach.a` login prove per-session role gating and
+  the Learning-Coach-denial rule against a real session, with no new
+  test account needed.
+- `LEGACY — Coaches At End` on the existing ended TEST-B link
+  (`PSL-TEST-005`, Archie's earlier membership, ended 2026-09-12) set to
+  `[Sam Sample]`, so the former-access path has real data to prove
+  against (it had none before - the "if test data exists" case now does).
+
+Results:
+- **Lead Coach sees expected players**: `coach.a` → TEST-A's Archie
+  Atkinson and Bella Brown, both `tier: "permanent"`, full edit
+  permissions (`can_edit_feedback/idp/attendance: true`).
+- **Coach sees expected players**: `coach.b` → TEST-B's Dylan Davies
+  (Paused membership - still shown, see below), Archie Atkinson (a
+  separate, current Active membership), and Charlie Clarke, all
+  `tier: "permanent"`, `can_edit_idp: false` (Coach role lacks that
+  permission), feedback/attendance `true` - matches the Coach role's
+  exact capability set.
+- **Learning Coach sees none**: `coach.a`, despite holding a real Active
+  Session Staff row on TEST-B as Learning Coach, sees **zero** TEST-B
+  players - confirms the role-key safelist overrides that role's own
+  Can View Players=true.
+- **Unrelated coach sees none**: `coach.b` sees none of TEST-A's players;
+  `coach.a`'s Learning Coach role likewise sees none of TEST-B's -
+  both directions of "not staffed on this session" proven.
+- **Ended memberships behave correctly**: Archie's older, Ended TEST-B
+  link never appears as `permanent`/`cover`, only as `former` once a
+  Coaches At End snapshot exists for it (see next).
+- **Former-player access**: after adding the snapshot above, `coach.b`'s
+  response gained exactly one extra row - Archie via the ended link,
+  `tier: "former"`, `access_until: "2026-10-10"` (end date + 28 days),
+  all three edit permissions `false` - alongside, not instead of, his
+  separate current `permanent` membership on the same session.
+- **Full test suite**: 46/46 passing (above).
+
+Production untouched throughout - no writes to `apprptFotQuVL1mhs` or
+`bkkukymqaxawnudoxdjs`, no production Edge Function redeployed.
+
+### A noted design choice: "current" access includes Paused, not just Active
+
+The old (pre-break) model only had a binary Active/Ended `Status`. The
+new `Membership Lifecycle Status` has five values. This repair treats
+**any non-Ended status as current** for coach player-access purposes
+(Active, Paused, Cancellation Pending, Ending Scheduled) rather than the
+narrower `STILL_ATTENDING` set parent-hub uses for "is this session
+currently on my schedule" - deliberately, on the reasoning that a coach
+should still be able to see/manage a paused player's profile rather than
+have them vanish. This is a judgement call where the task was silent,
+not something explicitly specified; flagging it rather than deciding
+silently. Confirmed live above: Dylan Davies (Paused) still appears in
+`coach.b`'s player list.
+
+### On the two silent 422 sync writes (inspected, not repaired)
+
+`syncSessions()` (writes `Active` to Sessions - now `LEGACY — Active`)
+and `maybeAutoSyncSessions()` (writes `Sessions Last Synced` to
+Organisation & Branding - now `LEGACY — Sessions Last Synced`) are both
+part of the **same feature**: keeping Airtable's Sessions table in sync
+by treating the published Sessions Google Sheet as authoritative and
+mirroring it into Airtable (create/update/archive by matching
+`session_id`).
+
+**Recommendation: retire, don't restore.** This is a straight legacy
+Google-Sheets-schedule-sync mechanism, not a stale-field-name bug like
+the ones this repair fixed - the fields didn't just get renamed, the
+whole premise (the Sheet decides which Sessions exist and archives any
+Airtable Session it doesn't recognise) is exactly the architecture this
+whole project has been moving away from. Restoring it would be actively
+harmful now, not merely outdated: `syncSessions()`'s archive step sets
+`Active: false` (or would, once field-corrected) on any Airtable Session
+whose `Session ID` isn't in the Sheet - and **TEST-A/TEST-B are exactly
+that**, synthetic Airtable-only Sessions with no corresponding Sheet row.
+A "fixed" version of this sync would silently archive both of them the
+first time it ran. Fixing the field names would restore a feature that
+now actively fights the current data model; the right move is to retire
+the auto-sync trigger (`maybeAutoSyncSessions()`'s call inside
+`handleSettings()`) and the manual "Sync Sessions" trigger together,
+once confirmed nothing still depends on Sheet-sourced Session creation.
