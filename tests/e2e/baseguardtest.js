@@ -63,12 +63,17 @@ function refusal(fn) {
     e instanceof BaseGuardError && /live base the deployed Hub reads/.test(e.message));
 }
 
-// --- fail-closed defaults ------------------------------------------------
+// --- the declared test base ----------------------------------------------
 {
-  ck('No test base is declared yet, so the guard is fully closed', TEST_BASE_ID === null);
+  ck('A test base is declared', TEST_BASE_ID === 'appQktredAuGa1X7e', String(TEST_BASE_ID));
+  ck('...and it is not one of the bases on the deny list',
+    !Object.keys(PRODUCTION_BASE_IDS).includes(TEST_BASE_ID));
+  ck('...and it is accepted', assertTestBase(TEST_BASE_ID) === TEST_BASE_ID);
   const e = refusal(() => assertTestBase('appAAAAAAAAAAAAAA'));
-  ck('An unknown but well-formed base is refused while none is declared',
-    e instanceof BaseGuardError && /no test base has been declared/.test(e.message));
+  ck('An unknown but well-formed base is still refused',
+    e instanceof BaseGuardError && /is not the declared test base/.test(e.message));
+  ck('...and the refusal explains that a well-formed typo is not enough',
+    !!e && /must not reach a live base/.test(e.message));
 }
 ['', '   ', null, undefined, 0, {}].forEach(function (v) {
   const e = refusal(() => assertTestBase(v));

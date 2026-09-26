@@ -26,11 +26,13 @@ const PRODUCTION_BASE_IDS = Object.freeze({
 });
 
 /**
- * The one base a test run is allowed to use. null until the test base
- * exists, and while it is null EVERY base is refused - the safe default
- * is "no real base at all", not "any base that is not production".
+ * The one base a test run is allowed to use: "Josh Evans Hub - TEST"
+ * (appQktredAuGa1X7e), created 2026-09-26 in My First Workspace with
+ * synthetic data only. While this is null EVERY base is refused - the
+ * safe default is "no real base at all", not "any base that is not
+ * production".
  */
-const TEST_BASE_ID = null;
+const TEST_BASE_ID = 'appQktredAuGa1X7e';
 
 const BASE_ID_SHAPE = /^app[A-Za-z0-9]{14}$/;
 

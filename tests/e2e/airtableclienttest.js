@@ -45,9 +45,10 @@ function spyFetch(log) {
 }
 {
   const e = refusal(() => createTestAirtableClient({ baseId: 'appAAAAAAAAAAAAAA', token: 't' }));
-  ck('No client can be built at all while no test base is declared',
-    e instanceof BaseGuardError && /no test base has been declared/.test(e.message));
-  ck('...which is the current state, deliberately', TEST_BASE_ID === null);
+  ck('A client cannot be built against an undeclared base',
+    e instanceof BaseGuardError && /is not the declared test base/.test(e.message));
+  ck('...and the declared test base is the one that was created for this',
+    TEST_BASE_ID === 'appQktredAuGa1X7e', String(TEST_BASE_ID));
 }
 
 // --- the credential ------------------------------------------------------
@@ -93,27 +94,13 @@ function spyFetch(log) {
 });
 
 // --- every verb, including the seeding writes ----------------------------
-// Declaring a test base is the only thing that turns the client on, so
-// these exercise the full request path with the guard temporarily
-// satisfied, using a module-level stand-in rather than a real base.
+// Runs the real request path against the real declared test base, with a
+// recording fetch in place of the network. No request leaves this process,
+// and every URL is asserted.
 (async function () {
-  const guard = require('../support/base-guard.js');
-  const realAssert = guard.assertTestBase;
-  const FAKE = 'appTESTTESTTEST1';
-  // Narrow override: accept only FAKE, and still refuse everything the
-  // real guard refuses, so this cannot hide a hole.
-  require.cache[require.resolve('../support/base-guard.js')].exports.assertTestBase =
-    function (raw, ctx) {
-      const id = typeof raw === 'string' ? raw.trim() : '';
-      if (id === FAKE) return id;
-      return realAssert(raw, ctx);
-    };
-  delete require.cache[require.resolve('../support/airtable-client.js')];
-  const fresh = require('../support/airtable-client.js');
-
   const log = [];
-  const client = fresh.createTestAirtableClient({
-    baseId: FAKE, token: 'pat_test', fetch: spyFetch(log),
+  const client = createTestAirtableClient({
+    baseId: TEST_BASE_ID, token: 'pat_test_not_a_real_token', fetch: spyFetch(log),
   });
 
   await client.list('Players');
@@ -121,22 +108,22 @@ function spyFetch(log) {
   await client.update('Players', [{ id: 'rec1', fields: { 'Player Name': 'Test Child 2' } }]);
   await client.remove('Players', ['rec1']);
   ck('Read and all three write verbs go through one request path', log.length === 4, String(log.length));
-  ck('...and every single one targeted the declared base',
-    log.every((u) => u.indexOf(API_ROOT + FAKE + '/') === 0));
-  ck('...with none of them reaching the live base',
+  ck('...and every single one targeted the declared test base',
+    log.every((u) => u.indexOf(API_ROOT + TEST_BASE_ID + '/') === 0));
+  ck('...with none of them reaching the live base or Master Copy',
     log.every((u) => u.indexOf(LIVE) === -1 && u.indexOf(MASTER) === -1));
+  ck('...and the client records what it sent, for a seeding dry run',
+    client.sentRequests().length === 4);
 
-  const e = refusal(() => { client.baseId = LIVE; });
+  refusal(() => { client.baseId = LIVE; });
   ck('A built client cannot be re-pointed at the live base afterwards',
-    client.baseId === FAKE, client.baseId);
+    client.baseId === TEST_BASE_ID, client.baseId);
 
   const e2 = await refusalAsync(() => client.create('', [{ fields: {} }]));
   ck('A write with no table named is refused before any fetch',
     e2 instanceof BaseGuardError && log.length === 4);
 
-  require.cache[require.resolve('../support/base-guard.js')].exports.assertTestBase = realAssert;
-
-  console.log(R.map(([s, n, x]) => `${s}  ${n}${x ? '  -- ' + x : ''}`).join('\n'));
+console.log(R.map(([s, n, x]) => `${s}  ${n}${x ? '  -- ' + x : ''}`).join('\n'));
   console.log(`\n${R.filter((r) => r[0] === 'PASS').length}/${R.length} passing`);
   process.exit(failed ? 1 : 0);
 })();

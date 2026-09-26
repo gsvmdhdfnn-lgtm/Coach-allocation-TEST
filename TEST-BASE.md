@@ -1,128 +1,151 @@
 # Isolated test environment
 
-Foundation work only. No new features, no live data edits, no production
-settings or deployments changed by anything in this document.
+Test-environment work only. Live data, production settings and deployments
+are unchanged. Master Copy is untouched — never read, never written.
 
 ## Status
 
 | | |
 |---|---|
-| Source base (verified) | `apprptFotQuVL1mhs` — Josh Evans Hub |
-| Test base | **not created** — blocked, see below |
-| Refusal guard | built, 48 assertions passing |
-| Guard covers | the test suite, the Airtable client, and every seeding/write path |
-| `TEST_BASE_ID` | `null` — so every real base is currently refused |
+| Source base (verified by digest) | `apprptFotQuVL1mhs` — Josh Evans Hub |
+| **Test base** | **`appQktredAuGa1X7e` — "Josh Evans Hub — TEST"** |
+| Workspace | `wsppRXNyrv8XLskBv` — My First Workspace |
+| Tables | 25 of 25 created |
+| Records | none yet — seeding waits for the token and the isolation checks |
+| Automations | none, and none can be created by this build |
+| `TEST_BASE_ID` in the guard | set to the test base |
+| `TEST_AIRTABLE_TOKEN` | **not yet created — see below** |
 
-## The guard
+**Automated tests passing is not the same as a working test environment.**
+The tests below prove the guard refuses the live base. They do not prove
+the Hub works against the test base: no records exist, no Supabase project
+points at it, and nothing has been signed into. That is the remaining work.
 
-`tests/support/base-guard.js` decides which base may be touched, and
-`tests/support/airtable-client.js` is the only route to a real Airtable
-request. Nothing in this repo builds an Airtable URL by hand.
+## Creating the test-only token
 
-It is not an "is TEST set" check. A `TEST` variable pointing at the live
-base is the exact accident it exists to stop, and that check would pass
-it. Instead:
+1. Airtable → your account menu → **Builder hub** → **Personal access tokens**
+   → **Create new token**.
+2. Name it something unmistakable, e.g. `hub-test-base-only`.
+3. **Scopes** — add exactly these three, nothing else:
+   `data.records:read`, `data.records:write`, `schema.bases:write`.
+4. **Access** — click *Add a base* and select **Josh Evans Hub — TEST**
+   only. Do **not** select "All current and future bases", and do not add
+   Josh Evans Hub or Master Copy. This is what makes the isolation real:
+   even a bug cannot reach the live base with a token that has no grant
+   for it.
+5. Create the token and copy it **once** — Airtable will not show it again.
 
-- `apprptFotQuVL1mhs` (live) and `app6ex6UHY2RRO2Ak` (Master Copy) are
-  refused outright, by name, with the reason in the error.
-- Anything that is not the one declared test base is refused too, so a
-  well-formed typo cannot reach a live base either.
-- `TEST_BASE_ID` is `null` until the test base exists, so right now
-  **every** real base is refused. The safe default is no base at all.
-- The credential comes from `TEST_AIRTABLE_TOKEN`. The production variable
-  `AIRTABLE_TOKEN` is never read, not even as a fallback, and a
-  `TEST_AIRTABLE_TOKEN` holding the same value as `AIRTABLE_TOKEN` is
-  refused — a test run must be physically unable to reach the live base.
-- Every request URL is checked immediately before `fetch`, against the
-  string actually about to go over the wire. That is the check a mistake
-  would otherwise slip past: the first two checks pass strings around,
-  this one inspects the real request.
-- Clients are frozen, and the base is re-validated on every call, so a
-  client cannot be re-pointed after construction.
+Configuring it securely:
 
-Refusal is a thrown error. There is no warn-and-continue mode.
+- Put it in your shell profile or a local `.env` that is **not** committed:
+  `export TEST_AIRTABLE_TOKEN='pat...'`
+- Never set it as `AIRTABLE_TOKEN`. That name is the production variable
+  and the test client refuses to read it.
+- Never paste the token into a chat, a commit, an Airtable record or a
+  GitHub issue. If it is ever exposed, delete it in the Builder hub and
+  create a new one — a token scoped to one empty test base is cheap to
+  replace.
+- The repo's `.gitignore` already excludes `.env`.
 
-## Tables to be created (25)
+The client refuses to start without it, refuses if it equals
+`AIRTABLE_TOKEN`, and refuses any URL that is not the test base.
 
-Derived from the deployed function source and the agreed design, not
-guessed. Full spec in `tests/support/test-base-spec.json` (458 fields).
+## Carried-forward decisions, and how the schema reflects them
 
-- **Identity & access** — Coaches, Coach Roles, Players, Sessions,
-  Player Session Links, Parents & Guardians, Parent–Player Links
-- **Staffing (the agreed structure)** — Session Occurrences, Session
-  Staff, Occurrence Staff, Staff Role Overrides
-- **Feedback** — Feedback, Feedback Ratings, Development Framework,
-  Development Framework Settings
-- **Configuration** — Hub Settings, Organisation & Branding,
-  Feature Controls
-- **Content** — Venues, Resources, Coach Support, Public Pages,
-  What We Offer, Trial Interest
-- **Follow-up** — Player & Parent Requests (the rebuild target for
-  session requests; created empty, wired to nothing yet)
+- **Player "Active" is derived from current memberships.** No new player
+  lifecycle field was introduced. `Players.LEGACY — Active` is carried
+  across for parity with the live base and marked retired in its own
+  field description; nothing new was invented to replace it.
+- **Paused memberships appear separately and read-only.**
+  `Membership Lifecycle Status` carries Paused as its own value, distinct
+  from Ended.
+- **Cancellation Pending and Ending Scheduled stay visible** while the
+  player is still attending — they are separate values, not collapsed
+  into Ended.
+- **`Scheduled End Date` is not the actual end date.** Its field
+  description says so explicitly, as does `LEGACY — End Date`, and
+  `Session Staff.Former Access Until` records that it is derived from the
+  actual end. The distinction is preserved in the schema, not just in
+  discussion.
 
-`Player Session Requests` is **not** recreated. It no longer exists in the
-live base, requests are switched off at the source, and recreating it
-would invite the feature back on.
+## Two findings that must stay separate
 
-## Design conflicts found — decide these together
+1. **Renamed fields explain empty Hub results.** The deployed code reads
+   `Players.Active`, `Sessions.Active`, `Player Session Links.Status` /
+   `End Date` and `Parent–Player Links.Link Status` — all now
+   `LEGACY —` prefixed. Reads of those fields return nothing, so the Hub
+   renders empty.
+2. **They do not explain the zero-record unfiltered reads.** Reading
+   Players, Coaches, Sessions, Player Session Links and Feedback with no
+   filter returned zero records. A renamed *field* cannot cause that: an
+   unfiltered table read returns rows whatever the fields are called.
+   Something else is true about those tables and it is still unexplained.
+   These two findings are not to be merged.
 
-The live base has already been restructured toward the agreed design, and
-the deployed code has not followed. **The deployed functions read none of
-the new canonical fields.** This is why operational tables read as empty.
+## Left alone deliberately
 
-| Read by deployed code | Now named in Airtable | Canonical replacement |
-|---|---|---|
-| `Players.Active` | `LEGACY — Active` | **none exists** |
-| `Sessions.Active` | `LEGACY — Active` | `Session Lifecycle Status` (Draft/Active/Inactive) |
-| `Player Session Links.Status` | `LEGACY — Status` | `Membership Lifecycle Status` (Active/Paused/Cancellation Pending/Ending Scheduled/Ended) |
-| `Player Session Links.End Date` | `LEGACY — End Date` | `Scheduled End Date` |
-| `Parent–Player Links.Link Status` | `LEGACY — Link Status` | `Link Lifecycle Status` (adds Ended) |
-| `Players.Assigned Coaches` | `LEGACY — Assigned Coaches` | `Session Staff` / `Occurrence Staff` |
+The duplicate and oddly named fields (`Coaches` with two
+`Staff Availability Requests`, `Sessions` with `Discount Rules 2`,
+`Session Occurrences` with `From field: Replacement Occurrence`) are
+**unchanged in the live base** and nothing has been proposed for them.
+They are also absent from the test base — but because their tables or
+links are out of scope for the coach and parent journeys, not because
+they were cleaned up. Their relationships and usage still need
+establishing before any cleanup is proposed.
 
-Four things follow, and none of them should be decided silently:
+## Ended parent–player links
 
-1. **Players has no replacement for `Active`.** Every other retired field
-   got a canonical successor; this one did not. Either Players keeps a
-   lifecycle field or the code needs a different rule for "is this child
-   current". I have not invented one.
-2. **`Membership Lifecycle Status` has five values where the code knows
-   two.** The agreed "separate Paused section" lives here — Paused,
-   Cancellation Pending and Ending Scheduled are all "not Active" to
-   today's code, which would hide a paused child entirely rather than
-   showing them in their own section.
-3. **`Link Lifecycle Status` adds `Ended`**, which the claim flow has no
-   handling for. An ended parent link would currently read as neither
-   verified nor pending.
-4. **Schema artefacts** that should be tidied before they are copied:
-   `Coaches` has two fields both named `Staff Availability Requests`;
-   `Sessions` has `Discount Rules` and `Discount Rules 2`; `Session
-   Occurrences` has `From field: Replacement Occurrence`.
+The design already answers most of this, so it is not an open question:
+`Link Lifecycle Status` carries **Ended** alongside Pending / Verified /
+Needs Review / Rejected, with `Ended At`, `Ended By User ID`,
+`Ended By Name Snapshot` and `End Reason` beside it, and
+`Player & Parent Requests` carries an **Access removal** request type.
+The intended rule is therefore: a parent's access ends through an explicit,
+recorded end event rather than by deletion; an Ended link is not Verified,
+so it grants no access from that moment.
 
-The test base will mirror the live schema **including** the `LEGACY —`
-fields, so tests reproduce production behaviour rather than a cleaner
-fiction. A test base that quietly fixed these would make tests pass while
-production stayed broken — the worst possible outcome.
+Two things are genuinely undecided, and only these:
 
-## Blocked — two things only you can do
+1. **Does an ended parent keep a read-only window** (as a former player
+   keeps 21 days), or does access stop immediately?
+2. **Does the ended child still appear in that parent's own Hub** as
+   history, or disappear entirely?
 
-1. **Which workspace.** `create_base` requires a workspace ID, and no tool
-   available to me reports which workspace a base belongs to —
-   `list_bases` and `search_bases` return neither, and `list_bases` takes
-   no workspace filter. Your account has four: `wspTRHQx3BsNtPntl`
-   (Workspace 2), `wsppRXNyrv8XLskBv` (My First Workspace),
-   `wspt9s5aggTpibAox` (Workspace 3), `wsptMqcZDCUEPhQpA` (Workspace 4).
-   In Airtable, open Josh Evans Hub and read the workspace in the sidebar.
-   I am not guessing, because **there is no delete-base tool** — a base
-   created in the wrong place cannot be removed by me.
-2. **A test-only token.** An Airtable personal access token with
-   `data.records:read`, `data.records:write` and `schema.bases:write`,
-   scoped to the test base **and nothing else**. Export it as
-   `TEST_AIRTABLE_TOKEN`. I cannot create tokens.
+## What the API could not create
 
-## Automations and notifications
+Faithfully copied: field types, select choices and colours, date and time
+formats, currency, linked relationships, and both formulas
+(`Sessions.LEGACY — Effective Lifecycle Status`,
+`Session Occurrences.Display Status`).
 
-A base created through the API has no automations, so none can fire. The
-build creates tables, fields and records only — it never copies an
-automation, a webhook or a notification, and Master Copy is not read or
-written at any point. After the base exists, confirm in the Airtable UI
-that its Automations tab is empty before seeding.
+Not copied, with reasons:
+
+- **Links to out-of-scope tables** (Families, Bookings, Booking Lines,
+  Hub Audit Events, Discount Rules, Coach Allocations, Player Attendance,
+  Emergency Contacts, Policy Acceptances, Billing Rules, Clients &
+  Schools, Schedule Breaks, Needs Attention, Session Change History,
+  Staff Availability Requests, Coach Rate Profiles, Coach Availability,
+  Cover Requests/Responses, Coach Documents, Coach Work Summaries,
+  Development Plans, Eligibility Rules). Those tables are finance and
+  wider-operations, not the coach and parent journeys, so neither they
+  nor the links to them were created.
+- **Views, interfaces and automations.** A base created through the API
+  has none, which is the point: no automation can fire and no external
+  notification can be sent from this base.
+
+## Running the checks
+
+```
+cd coach-allocation-test && git checkout foundation/test-base-isolation
+node tests/e2e/baseguardtest.js        # 30 assertions
+node tests/e2e/airtableclienttest.js   # 22 assertions
+node tests/run-all.js                  # whole suite
+```
+
+The one worth seeing yourself:
+
+```
+TEST_AIRTABLE_TOKEN=x node -e "require('./tests/support/airtable-client.js').createTestAirtableClient({baseId:'apprptFotQuVL1mhs'})"
+```
+
+It refuses, naming the live base, before any network call is made.
