@@ -897,3 +897,156 @@ which is out of TEST's reach entirely today (production-only, and
 `player-sessions` isn't even in TEST) - not a blocker, just work for
 whenever the Schedule cleanup reaches the frontend and/or
 `player-sessions` is ported into TEST.
+
+## Session Occurrence generator - Slice 1 (schema) and Slice 2 (pure generator)
+
+Ratified build plan for turning Sessions (recurring/default structure)
+into Session Occurrences (actual dated operational facts), with three
+amendments required before Slice 1 began: (1) concurrent duplicate
+protection must be real per-Session serialisation via a Postgres
+`generation_locks` table in TEST Supabase, not a fetch-before-create
+race - reserved for Slice 3, not built yet; (2) Session History gets its
+own `Change Summary` field rather than overloading Old Value/New Value
+with generator-outcome prose; (3) the generator and recurring-edit
+propagation stay two separate pure modules sharing only utilities
+(freeze checks, timezone calculation, occurrence-key generation) - no
+monolithic function. Freeze rule ratified earlier: an occurrence is
+frozen once `Start Date & Time <= now` OR `Status` is `Completed`,
+`Cancelled` or `Postponed`; Confirmation State/Register State never gate
+freezing.
+
+### Slice 1 - TEST Airtable schema only
+
+Added directly to the TEST base (`appQktredAuGa1X7e`), no code involved:
+
+- **Session Occurrences**: two new fields - `Occurrence Key`
+  (singleLineText, "Deterministic idempotency key. Generator-owned
+  standard slots use `{Session record id}:{Date ISO}`; a
+  reschedule-created replacement uses
+  `{Session record id}:{Date ISO}:R:{Origin Occurrence record id}` so it
+  can never collide with the standard slot the origin session/date
+  already owns. Written by code only - never hand-edited.") and
+  `Time Overridden` (checkbox, "True = this occurrence's Start/End Date
+  & Time were explicitly set ... and must never be touched by recurring
+  Session time propagation").
+- **Session Dates** (new table): `Session Date ID` (primary, singleLineText),
+  `Session` (link), `Date`, `Date Type` (singleSelect: Included/Excluded).
+  Stores explicit dates for Selected Dates sessions (Included) and
+  break/excluded dates for Recurring sessions (Excluded).
+- **Session History** (new table): `History ID` (primary), `Session`
+  (link), `Change Type`, `Old Value`, `New Value`, `Change Summary`
+  (multilineText, per Amendment 2 - "System outcome of this change, in
+  plain language ... Never overload Old Value/New Value with this"),
+  `Changed At`, `Changed By User ID`, `Changed By Name Snapshot`. Audit
+  trail of structural Session edits, one row per triggering edit, not
+  one row per occurrence affected.
+
+Verified directly against the TEST base via the Airtable API on
+2026-09-26: `Session Occurrences` carries both new fields with the
+descriptions above; `Session Dates` and `Session History` both exist
+with every field listed. Cross-checked production (`apprptFotQuVL1mhs`)
+the same way - none of this exists there, confirming isolation held.
+
+### Slice 2 - pure Session Occurrence generator logic
+
+Explicit scope: answer exactly one question - "given a Session, its
+Session Dates, its existing occurrences, and today's date, which NEW
+occurrence shells should exist?" - and nothing else. No Airtable/
+Supabase/network call anywhere in this code; no modification of an
+existing occurrence; no cancelling/crystallising; no recurring-edit
+propagation (that's Slice 6); no reading of Occurrence Staff, cover, or
+Session History; no deployment.
+
+**Files added** (all new, nothing else touched):
+
+- `supabase/functions-test/session-occurrences/schedule-utils.ts` -
+  canonical shared pure utilities: `selectName`, `weekdayIndexFromName`,
+  `parseIsoDateUTC`, `isoDateUTC`, `addDaysIso`, `isoDateLte`/`isoDateLt`/
+  `isoDateGte`, `firstDateOnOrAfterWeekday`, `parseHHMM`,
+  `ukOffsetMinutesAt`, `buildUkDateTimeIso`, `computeOccurrenceKey`. All
+  calendar arithmetic uses `Date.UTC(...)`, never the local `Date`
+  constructor. `buildUkDateTimeIso` is the one place a UK wall-clock time
+  becomes a UTC instant, via the double-format trick (format a naive
+  guess as Europe/London wall-clock text via `Intl.DateTimeFormat`,
+  re-parse those digits as UTC, correct the guess by the discovered
+  offset) - correct on both sides of a clock change without hand-rolled
+  BST date rules.
+- `supabase/functions-test/session-occurrences/generator.ts` - the pure
+  generator. Entry point `planGeneration(input: GenerationInput):
+  GenerationResult`, dispatching on `Session Lifecycle Status` (only
+  `Active` generates anything) and `Schedule Pattern` (`Recurring` /
+  `Selected Dates` / `One-off`), then filtering candidate dates against
+  existing `Occurrence Key`s for idempotency.
+- `tests/support/schedule-utils.ts` and `tests/support/session-generator.ts` -
+  hand-kept copies of the two canonical files above (byte-identical past
+  their header comments - diffed to confirm), per this project's
+  established test-copy convention.
+- `tests/support/session-generator.test.ts` - 14 numbered sections, 37
+  assertions.
+- `tests/e2e/sessiongeneratortest.js` - thin shim so `tests/run-all.js`
+  (which only scans `tests/e2e/*.js`) picks up the test file above.
+
+**Key function signatures:**
+
+```ts
+export function planGeneration(input: GenerationInput): GenerationResult;
+
+interface GenerationInput {
+  session: SessionRecord;
+  sessionDates: SessionDateRecord[];       // this Session's rows only
+  existingOccurrences: ExistingOccurrenceRecord[]; // this Session's rows only
+  today: Date;
+}
+interface GenerationResult { toCreate: OccurrenceShell[]; }
+interface OccurrenceShell {
+  occurrenceKey: string; sessionRecordId: string; date: string;
+  startDateTime: string; endDateTime: string; status: "Scheduled";
+}
+
+export function buildUkDateTimeIso(dateIso: string, hhmm: { h: number; m: number }): string;
+export function computeOccurrenceKey(sessionRecordId: string, dateIso: string): string;
+```
+
+**Design decisions flagged during verification, not yet confirmed by you:**
+
+1. **One-off** has no dedicated date field, so `planOneOffDate` reuses
+   `Sessions.Start Date` as the single generated date rather than a
+   `Session Dates` row. Alternative considered and rejected for now: a
+   `Session Dates` row, which would overload a table scoped for Selected
+   Dates/Excluded Dates with a purpose it wasn't given.
+2. **Selected Dates applies no 12-week/10-occurrence ceiling** - every
+   future Included row generates unconditionally, since it's a finite,
+   explicit list Management already chose, unlike Recurring's genuinely
+   open-ended weekly projection.
+3. **OccurrenceShell carries no human-readable `Occurrence Name`/
+   `Occurrence ID`** - left as a Slice 3 (repository/write layer)
+   decision, not decided here.
+4. **The exact ~1-hour window around a real UK clock-change instant**
+   is not handled with full precision (a wall-clock time can be
+   ambiguous/non-existent there) - accepted, since real sessions run at
+   ordinary hours; both actual 2026 transition dates are covered exactly
+   by the unit tests.
+
+**Test results:**
+
+- `node --experimental-strip-types tests/support/session-generator.test.ts`
+  directly: **37/37 passing** - standard weekly recurring generation;
+  Start Date respected (future and past); End Date respected; Draft
+  produces nothing; Inactive (and blank/unrecognised status) produces
+  nothing; rolling 12-week/10-occurrence horizon (plain weekly reaching
+  12 weeks, heavy exclusions forcing the count floor to win instead);
+  Selected Dates Included rows (future-only, sorted, no ceiling);
+  Excluded dates suppress Recurring generation; One-off creates exactly
+  one shell (and nothing once past); full and partial idempotency reruns
+  produce zero duplicate creates; a reschedule `:R:` key does not block
+  the standard slot on the same date; BST spring-forward (29 Mar 2026)
+  and GMT autumn-back (25 Oct 2026) both resolve correctly on either
+  side of the transition; unrecognised Default Day/unparseable time/
+  unrecognised Schedule Pattern all fail closed to zero occurrences.
+- `node tests/run-all.js` (full TEST suite, real calls where applicable):
+  **47/47 test files passed**, up from the previous 46 (the new
+  `sessiongeneratortest.js` is the addition; no other file's results
+  changed).
+- Production untouched throughout - no writes to `apprptFotQuVL1mhs` or
+  `bkkukymqaxawnudoxdjs`, no Edge Function deployed or redeployed (this
+  slice deploys nothing).
