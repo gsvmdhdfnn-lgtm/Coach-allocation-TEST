@@ -419,6 +419,76 @@ function buildOccurrencesBySessionId(occurrenceRows: any[]): Record<string, any[
   return out;
 }
 
+/**
+ * Session id -> its Session Staff rows. Same shape and convention as
+ * buildOccurrencesBySessionId.
+ */
+function buildSessionStaffBySessionId(rows: any[]): Record<string, any[]> {
+  const out: Record<string, any[]> = {};
+  for (const r of rows) {
+    const sid = firstLink(r.fields, "Session");
+    if (!sid) continue;
+    if (!out[sid]) out[sid] = [];
+    out[sid].push(r);
+  }
+  return out;
+}
+
+/**
+ * Lead Coach reads first, then Coach, then Learning Coach, then anything
+ * else - Coach Roles carries no Sort Order field of its own to order by.
+ *
+ * All three agreed roles are shown to parents. There is no product rule
+ * anywhere in this codebase that hides Learning Coach from parents -
+ * the one flag that plausibly could, Coach Roles' "Can View Player
+ * Names", governs what a Learning COACH may see about PLAYERS (it is
+ * read nowhere else in this file either), not what a PARENT may see
+ * about a coach's own name. Those are different people and different
+ * directions of visibility, and nothing here reads that flag.
+ */
+const ROLE_DISPLAY_PRIORITY: Record<string, number> = { "Lead Coach": 0, "Coach": 1, "Learning Coach": 2 };
+
+/**
+ * Real coach names for one Session, from Session Staff - the canonical
+ * recurring staffing relationship - never the retired free-text source
+ * (which is why this always returned [] before this repair). Only
+ * Active staffing rows count. A coach linked twice to the same Session
+ * (a data-entry duplicate row) still produces one name, deduplicated by
+ * the Coach's own record id - never by the name text, since two
+ * different coaches who happen to share a name must both still appear.
+ * An unpresentable name (a login-style handle, an email) is dropped
+ * rather than shown, same rule as everywhere else in this file.
+ *
+ * Occurrence-specific cover (Occurrence Staff) is deliberately not
+ * folded in here - this is the recurring Session Staff roster only. See
+ * TEST-ENV.md for why that stays separate.
+ */
+function resolveSessionCoachNames(
+  sessionId: string,
+  sessionStaffBySessionId: Record<string, any[]>,
+  coachById: Record<string, any>,
+  roleById: Record<string, any>
+): string[] {
+  const rows = (sessionStaffBySessionId[sessionId] || []).filter((r) => r.fields["Active"] === true);
+  const seen = new Set<string>();
+  const entries: { name: string; priority: number }[] = [];
+  for (const row of rows) {
+    const coachId = firstLink(row.fields, "Coach");
+    if (!coachId || seen.has(coachId)) continue;
+    const coach = coachById[coachId];
+    if (!coach) continue;
+    const name = presentableName(coach.fields["Coach Name"]);
+    if (!name) continue;
+    seen.add(coachId);
+    const roleId = firstLink(row.fields, "Role");
+    const roleName = roleId && roleById[roleId] ? String(roleById[roleId].fields["Role Name"] || "") : "";
+    const priority = ROLE_DISPLAY_PRIORITY[roleName];
+    entries.push({ name, priority: priority === undefined ? 99 : priority });
+  }
+  entries.sort((a, b) => a.priority - b.priority);
+  return entries.map((e) => e.name);
+}
+
 /** Calendar weekday name for a plain "YYYY-MM-DD" date string, computed in UTC so it never shifts a day depending on server time zone. */
 function weekdayName(dateStr: string): string {
   if (!dateStr) return "";
@@ -566,7 +636,7 @@ async function handleParentMe(caller: { userId: string; email: string }) {
     console.error("Could not sync profiles.airtable_person_id", e);
   }
 
-  const [linkRows, playerRows, sessionRows, sessionLinkRows, sessionRequests, venueRows, occurrenceRows] = await Promise.all([
+  const [linkRows, playerRows, sessionRows, sessionLinkRows, sessionRequests, venueRows, occurrenceRows, sessionStaffRows, coachRows, coachRoleRows] = await Promise.all([
     getAirtableRecords(TBL_PARENT_PLAYER_LINKS),
     getAirtableRecords("Players"),
     getAirtableRecords("Sessions"),
@@ -574,6 +644,9 @@ async function handleParentMe(caller: { userId: string; email: string }) {
     fetchSessionRequests(),
     getAirtableRecords("Venues"),
     getAirtableRecords("Session Occurrences"),
+    getAirtableRecords("Session Staff"),
+    getAirtableRecords("Coaches"),
+    getAirtableRecords("Coach Roles"),
   ]);
   const requestRows = sessionRequests.rows;
   const playerById: Record<string, any> = {};
@@ -584,6 +657,11 @@ async function handleParentMe(caller: { userId: string; email: string }) {
   const occurrenceById: Record<string, any> = {};
   for (const o of occurrenceRows) occurrenceById[o.id] = o;
   const occurrencesBySessionId = buildOccurrencesBySessionId(occurrenceRows);
+  const sessionStaffBySessionId = buildSessionStaffBySessionId(sessionStaffRows);
+  const coachById: Record<string, any> = {};
+  for (const c of coachRows) coachById[c.id] = c;
+  const roleById: Record<string, any> = {};
+  for (const r of coachRoleRows) roleById[r.id] = r;
   // Computed once per request so every session's "next" resolves against
   // the exact same instant, rather than drifting mid-request.
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -618,6 +696,7 @@ async function handleParentMe(caller: { userId: string; email: string }) {
           const nextOcc = resolveNextOccurrence(session.id, occurrencesBySessionId, occurrenceById, todayIso);
           return {
             ...sessionPayload(session, venueByRecordId),
+            coaches: resolveSessionCoachNames(session.id, sessionStaffBySessionId, coachById, roleById),
             start_date: l.fields["Start Date"] || "",
             next_occurrence: nextOcc ? nextOccurrencePayload(nextOcc, session, venueByRecordId) : null,
           };
@@ -634,6 +713,7 @@ async function handleParentMe(caller: { userId: string; email: string }) {
           if (!session) return null;
           return {
             ...sessionPayload(session, venueByRecordId),
+            coaches: resolveSessionCoachNames(session.id, sessionStaffBySessionId, coachById, roleById),
             paused_from: l.fields["Pause Start Date"] || "",
             returns_on: l.fields["Pause Return Date"] || "",
           };
