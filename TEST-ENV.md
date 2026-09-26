@@ -40,3 +40,48 @@ Password for all five: `TestHub2026!`
 
 The deployed test functions refuse to start if `AIRTABLE_BASE_ID` is a
 known production base, or is missing or malformed.
+
+## Sign-in fix — 2026-09-26
+
+Sign-in failed with "Database error querying schema". Cause: creating the
+accounts with direct SQL left eight `auth.users` text columns NULL
+(`confirmation_token`, `recovery_token`, `email_change_token_new`,
+`email_change`, and four phone/reauth equivalents). Supabase's auth
+service reads those into non-nullable string fields, so a NULL breaks the
+query before any password is checked — which is why the message mentions
+the schema rather than the credentials.
+
+Fixed by setting them to empty strings. Test project only; the live
+project was not touched.
+
+If more test accounts are ever created by SQL, set those columns to `''`
+at insert time rather than leaving them to default.
+
+## Verified end to end — 2026-09-26
+
+Run from inside the test project with `pg_net`, because this sandbox
+cannot reach `supabase.co` directly:
+
+- All five accounts sign in: HTTP 200 with an access token.
+- `GET /functions/v1/me` → 200, correct role, display name and
+  `airtable_person_id`.
+- `GET /functions/v1/parent-hub/me` → 200, and it **read the test Airtable
+  base**: it returned `PARENT-TEST-001` and resolved both linked children
+  by name. The Airtable token and base ID are correct and working.
+- `session_requests_available` is `false`, as intended.
+
+### Two findings this proved
+
+1. **The LEGACY rename is reproduced exactly.** `children` is empty and
+   `available_sessions` is empty, because the code reads
+   `Parent–Player Links.Link Status` and `Sessions.Active`, both now
+   `LEGACY —` prefixed. Every link therefore falls through to the default
+   "Pending".
+2. **An ended parent link discloses the child's name.** Signing in as the
+   ended parent returns `children: []` — so no session, schedule or
+   feedback data leaks, which is right. But the child's name appears under
+   `pending_claims` as "Charlie Clarke — Pending", telling someone whose
+   access was removed that a claim is apparently awaiting approval. Same
+   root cause: with `Link Status` unreadable, an Ended link is
+   indistinguishable from a Pending one. Access is correctly withheld;
+   name disclosure is not.
