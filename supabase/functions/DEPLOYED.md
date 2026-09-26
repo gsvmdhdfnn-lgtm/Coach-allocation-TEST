@@ -19,10 +19,23 @@ Project ref: `bkkukymqaxawnudoxdjs`
 | player-sessions | 4 | true | `69b3319328b82ef8bf4c34438b4b6405e0e1b5a485e835277764f1edcf8a18d4` | yes |
 | parent-hub | 5 | true | `48515d1a9eb4de651269de312d66b5d84f67c63bc255b2b3bb95973646dde1bc` | yes |
 | approve-coach | 2 | true | `f308dfbdf6e26fe6c4bc186d66cc9020ffa4f12b1755b1fc16ff8f8cc1f9dc41` | yes |
-| me | 1 | true | `887c003554d43c69023c19393e31a0f504daf37e9f3cb4cdf0c7bf1463915b71` | yes |
+| me | 1 (now 2) | true | `887c003554d43c69023c19393e31a0f504daf37e9f3cb4cdf0c7bf1463915b71` | yes, **byte-verified** |
 | register-interest | 2 | false | `1936e0dbc250e4d0ea1550b51df41d9f2e56fa11af8fc65e91fd87937842056a` | yes |
 | approve-coach-trial | 1 | true | `81d3871ace407c2fb1cde2af2324520e90bea5a11b26f5ba4abb10fbd8851c71` | **no** |
 | player-feedback-trial | 1 | false | `4a9a0c39634c9f19ded679371a20599eba45939a5e5654dcdfae9db7a99c08a5` | **no** |
+
+### ezbr_sha256 is NOT a content fingerprint
+
+Do not use it to check whether a file matches what is deployed. Proven on
+2026-09-26: `me` was redeployed with **byte-identical** source and the hash
+changed from `887c0035...` to `f5de941b...`, while fetching the new version
+back returned source character-for-character identical to v1. The hash
+therefore includes build/version metadata. It is recorded above only to
+identify a specific deployment, never to compare content.
+
+A consequence worth knowing: that round trip **did** prove this archive's
+`me/index.ts` is byte-correct, because the deployed source came back
+identical to the capture. No other function has been verified that way.
 
 `verify_jwt` is a deployment setting, not code. It must be set correctly on
 every redeploy — `hub-content`, `player-feedback` and `register-interest`
@@ -69,9 +82,19 @@ explicit rather than assumed.
   against the live deployment.
 - `approve-coach` was diffed against the live deployment when it was
   deployed as v2 earlier in this session.
-- `player-sessions`, `parent-hub`, `me` and `register-interest` were
-  transcribed from the same API responses and syntax-checked.
-- All ten files pass a TypeScript syntax check.
+- `me` is **byte-verified** — redeployed from this archive and fetched
+  back identical (see the ezbr_sha256 note above).
+- `player-sessions`, `parent-hub` and `register-interest` were transcribed
+  from the same API responses and syntax-checked. **This is not proof of
+  byte-equality with the deployment**, and they must not be described as
+  verified rollback copies until diffed against the deployed source.
+- All ten files pass a TypeScript syntax check. A syntax check establishes
+  only that the file parses, never that it matches what is running.
+
+To verify one properly: export the deployed source from the Supabase
+dashboard (Edge Functions -> the function -> Code) and diff it against the
+file here. There is no API route available to this tooling that returns the
+deployed body to disk for a mechanical comparison.
 
 `register-interest/index.ts` has no import or export statement, so Node's
 `--check` treats it as CommonJS and will not strip TypeScript syntax; it was
