@@ -1408,3 +1408,163 @@ throwaway Session id anywhere in the base.
   verified over real HTTP, which the section above covers).
 - Production (`apprptFotQuVL1mhs` / `bkkukymqaxawnudoxdjs`) untouched -
   no schema changes, no Edge Function deployed or redeployed there.
+
+## Slice 5 - real TEST verification and foundation checkpoint
+
+Goal, per your instruction: prove Slices 1-4 form a reliable foundation
+before Slice 6 propagation. No new product behaviour added - this slice
+is verification only, and it found one real pre-existing defect (below),
+which was reported rather than silently fixed.
+
+### A. Schema/infrastructure - all present, unchanged
+
+- `Session Occurrences.Occurrence Key` and `.Time Overridden`: present,
+  descriptions unchanged.
+- `Session Dates`, `Session History`: both present, unchanged.
+- Supabase `generation_locks` table, `acquire_generation_lock(text)`,
+  `release_generation_lock(text, uuid)`: all present, correct signatures.
+- `generation_locks`: **0 rows before testing**, and **0 rows after**
+  every test in this slice.
+- Production Airtable (`apprptFotQuVL1mhs`, 66 tables): still none of
+  `Session Dates`/`Session History`/`Occurrence Key`/`Time Overridden`.
+- Production Supabase (`bkkukymqaxawnudoxdjs`): only `profiles` exists -
+  no `generation_locks`.
+
+### B. TEST-A - real generation via the real Slice 4 endpoint
+
+Snapshotted the 5 original rows first (full field read). Called
+`POST /session-occurrences/generate` for TEST-A
+(`rec4cME6ncL4IAvlK`) for real via `pg_net` (management token) ->
+`{"status":"generated","created":9,"recordIds":[...]}`.
+
+**The 9 rows created** - all standard Mondays the 5 original rows didn't
+already occupy, exactly as Slice 2's rolling-horizon design predicts (13
+candidate Mondays from 28 Sep - 21 Dec minus the 4 dates already holding
+a standard key = 9 new): 26 Oct, 2 Nov, 9 Nov, 16 Nov, 23 Nov, 30 Nov, 7
+Dec, 14 Dec, 21 Dec - each `Scheduled`, key `rec4cME6ncL4IAvlK:{date}`,
+times correctly 17:00-18:00Z (all GMT-period dates, so no BST offset
+applies here).
+
+**The 5 original rows, re-read field-by-field after generation - byte-
+for-byte unchanged:**
+- 28 Sep: still `Cancelled`, `Schedule Change State: Changed`.
+- 5 Oct (origin): still `Postponed`, `Schedule Change State: Rescheduled`,
+  `Replacement Occurrence` still -> the 7 Oct row.
+- 7 Oct (replacement): still `Scheduled`/`Rescheduled`, still its own
+  time (16:30-17:30Z) and own Venue (Sample Sports Hall) - a genuine
+  override the generator correctly never touches.
+- 12 Oct / 19 Oct: still `Scheduled`, unchanged.
+
+### C. Idempotency - confirmed for real
+
+Immediate rerun for TEST-A -> `{"status":"no_changes","created":0,"recordIds":[]}`.
+Re-read all 14 TEST-A occurrences (5 original + 9 new): 14 unique dates,
+14 distinct Occurrence Keys (the 5 originals still have none, by design
+- see Slice 3's derivation), no duplicates of any kind.
+
+### D. TEST-B - real generation from zero
+
+TEST-B (`recklh0OeaAMakQCJ`: Recurring, Active, Thursday, 18:00-19:00,
+Start Date 2026-09-01, previously 0 occurrences) -> real call ->
+`{"status":"generated","created":13,"recordIds":[...]}`. 13 consecutive
+Thursdays, 1 Oct - 24 Dec 2026, keys `recklh0OeaAMakQCJ:{date}`. Times
+correctly BST/GMT-split exactly at the real transition: 1-22 Oct show
+17:00-18:00Z (BST, local 18:00-19:00), 29 Oct onward show 18:00-19:00Z
+(GMT, local matches UTC) - the 25 Oct 2026 clock change lands exactly
+between 22 Oct and 29 Oct, as it should. Rerun -> `no_changes`.
+
+### E. Parent Hub compatibility - one genuine defect found
+
+Real `GET /parent-hub/me` as `parent.a`, after B and D's rows exist:
+
+- **TEST-A reschedule chain, fully correct**: Archie's `next_occurrence`
+  resolves to the **7 Oct replacement** (`recszcwKC52pdXqfW`), not the
+  cancelled 28 Sep nor the postponed 5 Oct origin - proves cancelled-
+  origin-not-next, postponed-origin-not-next, and replacement-resolves-
+  correctly all hold even with 9 new standard occurrences now also
+  candidates.
+- **TEST-B now resolves a real occurrence**: Archie's `next_occurrence`
+  is the real generated 1 Oct row (previously null/fallback, since
+  TEST-B had zero occurrences) - `day: "Thursday"`, `venue: "Sample
+  Sports Hall"` both correct.
+- **Defect**: `next_occurrence.time` shows **"17:00 – 18:00"** for that
+  1 Oct row - the correct local time is **18:00-19:00** (TEST-B's actual
+  Default Start/End Time). Root cause, confirmed by reading the code
+  (`parent-hub/index.ts`, `nextOccurrencePayload()`, line ~578):
+  `startIso.slice(11, 16)` takes the raw UTC digits out of the stored
+  ISO instant and displays them as-is, with no Europe/London conversion.
+  This was invisible until now because every occurrence that existed
+  before Slice 2 was hand-seeded using a "naive UTC = local wall-clock"
+  convention (writing "17:00Z" to mean "5pm", regardless of real UK
+  offset) - so the raw UTC digits happened to already be the right
+  local digits. Slice 2's generator instead computes the **correct**
+  UTC instant via the BST-safe `buildUkDateTimeIso()` (deliberately 1
+  hour earlier than the naive convention during BST), so for any
+  generator-created row dated within BST (last Sunday of March -last
+  Sunday of October), the raw-UTC display is now off by exactly 1 hour.
+  Outside BST (which is why TEST-A's 12 Oct/19 Oct/26 Oct onward all
+  displayed correctly in the same response) there is no discrepancy,
+  because UTC and UK local time coincide.
+  **This is a real, pre-existing display bug, not something Slice 5
+  introduced** - it was latent in `parent-hub/index.ts` (shared with
+  production) the whole time, and Slice 5 is what finally created a
+  real occurrence whose storage convention exposes it. Not fixed here -
+  reported per your instruction to stop before changing product logic.
+  **Proposed fix** (not applied): replace the raw slice with a real
+  Europe/London-aware format, e.g.
+  `new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(startIso))`
+  for both `startTime`/`endTime` in `nextOccurrencePayload()`. TEST only
+  unless/until you decide production should get the same fix (production
+  has no generator yet, so this exact scenario can't occur there today,
+  but any future BST-aware write would trigger the identical bug).
+
+### F. Coach/shared compatibility - unchanged
+
+Real `GET /hub-content/players` as `coach.a` - identical to the Slice 1
+baseline (Archie + Bella, `tier: "permanent"`, full permissions).
+`hub-content` still version 4, same SHA-256 digest - never redeployed
+in Slices 3-5. `git status` confirms zero frontend files touched.
+
+### G. Concurrency - repeated, confirmed again
+
+Created a fresh throwaway Session (`SLICE5-CONCURRENT`), fired two real
+`POST /generate` calls in the same `pg_net` SQL statement -> exactly one
+`{"status":"generated","created":13,...}` and one
+`{"status":"skipped_locked","created":0,"recordIds":[]}`. Re-read: 13
+unique keys, no duplicates. `generation_locks`: 0 rows after. Deleted
+all 13 created records and the throwaway Session by their exact record
+IDs immediately after confirming.
+
+### H. Regression - all green
+
+- `session-generator.test.ts` (standalone, pure): **37/37**.
+- `session-repository.test.ts` (repository/concurrency-derivation
+  logic): **19/19**.
+- `node tests/run-all.js` (full TEST suite): **48/48**.
+
+### I. Verdict
+
+The core occurrence-generation foundation - Slices 1-4 (schema,
+pure generator, repository/lock/orchestration, manual endpoint) - is
+**verified reliable**: every schema element is present and correct,
+generation is idempotent and race-safe under genuine concurrent HTTP
+load, hand-seeded exception rows (cancelled/postponed/rescheduled) are
+never touched, BST/GMT handling is correct at the real transition, and
+nothing outside TEST was touched.
+
+Slice 5 also did its job of catching a real defect before it could
+compound under Slice 6: **Parent Hub's occurrence-time display doesn't
+convert UTC to Europe/London**, and now that real BST-safe generator
+rows exist, that bug is visible for the first time (TEST-B's 1 Oct
+`next_occurrence`, off by 1 hour). It's a pre-existing display bug, not
+a foundation bug, and not fixed here per your standing instruction to
+stop and report first.
+
+**Occurrence generation foundation through Slice 5 is ready for Slice 6
+recurring-edit propagation, conditional on a decision about the Parent
+Hub time-display defect above** - propagation will create/move many
+more real, BST-safe-timed occurrences, so this display bug will start
+showing wrong times routinely once Slice 6 lands, not just in one
+edge-case test. Recommend deciding the Parent Hub fix (TEST only, or
+TEST+production) before or alongside starting Slice 6, rather than
+after.
