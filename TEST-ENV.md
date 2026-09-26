@@ -409,3 +409,51 @@ Nothing else in `parent-hub` reads a retired Player field. The frontend
 claim picker doesn't yet show the new `active` hint (nothing asked for
 it, and nothing broke by adding it unused) - available if management
 ever wants "currently between sessions" shown in that dropdown.
+
+### Full verification results — real calls against parent-hub v6 (TEST)
+
+- **New claim, existing active Player** (Dylan Davies, via a fresh test
+  parent) - matched, `status: "Pending"`. Previously: zero matches,
+  always `Needs Review`, regardless of correct name/DOB.
+- **New claim, existing Player with zero memberships** (Freya Foster, a
+  genuine Player created with no Player Session Links at all) - also
+  matched, `status: "Pending"` - confirms an inactive/never-enrolled
+  Player is not treated as deleted or unavailable.
+- **Duplicate protection** - re-submitting Bella Brown's claim as
+  `parent.a`, whose claim for her was already Pending, correctly returned
+  **400 "You've already submitted a claim for this child."**
+- **Bella Brown** - still `Pending` (confirmed by the duplicate-rejection
+  above finding her existing claim).
+- **Archie Atkinson** - still a verified, connected child for `parent.a`.
+- **`parent.ended@test.invalid`** - still sees `children: []`,
+  `pending_claims: []`, and the ended child's name appears nowhere in the
+  response. Privacy fix intact.
+- **Session logic** - `parent.a`'s response still carries Dylan's paused
+  session and Archie's resolved `next_occurrence`, unaffected by this
+  change.
+- **Management picker** - now lists all 5 real Players (previously would
+  have listed 0), each with a correctly derived `active` flag: Archie,
+  Bella, Charlie and Dylan `true` (each has at least one non-Ended
+  membership - Dylan's is Paused, which still counts); Freya `false` (no
+  memberships at all) - matching the confirmed rule exactly.
+
+### Flagged, unrelated to this change - a pre-existing race in `resolveParentRecord`
+
+While verifying, two near-simultaneous claim requests for a **brand-new**
+parent (their very first-ever calls, fired concurrently as part of my own
+test harness) each independently found "no existing Parent record for
+this Supabase user" and created **two separate Parents & Guardians
+records** for the same person, seconds apart. A claim submitted after
+that point resolved against whichever of the two records the identity
+lookup happened to return, so a "duplicate" looked, from that record's
+side, like a first submission.
+
+This is **not caused by, and not fixed by, this repair** -
+`resolveParentRecord` is unrelated code I did not touch. It is a
+find-or-create race: two concurrent first-ever requests for the same new
+user can both miss each other's not-yet-queryable write. A real browser
+submitting claims one at a time would not normally hit this window, and
+re-running the same duplicate check sequentially against an established
+parent (above) showed duplicate protection working correctly. Flagged as
+a separate, pre-existing finding rather than fixed here - out of this
+repair's scope.
