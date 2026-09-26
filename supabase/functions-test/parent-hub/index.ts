@@ -403,6 +403,121 @@ function sessionPayload(session: any, venueByRecordId: Record<string, any>) {
 }
 
 /**
+ * Session id -> its Session Occurrences rows. An occurrence with no
+ * Session link at all is skipped rather than crashing the whole read -
+ * a data-entry gap in one row must not take down every parent's session
+ * list.
+ */
+function buildOccurrencesBySessionId(occurrenceRows: any[]): Record<string, any[]> {
+  const out: Record<string, any[]> = {};
+  for (const r of occurrenceRows) {
+    const sid = firstLink(r.fields, "Session");
+    if (!sid) continue;
+    if (!out[sid]) out[sid] = [];
+    out[sid].push(r);
+  }
+  return out;
+}
+
+/** Calendar weekday name for a plain "YYYY-MM-DD" date string, computed in UTC so it never shifts a day depending on server time zone. */
+function weekdayName(dateStr: string): string {
+  if (!dateStr) return "";
+  const d = new Date(dateStr + "T00:00:00Z");
+  if (isNaN(d.getTime())) return "";
+  return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][d.getUTCDay()] || "";
+}
+
+/**
+ * The occurrence's own venue if it set one, else the parent Session's
+ * venue. An occurrence-level override beats the recurring default,
+ * exactly because it is read first here.
+ */
+function occurrenceVenueName(occ: any, session: any, venueByRecordId: Record<string, any>): string {
+  const occVenueId = firstLink(occ.fields, "Venue");
+  if (occVenueId && venueByRecordId[occVenueId]) return String(venueByRecordId[occVenueId]["Venue Name"] || "");
+  const sessionVenueId = firstLink(session.fields, "Venue");
+  if (sessionVenueId && venueByRecordId[sessionVenueId]) return String(venueByRecordId[sessionVenueId]["Venue Name"] || "");
+  return "";
+}
+
+/**
+ * The real next dated occurrence for one Session, or null when none has
+ * been generated yet - the caller falls back to the recurring pattern in
+ * that case rather than inventing a calendar date from the weekday.
+ *
+ * Three rules, in order:
+ *  1. An occurrence with a Replacement Occurrence link is never itself a
+ *     candidate - "Rescheduled occurrences should resolve to the
+ *     replacement occurrence", not to the date they moved away from.
+ *     Its replacement target is considered instead (and only if that
+ *     target record actually exists - a broken link degrades to "no
+ *     candidate from this row" rather than throwing).
+ *  2. Cancelled occurrences are never candidates, full stop.
+ *  3. A Postponed occurrence with no replacement link is not a candidate
+ *     either - nothing has been confirmed to replace it, so there is
+ *     nothing honest to show as "next" for that date; the caller falls
+ *     back to the recurring pattern.
+ * What remains is sorted by date (then start time) and the earliest
+ * future one wins. Deduplicated by record id, since a replacement
+ * target is often ALSO directly linked to the same Session and would
+ * otherwise be counted twice.
+ */
+function resolveNextOccurrence(
+  sessionId: string,
+  occurrencesBySessionId: Record<string, any[]>,
+  occurrenceById: Record<string, any>,
+  todayIso: string
+): any | null {
+  const rows = occurrencesBySessionId[sessionId] || [];
+  const seen = new Set<string>();
+  const candidates: any[] = [];
+  for (const row of rows) {
+    const replacementId = firstLink(row.fields, "Replacement Occurrence");
+    if (replacementId) {
+      const target = occurrenceById[replacementId];
+      if (target && !seen.has(target.id)) {
+        seen.add(target.id);
+        candidates.push(target);
+      }
+      continue;
+    }
+    if (!seen.has(row.id)) {
+      seen.add(row.id);
+      candidates.push(row);
+    }
+  }
+  const usable = candidates.filter((o) => {
+    const status = selectName(o.fields["Status"]);
+    if (status === "Cancelled" || status === "Postponed") return false;
+    const date = o.fields["Date"];
+    return typeof date === "string" && date.length > 0 && date >= todayIso;
+  });
+  usable.sort((a, b) => {
+    const da = a.fields["Date"] || "", db = b.fields["Date"] || "";
+    if (da !== db) return da < db ? -1 : 1;
+    const sa = a.fields["Start Date & Time"] || "", sb = b.fields["Start Date & Time"] || "";
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  });
+  return usable[0] || null;
+}
+
+/** The resolved occurrence, shaped for the client. Time is read from the occurrence's own Start/End Date & Time - present only when a real occurrence won, so it always reflects that date's actual schedule rather than the recurring default. */
+function nextOccurrencePayload(occ: any, session: any, venueByRecordId: Record<string, any>) {
+  const startIso = String(occ.fields["Start Date & Time"] || "");
+  const endIso = String(occ.fields["End Date & Time"] || "");
+  const startTime = startIso.length >= 16 ? startIso.slice(11, 16) : "";
+  const endTime = endIso.length >= 16 ? endIso.slice(11, 16) : "";
+  return {
+    occurrence_record_id: occ.id,
+    date: occ.fields["Date"] || "",
+    day: weekdayName(occ.fields["Date"] || ""),
+    time: [startTime, endTime].filter(Boolean).join(" – "),
+    venue: occurrenceVenueName(occ, session, venueByRecordId),
+    rescheduled: selectName(occ.fields["Schedule Change State"]) === "Rescheduled",
+  };
+}
+
+/**
  * Session requests are switched OFF at the source while the feature is
  * rebuilt against Player & Parent Requests. The Management screen that
  * processes them is hidden, so a request accepted now would land in a
@@ -451,13 +566,14 @@ async function handleParentMe(caller: { userId: string; email: string }) {
     console.error("Could not sync profiles.airtable_person_id", e);
   }
 
-  const [linkRows, playerRows, sessionRows, sessionLinkRows, sessionRequests, venueRows] = await Promise.all([
+  const [linkRows, playerRows, sessionRows, sessionLinkRows, sessionRequests, venueRows, occurrenceRows] = await Promise.all([
     getAirtableRecords(TBL_PARENT_PLAYER_LINKS),
     getAirtableRecords("Players"),
     getAirtableRecords("Sessions"),
     getAirtableRecords("Player Session Links"),
     fetchSessionRequests(),
     getAirtableRecords("Venues"),
+    getAirtableRecords("Session Occurrences"),
   ]);
   const requestRows = sessionRequests.rows;
   const playerById: Record<string, any> = {};
@@ -465,6 +581,12 @@ async function handleParentMe(caller: { userId: string; email: string }) {
   const sessionById: Record<string, any> = {};
   for (const s of sessionRows) sessionById[s.id] = s;
   const venueByRecordId = buildVenueByRecordId(venueRows);
+  const occurrenceById: Record<string, any> = {};
+  for (const o of occurrenceRows) occurrenceById[o.id] = o;
+  const occurrencesBySessionId = buildOccurrencesBySessionId(occurrenceRows);
+  // Computed once per request so every session's "next" resolves against
+  // the exact same instant, rather than drifting mid-request.
+  const todayIso = new Date().toISOString().slice(0, 10);
 
   const myLinks = linkRows.filter((l: any) => (l.fields["Parent / Guardian"] || []).includes(parentRecord.id));
 
@@ -488,9 +610,16 @@ async function handleParentMe(caller: { userId: string; email: string }) {
         .map((l: any) => {
           const session = sessionById[firstLink(l.fields, "Session")];
           if (!session) return null;
+          // Recurring Session data (day/time/venue, via sessionPayload)
+          // is always present, as the general pattern. next_occurrence is
+          // added on top when a real dated occurrence exists for this
+          // Session - null means none has been generated yet, and the
+          // client shows the recurring pattern rather than a guessed date.
+          const nextOcc = resolveNextOccurrence(session.id, occurrencesBySessionId, occurrenceById, todayIso);
           return {
             ...sessionPayload(session, venueByRecordId),
             start_date: l.fields["Start Date"] || "",
+            next_occurrence: nextOcc ? nextOccurrencePayload(nextOcc, session, venueByRecordId) : null,
           };
         })
         .filter((x: any) => x);

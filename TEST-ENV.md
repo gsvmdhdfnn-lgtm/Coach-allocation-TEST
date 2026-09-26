@@ -193,3 +193,120 @@ into occurrence-level work.
   the previous two repairs were re-checked in the same calls and still
   hold: Archie a child, Bella pending, Dylan paused, `parent.ended` sees
   nothing.
+
+## Session Occurrences — hybrid option C, seeded and resolved — 2026-09-26
+
+TEST only. Production Airtable and production Supabase untouched.
+
+### Investigation recap (see prior report for detail)
+
+Production `Session Occurrences` has **zero records** and no automation
+generates them. The table's own field design (Status, Schedule Change
+State, Replacement Occurrence — though that field didn't exist in TEST
+until this repair, added below — Exception Reason, Confirmation State)
+already supports everything the agreed behaviour needs; nothing was
+missing except records.
+
+### Schema addition (TEST only)
+
+`Session Occurrences.Replacement Occurrence` (self-link, multipleRecordLinks
+to Session Occurrences) — present in the live base's schema but had not
+been copied into the TEST table when it was first built. Added now because
+seeding a genuine reschedule needs it. Nothing else added.
+
+### Seed dataset
+
+**Session A (Monday Juniors, TEST-A)** — five occurrences, deliberately
+carrying every exception type in one small set:
+
+| Occurrence | Date | Status | Notes |
+|---|---|---|---|
+| A1 | Mon 28 Sep | **Cancelled** | Weather. Must never resolve as next. |
+| A2 | Mon 5 Oct | **Postponed** | Schedule Change State Rescheduled, `Replacement Occurrence` → A3. Must never resolve as next *itself*. |
+| A3 | **Wed 7 Oct** | Scheduled | The real makeup date. Deliberately off-pattern: different weekday, time (16:30–17:30 vs the recurring 17:00–18:00) and venue (Sample Sports Hall vs the recurring Test Park) — proves occurrence data overrides the recurring default. |
+| A4 | Mon 12 Oct | Scheduled | Normal, on-pattern. |
+| A5 | Mon 19 Oct | Scheduled | Normal, on-pattern. |
+
+**Session B (Thursday Juniors, TEST-B)** — **zero occurrences**,
+deliberately, so the no-occurrence fallback path has a real session to
+resolve against rather than only a unit-test double.
+
+Archie Atkinson was given a second Active membership on Session B
+(alongside his existing Active membership on Session A), so **one real
+`/parent-hub/me` call for `parent.a@test.invalid` exercises both paths at
+once**: a real resolved occurrence for Session A, and the recurring-pattern
+fallback for Session B.
+
+### Backend change (TEST only) — `parent-hub`
+
+Added to `handleParentMe`'s `activeSessions` mapping only (paused and
+ended sessions are unaffected — "next session" isn't a meaningful concept
+for either):
+
+- `buildOccurrencesBySessionId` — indexes the newly-fetched `Session
+  Occurrences` rows by their `Session` link.
+- `resolveNextOccurrence(sessionId, …, todayIso)` — the resolution rules,
+  in order: an occurrence with a `Replacement Occurrence` link is never a
+  candidate itself, its target is considered instead (and a broken link
+  degrades to "no candidate," not a throw); `Cancelled` is never a
+  candidate; a `Postponed` occurrence with no replacement is not a
+  candidate either (nothing confirmed to show); what remains is filtered
+  to `Date >= today` and sorted, earliest wins. Deduplicated by record id,
+  since a replacement target is normally *also* directly linked to the
+  same Session.
+- `nextOccurrencePayload` — builds `{ occurrence_record_id, date, day,
+  time, venue, rescheduled }` from the winning occurrence's **own** date,
+  start/end time and venue link (falling back to the Session's own venue
+  only when the occurrence didn't set one) — this is what makes
+  occurrence-level overrides win, simply by being read first.
+- Each `active_sessions[]` entry now carries `next_occurrence: {...} |
+  null`. `null` means no occurrence has been generated yet; the existing
+  `day`/`time`/`venue` fields (already on the object, from the prior
+  repair) remain the recurring pattern for the client to fall back to.
+  Nothing was removed from the payload — this is additive.
+
+**Frontend: not changed.** `next_occurrence` is present in the API
+response but nothing in `parent.js` reads it yet — Parent Home still
+shows the recurring pattern for every session, exactly as before this
+repair. A future frontend change would read `next_occurrence` when
+present and show it in place of the weekday projection; not done here
+per the instruction to hold off unless required simply to expose the
+field, and simply returning it in the JSON satisfies that.
+
+### Verified with real Parent Hub calls — parent-hub v5 (TEST)
+
+`parent.a@test.invalid`, one `/parent-hub/me` call, Archie's two active
+sessions:
+
+- **Session A** → `next_occurrence`: date **2026-10-07** (Wednesday — not
+  the recurring Monday), time **16:30 – 17:30** (not the recurring
+  17:00–18:00), venue **Sample Sports Hall** (not the recurring Test
+  Park), `rescheduled: true`. The nearest date (28 Sep, Cancelled) and the
+  reschedule origin (5 Oct, Postponed) were both correctly skipped.
+- **Session B** → `next_occurrence: null`. Zero occurrence rows exist for
+  it, and the response still carries its recurring pattern (`day:
+  "Thursday"`, `time: "18:00 – 19:00"`, `venue: "Sample Sports Hall"`)
+  unchanged from the prior repair.
+
+Also re-checked in the same call: Bella still Pending, `parent.ended`
+still sees nothing, Dylan still Paused — none of the earlier repairs
+regressed.
+
+### Left for a separate report, not built here
+
+Per the instruction, the production occurrence **generator** — how
+occurrences should be created automatically, how far ahead, how Selected
+Dates / One-off sessions should behave, and how a reschedule/cancellation
+should update them operationally — is a separate report, not built or
+proposed in code here.
+
+### Flagged, not touched: Coach Hub's Google Sheets "Changes" tab
+
+`coach.js` computes the Coach-side "Today's Schedule" / cover / extra
+sessions from a **second, parallel exception system**: a published
+Google Sheets "Changes" tab (`changesCsvUrl`), read client-side and
+merged with the same weekday-only projection Parent Hub used to use. It
+is not connected to `Session Occurrences` / `Occurrence Staff` in any
+way. This is legacy schedule logic that will eventually need migrating
+to the Airtable occurrence model, per the same architecture decision that
+moved Parent Hub off the Sessions CSV. Left untouched, as asked.
