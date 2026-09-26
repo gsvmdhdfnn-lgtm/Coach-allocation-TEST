@@ -1007,17 +1007,20 @@ export function buildUkDateTimeIso(dateIso: string, hhmm: { h: number; m: number
 export function computeOccurrenceKey(sessionRecordId: string, dateIso: string): string;
 ```
 
-**Design decisions flagged during verification, not yet confirmed by you:**
+**Design decisions flagged during verification:**
 
-1. **One-off** has no dedicated date field, so `planOneOffDate` reuses
-   `Sessions.Start Date` as the single generated date rather than a
-   `Session Dates` row. Alternative considered and rejected for now: a
-   `Session Dates` row, which would overload a table scoped for Selected
-   Dates/Excluded Dates with a purpose it wasn't given.
-2. **Selected Dates applies no 12-week/10-occurrence ceiling** - every
-   future Included row generates unconditionally, since it's a finite,
-   explicit list Management already chose, unlike Recurring's genuinely
-   open-ended weekly projection.
+1. **RATIFIED 2026-09-26 - One-off.** No dedicated date field, so
+   `planOneOffDate` reuses `Sessions.Start Date` as the single generated
+   date rather than a `Session Dates` row. Do not add a separate one-off
+   date field or overload Session Dates for this in v1. Alternative
+   considered and rejected: a `Session Dates` row, which would overload a
+   table scoped for Selected Dates/Excluded Dates with a purpose it
+   wasn't given.
+2. **RATIFIED 2026-09-26 - Selected Dates.** Generate every explicitly
+   Included future date stored in Session Dates; do not apply the
+   recurring 12-week/10-occurrence rolling horizon to Selected Dates.
+   Reason: these are deliberate finite dates Management has already
+   chosen, not an open-ended recurring projection.
 3. **OccurrenceShell carries no human-readable `Occurrence Name`/
    `Occurrence ID`** - left as a Slice 3 (repository/write layer)
    decision, not decided here.
