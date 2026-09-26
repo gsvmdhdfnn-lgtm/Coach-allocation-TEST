@@ -102,8 +102,14 @@ function isValidAirtableRecordId(id: unknown): id is string {
  * to give a clean 404 for an unknown Session before ever acquiring a
  * lock for it - otherwise an unknown id would acquire the lock, fail
  * inside generateForSession with a generic thrown error, release the
- * lock, and surface as an opaque 500. Anything other than a clean
- * Airtable 404 (auth failure, network error, etc.) is rethrown as-is.
+ * lock, and surface as an opaque 500. Anything other than "not found"
+ * (auth failure, network error, etc.) is rethrown as-is.
+ *
+ * Confirmed by real call (see TEST-ENV.md, Slice 4): Airtable returns a
+ * plain 404 for a malformed id, but 403 INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND
+ * for a well-formed id that simply doesn't exist - it deliberately does
+ * not distinguish "no permission" from "doesn't exist". Both count as
+ * not found here.
  */
 async function sessionExists(sessionRecordId: string): Promise<boolean> {
   try {
@@ -111,7 +117,7 @@ async function sessionExists(sessionRecordId: string): Promise<boolean> {
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/:\s*404\b/.test(message)) return false;
+    if (/:\s*404\b/.test(message) || /MODEL_NOT_FOUND/.test(message)) return false;
     throw error;
   }
 }

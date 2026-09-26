@@ -1272,3 +1272,139 @@ sent is the literal output of the code, not a hand-approximated one.
 - Production (`apprptFotQuVL1mhs` / `bkkukymqaxawnudoxdjs`) untouched
   throughout - re-checked directly: still none of the Slice 1/3 schema,
   no new Edge Function.
+
+## Slice 4 - manual TEST-only Session Occurrence generator endpoint
+
+Goal, per your approval: expose the already-proven Slice 3 orchestration
+through one deliberately manual endpoint, verified with real HTTP calls,
+before any automatic trigger exists.
+
+### Endpoint
+
+`POST /functions/v1/session-occurrences/generate` on TEST project
+`dkqubldmfyeuudecxmvh`, body `{ "sessionRecordId": "recXXXXXXXXXXXXXXX" }`
+- exactly one Session per call, no "generate all Sessions" yet.
+
+**New file:** `supabase/functions-test/session-occurrences/index.ts` - a
+thin HTTP wrapper only. It imports and calls `generateForSession`
+(orchestrator.ts), `fetchSession` (repository.ts) and
+`createSupabaseLockClient` (lock-client.ts) unchanged - no generator/
+repository/lock logic is reimplemented here. Same TEST-base boot guard,
+same `jsonResponse`/CORS conventions, as every other TEST function.
+
+### Auth model
+
+Inspected `hub-content`'s and `parent-hub`'s existing `resolveCaller()`
+pattern before choosing anything - this is an operational/admin function
+(Management only), so it reuses that exact convention rather than
+inventing a new one:
+
+- Deployed with `verify_jwt: true` (like `parent-hub`, which has no
+  public route either) - Supabase's own gateway rejects a request with
+  no/invalid Authorization JWT before this function's code ever runs.
+- On top of that, `resolveCaller()` (copied verbatim from `hub-content`'s
+  own, per this codebase's "each function is self-contained" convention)
+  resolves the Supabase Auth JWT to a `profiles` row and requires
+  `role === "management"` AND `active === true`. A Coach or Parent JWT is
+  correctly rejected with 403, not just relying on the JWT gateway check.
+
+### Response shapes
+
+- `200 { status: "generated" | "no_changes" | "skipped_locked", created, recordIds }`
+  - the orchestrator's own outcome, passed through unchanged.
+- `400` - missing/invalid `sessionRecordId` (must match `rec` + 14
+  alphanumerics) or invalid JSON body.
+- `401` - missing/invalid Authorization header (mostly caught by the
+  `verify_jwt` gateway before this function runs at all).
+- `403` - a valid, active, non-Management caller.
+- `404` - a well-formed but non-existent Session id.
+- `405` - any method other than POST on `/generate`.
+- `502` - the Session-existence lookup itself failed unexpectedly (not
+  a real Airtable "not found" - see finding below).
+- `500` - anything else unexpected, from `generateForSession` itself.
+
+### A real finding, fixed before this could be called done
+
+First deploy's `sessionExists()` only treated a plain Airtable `404` as
+"not found." A real call with a well-formed-but-nonexistent Session id
+(`recZZZZZZZZZZZZZZ`) came back **502**, not 404 - Airtable actually
+returns **403 `INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND`** for this case
+(it deliberately doesn't distinguish "no permission" from "doesn't
+exist"). Fixed `sessionExists()` to treat that message as "not found"
+too, redeployed as v2, and re-ran the exact same real call - now a clean
+404. This was only caught because verification used a genuinely
+malformed-looking-but-well-formed id over a real HTTP call rather than
+assuming the happy-path 404 case.
+
+### Deployment
+
+`session-occurrences` v2 (TEST project `dkqubldmfyeuudecxmvh`),
+`verify_jwt: true`, pinned to commit `afe9677` on
+`foundation/test-base-isolation` for the code (v1 was the same commit;
+v2 is the `sessionExists()` fix above, applied directly and then also
+committed to this same slice's commit before push - see the final commit
+this section is part of). Bundle: `index.ts` + unchanged copies of
+`orchestrator.ts`, `repository.ts`, `lock-client.ts`, `generator.ts`,
+`schedule-utils.ts` (Edge Functions are self-contained per directory, so
+every file the entrypoint imports has to be included in the deploy call,
+even though none of them changed).
+
+### Verification - all real HTTP calls, via `pg_net` (this sandbox cannot reach `supabase.co` directly)
+
+Signed in for real as three TEST accounts (`manager@test.invalid` =
+management, `coach.a@test.invalid` = coach, `parent.a@test.invalid` =
+parent) - their Supabase Auth passwords were reset directly via SQL
+(`crypt(..., gen_salt('bf'))` on `auth.users.encrypted_password`) since
+the `password123` convention used by the mocked Playwright suite doesn't
+apply to real Supabase Auth. TEST project only.
+
+1. **Missing `sessionRecordId`** → `400`.
+2. **Unknown Session** (`recZZZZZZZZZZZZZZ`) → `502` on v1 (the finding
+   above), **`404`** on v2 after the fix.
+3. **Non-management caller** (coach.a's real token) → `403 "Management access required"`.
+4. **No Authorization header at all** → `401` (from Supabase's own
+   gateway, before this function's code runs).
+5. **Valid throwaway Session, real HTTP call**: created `SLICE4-VERIFY`
+   (Recurring, Tuesday, Active) → `200 { status: "generated", created: 13, recordIds: [...] }`.
+   `generation_locks` confirmed at 0 rows immediately after.
+6. **Immediate rerun**, same Session → `200 { status: "no_changes", created: 0, recordIds: [] }`.
+7. **Genuine concurrency, over real HTTP**: created a second throwaway
+   Session (`SLICE4-CONCURRENT`, Wednesday) and issued two
+   `net.http_post` calls to `/generate` for it **inside the same SQL
+   statement** (no client round-trip between them, so pg_net's worker
+   dispatches both together) → exactly one `200 { status: "generated", created: 13, ... }`
+   and one `200 { status: "skipped_locked", created: 0, recordIds: [] }`.
+   Re-read the 13 rows actually created - all unique Occurrence Keys, no
+   duplicates. `generation_locks` confirmed at 0 rows afterward.
+8. **TEST-A's 5 hand-seeded rows** - re-read field-by-field after all of
+   the above - byte-for-byte unchanged (still no `Occurrence Key`, same
+   Status/Date/Occurrence ID as every prior snapshot).
+9. **Parent Hub unchanged**: real `GET /parent-hub/me` as `parent.a` -
+   identical to the documented baseline (Dylan Davies paused on TEST-B,
+   `paused_from` 2026-09-15/`returns_on` 2026-10-20; Archie Atkinson
+   active on TEST-B with coaches Sam Sample + Alex Test). `parent-hub`
+   still version 7, same SHA-256 digest as before this slice - it was
+   never redeployed.
+10. **`hub-content/players` unchanged**: real `GET /hub-content/players`
+    as `coach.a` - TEST-A's Archie and Bella, `tier: "permanent"`, full
+    permissions, identical to the Slice 1 baseline. `hub-content` still
+    version 4, same digest - never redeployed.
+11. **Full TEST suite**: `node tests/run-all.js` - see the result
+    recorded below.
+
+**Rollback (Amendment 4 pattern, again)**: every record created during
+verification was deleted by its exact captured record ID, not a
+timestamp cutoff - all 13 `SLICE4-VERIFY` occurrences, all 13
+`SLICE4-CONCURRENT` occurrences, then both throwaway Session records
+themselves. Re-confirmed after cleanup: zero rows matching either
+throwaway Session id anywhere in the base.
+
+### Test results
+
+- `node tests/run-all.js` (full TEST suite): **48/48 test files passed**,
+  unchanged from before this slice (Slice 4 adds no new local test file;
+  its own logic is entirely composed of already-unit-tested Slice 2/3
+  modules plus a thin routing/auth layer that can only be meaningfully
+  verified over real HTTP, which the section above covers).
+- Production (`apprptFotQuVL1mhs` / `bkkukymqaxawnudoxdjs`) untouched -
+  no schema changes, no Edge Function deployed or redeployed there.
