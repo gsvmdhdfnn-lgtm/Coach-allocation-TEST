@@ -156,7 +156,10 @@ export function loadParentHub() {
     state.parentHub = body; state.parentHubLoaded = true;
     if (state.role === 'parent') renderParentScreen();
   }).catch(function (e) {
-    root.innerHTML = '<div class="error"><b>Couldn’t load your hub.</b><br>' + esc(e.message || '') + '<br><button class="primary-btn error-retry" data-action="retry-parent-hub">Try again</button></div>';
+    // The raw message can name Airtable tables, fields and status codes.
+    // A parent gets a plain line; the detail goes to the console for us.
+    if (e) console.error('Parent Hub load failed:', e);
+    root.innerHTML = '<div class="error"><b>Couldn’t load your hub.</b><br>This is usually just a weak connection - check your signal and try again.<br><button class="primary-btn error-retry" data-action="retry-parent-hub">Try again</button></div>';
   });
 }
 
@@ -310,7 +313,10 @@ export function renderParentSessions() {
         '<div><div class="ph-row-title">' + esc(sessionTitle(requested)) + '</div><div class="ph-row-sub">' +
         (lines.length ? lines.map(esc).join('<br>') + '<br>' : '') +
         'Requested ' + esc(formatIsoDate(p.requested_date) || 'recently') + ' · waiting for approval</div></div><div></div></div>';
-    }).join('') + '</section>' : '') +
+    }).join('') + '</section>'
+      : (!sessionRequestsAvailable()
+        ? sectionHead('Awaiting approval') + emptyCard('Requests temporarily unavailable', 'We can’t show session requests while we update the system. Nothing you have already asked for is lost.')
+        : '')) +
     sectionHead('Find Another Session') +
     '<section class="card ph-feedback"><b>Looking for another session?</b>' +
     '<p>Browse the other programmes we run. We’ll pass your request to the office to confirm a place.</p>' +
@@ -694,6 +700,16 @@ export function submitClaim(btn) {
  * separate tracked list) stays visible but disabled, labelled, so it's
  * clear why it can't be picked again rather than silently vanishing.
  */
+/**
+ * False only when the backend reported the requests feature itself as
+ * unavailable. An ordinary empty list stays empty - "no pending
+ * requests" and "we cannot tell you about requests" must never look the
+ * same to a parent.
+ */
+export function sessionRequestsAvailable() {
+  return !(state.parentHub && state.parentHub.session_requests_available === false);
+}
+
 export function openRequestSessionSheet(playerId, playerName) {
   var child = ((state.parentHub && state.parentHub.children) || []).find(function (c) { return c.player_record_id === playerId }) || activeChild() || {};
   playerId = playerId || child.player_record_id;
@@ -711,6 +727,13 @@ export function openRequestSessionSheet(playerId, playerName) {
   }).join('');
   var anySelectable = pickedFirst;
   sheet.hidden = false;
+  if (!sessionRequestsAvailable()) {
+    // Stopped before the form rather than after submit: a parent should
+    // never be able to send something nobody can currently process.
+    sheetContent.innerHTML = '<div class="calendar-sheet"><h3>Find a session</h3>' +
+      '<div class="parent-form"><p class="auth-sub">Session requests are temporarily unavailable while we update the system. Please contact us and we\u2019ll sort it for you.</p></div></div>';
+    return;
+  }
   sheetContent.innerHTML = '<div class="calendar-sheet"><h3>Find a session</h3><p>For ' + esc(playerName) + '. Management will approve, reject or amend this request.</p>' +
     '<div class="parent-form">' +
     (anySelectable ? '<label class="auth-field">Session<select id="request-session-select">' + options + '</select></label>' : '<p class="auth-sub">' + (requestable.length ? 'A request is already pending for every remaining session.' : 'No sessions are available to request right now.') + '</p>') +

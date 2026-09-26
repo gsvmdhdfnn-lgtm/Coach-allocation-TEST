@@ -105,6 +105,13 @@ function send(r, status, body) { r.writeHead(status, { 'Content-Type': 'applicat
 module.exports.links = links;
 module.exports.sessionRequests = sessionRequests;
 module.exports.sessionLinks = sessionLinks;
+// 'ok'          - requests feature healthy (unchanged behaviour)
+// 'unavailable' - the FIXED backend: hub still loads, feature reports itself down
+// 'crash'       - the LIVE 2026-09-26 failure: /me 500s with a raw Airtable error
+let requestsMode = 'ok';
+module.exports.setRequestsMode = (m) => { requestsMode = m; };
+const RAW_AIRTABLE_ERROR = 'Airtable error for Player Session Requests: 403 {"error":{"type":"INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND","message":"Invalid permissions, or the requested model was not found. Check that both your user and your token have the required permissions, and that the model names and/or ids are correct."}}';
+
 module.exports.start = function (port) {
   const srv = http.createServer(async (q, r) => {
     const u = q.url.split('?')[0];
@@ -125,6 +132,12 @@ module.exports.start = function (port) {
       return send(r, 403, { error: 'Parent access required' });
     }
 
+    if (u === '/parent-hub/me' && q.method === 'GET' && requestsMode === 'crash') {
+      // Exactly what production did: one unavailable table inside the
+      // handler's Promise.all took the whole endpoint down, and the raw
+      // Airtable message was returned to the client.
+      return send(r, 500, { error: RAW_AIRTABLE_ERROR });
+    }
     if (u === '/parent-hub/me' && q.method === 'GET') {
       const mine = links.filter(l => l.parentEmail === caller.email);
       const sessionPayload = (id) => {
@@ -144,7 +157,8 @@ module.exports.start = function (port) {
       }));
       const pendingClaims = mine.filter(l => l.status !== 'Verified').map(l => ({ link_id: l.id, player_name: l.playerName || 'Claim submitted', status: l.status, relationship: l.relationship }));
       const availableSessions = SESSIONS.map(s => ({ session_record_id: s.id, session_id: s.session_id || s.id, session_name: s.name, day: s.day || '', time: s.time || '', venue: s.venue || '', age_group: s.age_group || '', programme: s.programme || '' }));
-      return send(r, 200, { parent_id: 'PARENT-' + caller.email, children, pending_claims: pendingClaims, available_sessions: availableSessions });
+      if (requestsMode === 'unavailable') children.forEach((c) => { c.pending_requests = []; });
+      return send(r, 200, { parent_id: 'PARENT-' + caller.email, children, pending_claims: pendingClaims, available_sessions: availableSessions, session_requests_available: requestsMode !== 'unavailable' });
     }
     // Mirrors the real function's three gates: parent role (above), the
     // player must be one of THIS caller's Verified children, and only
@@ -211,6 +225,9 @@ module.exports.start = function (port) {
       return send(r, 200, { ok: true, status: 'Needs Review' });
     }
     if (u === '/parent-hub/session-requests' && q.method === 'POST') {
+      if (requestsMode === 'unavailable') {
+        return send(r, 503, { error: "Session requests are temporarily unavailable. Please contact us and we'll sort it for you." });
+      }
       const body = await readJson(q);
       const playerId = String(body.player_record_id || ''), sessionId = String(body.session_record_id || '');
       if (!playerId || !sessionId) return send(r, 400, { error: 'Player and session are required.' });

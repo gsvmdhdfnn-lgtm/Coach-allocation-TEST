@@ -365,6 +365,25 @@ function sessionPayload(session: any, schedule: Record<string, string> | undefin
   };
 }
 
+/**
+ * Session requests are one optional slice of the Parent Hub, not a
+ * prerequisite for it. This table was being read inside the same
+ * Promise.all as everything else, so when it started returning 403
+ * INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND one unavailable feature took the
+ * entire Parent Home down - Next Session, schedule and development
+ * included. Reading it through this wrapper keeps the failure contained:
+ * the hub still loads and the requests feature reports itself
+ * unavailable, instead of the whole page becoming an error.
+ */
+async function fetchSessionRequests(): Promise<{ rows: any[]; available: boolean }> {
+  try {
+    return { rows: await getAirtableRecords("Player Session Requests"), available: true };
+  } catch (e) {
+    console.error("Player Session Requests unavailable", e);
+    return { rows: [], available: false };
+  }
+}
+
 async function handleParentMe(caller: { userId: string; email: string }) {
   const parentRecord = await resolveParentRecord(caller.userId, caller.email);
 
@@ -378,15 +397,16 @@ async function handleParentMe(caller: { userId: string; email: string }) {
     console.error("Could not sync profiles.airtable_person_id", e);
   }
 
-  const [linkRows, playerRows, sessionRows, sessionLinkRows, requestRows, venueRows, csvRows] = await Promise.all([
+  const [linkRows, playerRows, sessionRows, sessionLinkRows, sessionRequests, venueRows, csvRows] = await Promise.all([
     getAirtableRecords(TBL_PARENT_PLAYER_LINKS),
     getAirtableRecords("Players"),
     getAirtableRecords("Sessions"),
     getAirtableRecords("Player Session Links"),
-    getAirtableRecords("Player Session Requests"),
+    fetchSessionRequests(),
     getAirtableRecords("Venues"),
     fetchSessionsCsv(),
   ]);
+  const requestRows = sessionRequests.rows;
   const playerById: Record<string, any> = {};
   for (const p of playerRows) playerById[p.id] = p;
   const sessionById: Record<string, any> = {};
@@ -491,7 +511,16 @@ async function handleParentMe(caller: { userId: string; email: string }) {
     })
     .sort((a: any, b: any) => a.session_name.localeCompare(b.session_name));
 
-  return { parent_id: parentRecord.fields["Parent ID"] || "", children, pending_claims: pendingClaims, available_sessions: availableSessions };
+  return {
+    parent_id: parentRecord.fields["Parent ID"] || "",
+    children,
+    pending_claims: pendingClaims,
+    available_sessions: availableSessions,
+    // False means the requests feature is temporarily unavailable, which
+    // is NOT the same as "this child has no pending requests" - the
+    // client must say so rather than render a confident empty list.
+    session_requests_available: sessionRequests.available,
+  };
 }
 
 /**
@@ -820,10 +849,17 @@ async function handleParentSessionRequest(caller: { userId: string; email: strin
   const session = await getAirtableRecord("Sessions", sessionRecordId);
   if (!session || session.fields["Active"] !== true) return jsonResponse({ error: "That session is not available." }, 400);
 
-  const [sessionLinks, existingRequests] = await Promise.all([
+  const [sessionLinks, sessionRequests] = await Promise.all([
     getAirtableRecords("Player Session Links"),
-    getAirtableRecords("Player Session Requests"),
+    fetchSessionRequests(),
   ]);
+  // Never accept a request nobody can process. An explicit 503 is the
+  // honest answer here - silently succeeding would leave a parent
+  // believing they had asked for something.
+  if (!sessionRequests.available) {
+    return jsonResponse({ error: "Session requests are temporarily unavailable. Please contact us and we'll sort it for you." }, 503);
+  }
+  const existingRequests = sessionRequests.rows;
 
   const alreadyActive = sessionLinks.some(
     (l: any) =>
@@ -902,7 +938,12 @@ Deno.serve(async (req) => {
 
     return jsonResponse({ error: "Unknown route" }, 404);
   } catch (error) {
+    // Deliberately generic. Every authored 4xx above carries its own
+    // parent-safe wording; this is the unexpected case, and its real
+    // message can name Airtable tables, field names and status codes -
+    // internals a parent should never be shown. The detail goes to the
+    // function logs instead.
     console.error(error);
-    return jsonResponse({ error: error instanceof Error ? error.message : "Unknown error" }, 500);
+    return jsonResponse({ error: "Something went wrong. Please try again." }, 500);
   }
 });
