@@ -771,3 +771,129 @@ now actively fights the current data model; the right move is to retire
 the auto-sync trigger (`maybeAutoSyncSessions()`'s call inside
 `handleSettings()`) and the manual "Sync Sessions" trigger together,
 once confirmed nothing still depends on Sheet-sourced Session creation.
+
+## Retiring the legacy Sessions-from-Sheet sync
+
+Follow-up to the recommendation above. Investigated every caller before
+touching anything, per the standing rule for this whole project.
+
+### Callers found
+
+1. `hub-content/index.ts` (TEST, deployed) - `handleSettings()` calls
+   `maybeAutoSyncSessions(organisationRecord)` fire-and-forget on every
+   hit to the `""`/`settings` route.
+2. `hub-content/index.ts` (production) - identical structure, untouched.
+3. `player-sessions/index.ts` (production only - **no TEST copy
+   exists**) - exposes its own `syncSessions()` via `POST /sync`, the
+   manual on-demand trigger.
+4. `management.js` (frontend, one shared bundle - **not split into
+   TEST/production copies the way the backend is**) - the "Sync Sessions
+   from schedule" button, `syncSessions(btn)`, POSTs to
+   `playerSessionsUrl() + '/sync'`.
+5. `main.js` - wires the button's click to (4).
+
+### What each expects, and whether it's safe to disable in TEST
+
+- **`config.js` hardcodes production** (`bkkukymqaxawnudoxdjs`) as
+  `supabaseUrl`/`contentApiUrl`, identically on every branch of this
+  repo including `main` and `foundation/test-base-isolation`. There is
+  no TEST-facing frontend build anywhere in this project - "TEST" has
+  only ever meant the isolated Airtable base + Supabase project +
+  `functions-test/*` backend copies, verified via real HTTP calls. So
+  the **button (4/5) cannot reach TEST today** regardless of anything
+  done here; it calls production's `player-sessions`, which this task
+  does not touch.
+- **`player-sessions` (3) has no TEST deployment**, so its manual
+  `/sync` route is not callable against TEST at all right now. Nothing
+  to retire there directly - flagged so it isn't ported over unmodified
+  if/when `player-sessions` is ever added to TEST (same caution already
+  recorded for `capabilitiesForCoach()`/`eligibleCoachIdsForSessionSnapshot()`
+  in the previous repair).
+- **The auto-sync (1) is the only piece actually live against TEST**,
+  and its own first write (the "Sessions Last Synced" throttle stamp)
+  already 422s and is caught, so `syncSessions()` itself has never
+  actually executed in TEST - only a swallowed error logged on every
+  settings load. `handleSettings()`'s returned payload
+  (`organisation`/`settings`/`features`) does not depend on it at all
+  (separate `.catch()`, fire-and-forget). `hub-content` exposes no
+  `sync` route of its own - the auto-call was the only invocation path
+  that existed in the deployed TEST function.
+- **No useful behaviour is mixed in that needs preserving elsewhere.**
+  Session creation/archival keyed to the Sheet's `session_id` is exactly
+  the mechanism being moved away from; the throttle-stamp pattern has no
+  other user in this codebase.
+- **No Airtable data depends on it.** TEST-A/TEST-B were created
+  directly in Airtable, not via this sync, and have no corresponding
+  Sheet row - a working version of this sync would archive both.
+
+**Conclusion: safe to retire in TEST now.** Exactly one live call site,
+already a no-op today, disabling it changes no observable behaviour
+except removing a swallowed error log.
+
+### What changed
+
+`supabase/functions-test/hub-content/index.ts`: removed the bodies of
+`syncSessions()` and `maybeAutoSyncSessions()` and the one call site
+inside `handleSettings()`, each replaced with a comment explaining the
+retirement and pointing back here (not simply fixing `Active` ->
+`LEGACY — Active` and the other field names, per the explicit
+instruction - a working sync would still be harmful, not merely
+outdated). `SESSIONS_CSV_URL`, `SESSIONS_SYNC_THROTTLE_MS` and the
+CSV-fetch helpers (`csvObjects`/`parseCsvRows`/`fetchCsvObjects`) are
+left in place, now-unused by this specific feature but commented as
+such - `fetchCsvObjects`/`csvObjects`/`parseCsvRows` are still live for
+`CHANGES_CSV_URL` (cover) and `FINANCIALS_CSV_URL`, and `SESSIONS_CSV_URL`
+is the exact "Coach Hub Sessions CSV" already flagged separately for the
+upcoming Schedule cleanup - not deleted here, on purpose. `airtableBatch()`
+is now unused too but left as a generic, harmless utility.
+
+Deliberately **not touched**: `management.js`/`main.js` (the "Sync
+Sessions" button) - editing a file shared with production would affect
+production, which this task must not do, and the button cannot reach
+TEST today regardless.
+
+### Deploy
+
+`hub-content` v4 (TEST project `dkqubldmfyeuudecxmvh`), pinned to commit
+`9105b2e45a821fb5bff4c44e74ff04d607e66437` on
+`foundation/test-base-isolation`, `verify_jwt: false` (explicit this
+time, after the earlier repair's near-miss).
+
+### Verification - real calls against hub-content v4 (TEST)
+
+- **Normal Coach Hub loading**: `GET /hub-content/settings` -> `200`,
+  full `organisation` payload returned, no error - confirms
+  `handleSettings()` works with the auto-sync call fully removed.
+- **`/hub-content/players` still works**: re-ran `coach.a`'s call from
+  the previous repair - identical result (TEST-A's Archie and Bella,
+  `tier: "permanent"`, full permissions) - the retirement touched
+  nothing this depends on.
+- **Parent Hub unchanged in logic**: re-ran `parent.a`'s `/parent-hub/me`
+  call - `next_occurrence`, ended-session actual/scheduled dates and
+  `pending_claims` all identical to the previous repair's verification.
+  One cosmetic difference, unrelated to this change: Archie/Dylan's
+  TEST-B `coaches` now lists `["Sam Sample", "Alex Test"]` instead of
+  just `["Sam Sample"]` - a direct, expected consequence of the
+  `SS-TEST-A2-VERIFY` Learning Coach row added as TEST data during the
+  *previous* repair's verification (parent-facing coach display
+  correctly shows all three roles, Learning Coach included, per that
+  repair's own findings) - not a regression from retiring the sync.
+- **No valid Airtable Session modified or archived**: read TEST-A/TEST-B
+  directly from Airtable after the deploy and both calls above -
+  `Session Lifecycle Status: Active` and `LEGACY — Active: true`
+  unchanged on both, confirming the sync did not run.
+- **Full test suite**: 46/46 passing, both before and after this change
+  (the frontend's mocked "Sync Sessions" button test,
+  `tests/e2e/sessionaccesstest.js`, is unaffected since it exercises a
+  local HTTP mock, never this file).
+- Production untouched throughout - no writes to `apprptFotQuVL1mhs` or
+  `bkkukymqaxawnudoxdjs`, no production Edge Function redeployed.
+
+### Nothing found that blocks retiring it now
+
+No caller, no data dependency, and no useful mixed-in behaviour would be
+lost. The only outstanding item is the frontend button/manual trigger,
+which is out of TEST's reach entirely today (production-only, and
+`player-sessions` isn't even in TEST) - not a blocker, just work for
+whenever the Schedule cleanup reaches the frontend and/or
+`player-sessions` is ported into TEST.
