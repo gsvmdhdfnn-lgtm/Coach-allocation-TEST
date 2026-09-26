@@ -41,6 +41,15 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 // Same public "publish to web" CSV this project's config.js already points
 // the client at (Sessions and Changes tabs) - kept in sync by hand if that
 // URL is ever republished.
+//
+// SESSIONS_CSV_URL is currently unused in this file: handlePlayers() now
+// reads Session Staff instead (see player-access.ts), and the Sessions-
+// from-Sheet auto-sync that used to read it has been retired (see
+// TEST-ENV.md), not fixed. Left in place, not deleted - it's the exact
+// "Coach Hub Sessions CSV" flagged separately for the upcoming Schedule
+// cleanup, which decides what (if anything) still needs it here.
+// CHANGES_CSV_URL below is unrelated to any of that and stays live -
+// resolveCoverSessionIds() still reads it for date-specific cover.
 const SESSIONS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vQj4giL7oEoZLLfC74Sq97bnUGIdMqnG_ECOkNyRis-Drz4yH1OUssQ-YBRbCR6ajiJBvV05JjzOi8I/pub?gid=349419235&single=true&output=csv";
 const CHANGES_CSV_URL =
@@ -58,6 +67,9 @@ const CHANGES_CSV_URL =
  */
 const FINANCIALS_CSV_URL = Deno.env.get("FINANCIALS_CSV_URL") || "";
 
+// Unused since the Sessions-from-Sheet auto-sync was retired below (see
+// TEST-ENV.md) - left in place rather than deleted pending the Schedule
+// cleanup that decides what, if anything, still needs this constant.
 const SESSIONS_SYNC_THROTTLE_MS = 60 * 60 * 1000; // 1 hour
 
 const corsHeaders = {
@@ -500,95 +512,40 @@ async function handlePlayers(authHeader: string | null) {
 }
 
 /**
- * Upserts Sessions from the published Sessions sheet: creates any new
- * session_id, refreshes the name and re-activates one that reappears, and
- * archives (Active=false) any Airtable Session no longer in the sheet -
- * never deletes, so existing Player Session Links/history stay intact.
- * Permanent Coaches is never touched here; that stays a manual link.
- * Duplicated verbatim in player-sessions (the manual-trigger copy) for
- * the same reason player-access.ts is duplicated - no shared filesystem
- * across independently-deployed functions.
+ * RETIRED, not fixed - see TEST-ENV.md ("Retiring the legacy
+ * Sessions-from-Sheet sync"). This upserted Airtable Sessions from the
+ * published Sessions sheet, treating the Sheet as authoritative for
+ * which Sessions exist: created any new session_id, refreshed the name
+ * of one that changed, and archived (Active=false) any Airtable Session
+ * no longer in the sheet.
+ *
+ * That premise is exactly the architecture this project has moved away
+ * from - Sessions are now created and managed directly in Airtable
+ * (Session Staff, Session Occurrences). A "fixed" version of this
+ * function (reading LEGACY - Active instead of the retired Active name)
+ * would not restore anything worth having: TEST-A and TEST-B exist only
+ * in Airtable, with no corresponding row in the Sheet, so the very next
+ * run would archive both of them. Left here, disconnected, rather than
+ * deleted, only because player-sessions carries an identical copy this
+ * comment doesn't reach - remove both together once the replacement
+ * Schedule system (Occurrence Staff / Session Staff-based) makes this
+ * fully redundant, rather than reviving either copy by fixing field names.
+ *
+ * function syncSessions() { ... } - body intentionally removed from this
+ * TEST copy; see git history for the original if ever needed for
+ * reference while designing the replacement.
  */
-async function syncSessions() {
-  const res = await fetch(SESSIONS_CSV_URL, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Could not fetch the Sessions sheet: ${res.status}`);
-  const csvRows = csvObjects(await res.text());
-
-  const existing = await getAirtableRecords("Sessions");
-  const existingBySessionId: Record<string, any> = {};
-  for (const r of existing) {
-    const sid = r.fields["Session ID"];
-    if (sid) existingBySessionId[sid] = r;
-  }
-
-  const seen = new Set<string>();
-  const toCreate: { fields: Record<string, unknown> }[] = [];
-  const toUpdate: { id: string; fields: Record<string, unknown> }[] = [];
-
-  for (const row of csvRows) {
-    const sessionId = row.session_id;
-    if (!sessionId) continue;
-    seen.add(sessionId);
-    const sessionName = row.session_name || "";
-    const record = existingBySessionId[sessionId];
-    if (!record) {
-      toCreate.push({ fields: { "Session ID": sessionId, "Session Name": sessionName, Active: true } });
-    } else if (record.fields["Session Name"] !== sessionName || record.fields["Active"] !== true) {
-      toUpdate.push({ id: record.id, fields: { "Session Name": sessionName, Active: true } });
-    }
-  }
-
-  const toArchive: { id: string; fields: Record<string, unknown> }[] = [];
-  for (const sid of Object.keys(existingBySessionId)) {
-    if (seen.has(sid)) continue;
-    const record = existingBySessionId[sid];
-    if (record.fields["Active"] === true) {
-      toArchive.push({ id: record.id, fields: { Active: false } });
-    }
-  }
-
-  await airtableBatch("Sessions", "POST", toCreate);
-  await airtableBatch("Sessions", "PATCH", toUpdate);
-  await airtableBatch("Sessions", "PATCH", toArchive);
-
-  return { created: toCreate.length, updated: toUpdate.length, archived: toArchive.length };
-}
 
 /**
- * Auto-sync: piggybacks on ordinary traffic instead of needing a cron
- * job. handleSettings() runs on every sign-in (HubContent.load()), so
- * this checks a durable "Sessions Last Synced" timestamp on the
- * Organisation & Branding record and, once it's more than an hour old,
- * kicks off a sync. The timestamp is stamped BEFORE the sync runs (not
- * after) so two requests arriving close together don't both trigger one.
- * Runs via EdgeRuntime.waitUntil so it keeps going after the response
- * for this particular sign-in has already been sent - nobody's load time
- * depends on it.
+ * RETIRED, not fixed - see syncSessions()'s comment above and
+ * TEST-ENV.md. This called syncSessions() automatically (throttled
+ * hourly via a "Sessions Last Synced" timestamp on Organisation &
+ * Branding) from every hit to handleSettings() - i.e. on ordinary Hub
+ * traffic, not just an explicit sync request. No longer called from
+ * handleSettings() below; nothing else in this file invokes it, and
+ * hub-content exposes no "sync" route of its own, so this is the only
+ * invocation path that existed and it is now fully disconnected.
  */
-async function maybeAutoSyncSessions(organisationRecord: any) {
-  if (!organisationRecord) return;
-  const lastSyncedStr = organisationRecord.fields["Sessions Last Synced"];
-  const lastSynced = lastSyncedStr ? new Date(lastSyncedStr).getTime() : 0;
-  if (Date.now() - lastSynced < SESSIONS_SYNC_THROTTLE_MS) return;
-
-  try {
-    await updateAirtableRecord("Organisation & Branding", organisationRecord.id, {
-      "Sessions Last Synced": new Date().toISOString(),
-    });
-  } catch (e) {
-    console.error("Could not stamp Sessions Last Synced", e);
-    return;
-  }
-
-  const run = syncSessions().catch((e) => console.error("Auto Sessions sync failed", e));
-  // deno-lint-ignore no-explicit-any
-  const edgeRuntime = (globalThis as any).EdgeRuntime;
-  if (edgeRuntime && typeof edgeRuntime.waitUntil === "function") {
-    edgeRuntime.waitUntil(run);
-  } else {
-    await run;
-  }
-}
 
 /**
  * Up to 3 optional photo+description slots on a Public Page, for a
@@ -709,8 +666,9 @@ async function handleSettings() {
     (record) => record.fields.Active === true
   );
 
-  // Fire-and-forget (see maybeAutoSyncSessions) - never blocks this response.
-  maybeAutoSyncSessions(organisationRecord).catch((e) => console.error("Auto-sync check failed", e));
+  // The auto Sessions-from-Sheet sync that used to fire here on every
+  // load has been retired, not fixed - see the comment above the (now
+  // removed) syncSessions()/maybeAutoSyncSessions() and TEST-ENV.md.
 
   const organisation = organisationRecord
     ? {
