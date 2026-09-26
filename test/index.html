@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#062a59" />
+  <title>TEST &middot; Josh Evans Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700;800&family=Oswald:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<!-- Unmissable on every screen: this build must never be mistaken for the
+     live Hub. It points at the test Supabase project and the test Airtable
+     base, and every record in it is invented. -->
+<div style="background:#b3261e;color:#fff;font:600 13px/1.4 Inter,system-ui,sans-serif;padding:8px 16px;text-align:center;letter-spacing:.02em">
+  TEST BUILD &middot; pretend data only &middot; not the live Hub
+</div>
+<div id="app" class="app-shell">
+  <header class="topbar">
+    <button id="app-back" class="back-btn topbar-back app-back" data-action="app-back" aria-label="Go back" hidden>‹ Back</button><span class="topbar-spacer" aria-hidden="true"></span>
+    <button class="brand-lockup" data-nav="home" aria-label="Josh Evans Hub home">
+      <img src="je-logo.png" alt="Josh Evans Soccer School" />
+    </button>
+    <div class="top-actions">
+      <button class="icon-btn" data-action="open-more" aria-label="More">●</button>
+    </div>
+  </header>
+
+  <nav class="main-nav coach-nav" aria-label="Main navigation">
+    <button data-nav="home" class="nav-pill is-active"><small>Home</small></button>
+    <button data-nav="schedule" class="nav-pill"><small>Schedule</small></button>
+    <button data-nav="resources" class="nav-pill"><small>Library</small></button>
+    <button data-nav="players" class="nav-pill"><small>Player Hub</small></button>
+  </nav>
+
+  <nav class="main-nav parent-nav" aria-label="Parent navigation">
+    <button data-nav="parent-home" class="nav-pill is-active"><small>Home</small></button>
+    <button data-nav="parent-sessions" class="nav-pill"><small>Sessions</small></button>
+    <button data-nav="parent-development" class="nav-pill"><small>Development</small></button>
+    <button data-nav="parent-more" class="nav-pill"><small>More</small></button>
+  </nav>
+
+  <main id="screen-root" class="screen-root" aria-live="polite"></main>
+</div>
+
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-backdrop" data-action="close-sheet"></div>
+  <div class="sheet-panel">
+    <div class="sheet-handle"></div>
+    <div id="sheet-content"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="content-provider.js"></script>
+<script type="module" src="main.js"></script>
+</body>
+</html>
