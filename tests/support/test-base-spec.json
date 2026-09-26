@@ -1,0 +1,2748 @@
+{
+ "source_base": "apprptFotQuVL1mhs",
+ "source_base_name": "Josh Evans Hub",
+ "captured": "2026-09-26",
+ "tables": [
+  {
+   "id": "tbliq5x8SPe569LLa",
+   "name": "Coaches",
+   "primaryFieldId": "fldGvM5nIh0mNZTAC",
+   "description": "Canonical Coach person/profile record for the new Hub. Broad account identity lives here; recurring Session assignment and role are owned by Session Staff, dated staffing/cover by Occurrence Staff, normal rates by Coach Rate Profiles and completed costs by Coach Allocations. Fields prefixed LEGACY belong to the retired Hub and must not be used by new code.",
+   "fields": [
+    {
+     "id": "fldGvM5nIh0mNZTAC",
+     "name": "Coach Name",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldR4ccl8E5rAn5qP",
+     "name": "Coach ID",
+     "type": "singleLineText",
+     "description": "Stable ID used by the Hub and later Supabase account mapping."
+    },
+    {
+     "id": "fld3YiUvBTYFqgz91",
+     "name": "Email",
+     "type": "email"
+    },
+    {
+     "id": "fldKbQeYAsYE1Mk6c",
+     "name": "Role",
+     "type": "singleSelect",
+     "description": "Broad Hub/account classification only. Do not use this field as the Coach's role on a Session. Session-specific roles come from Session Staff -> Coach Roles."
+    },
+    {
+     "id": "fldo4yHXVBF4gIQq8",
+     "name": "Profile Photo",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fld1AzsPpqNQsoENq",
+     "name": "Active",
+     "type": "checkbox",
+     "description": "Tick = current/active coach. Untick when they leave; keep the record so historical links remain intact."
+    },
+    {
+     "id": "fldSqSeN0tYLlwjjg",
+     "name": "Feedback",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldaVmiEUxCdhIlfW",
+     "name": "LEGACY — Players",
+     "type": "multipleRecordLinks",
+     "description": "Retired direct Coach-to-Player relationship. Never use for Player-data permission. Access derives from Session Staff / Occurrence Staff and role permissions."
+    },
+    {
+     "id": "fldblabQwxyLsF8kE",
+     "name": "Development Plans",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldIPPmnFRYwpysKs",
+     "name": "Supabase User ID",
+     "type": "singleLineText",
+     "description": "Future login mapping. Leave blank until Supabase is connected; then this links the Airtable coach record to the authenticated Hub user."
+    },
+    {
+     "id": "fldARcxp9ekfuxhCz",
+     "name": "Created",
+     "type": "createdTime"
+    },
+    {
+     "id": "fldKwHDgmBkNDc3rq",
+     "name": "Last Updated",
+     "type": "lastModifiedTime"
+    },
+    {
+     "id": "fldjFEc7xQPrD1mOs",
+     "name": "LEGACY — Sessions",
+     "type": "multipleRecordLinks",
+     "description": "Retired direct recurring-session convenience relationship from the previous Hub. New permanent assignments are owned by Session Staff."
+    },
+    {
+     "id": "fldRif9HhAOfffiMr",
+     "name": "LEGACY — Player Session Requests",
+     "type": "singleLineText",
+     "description": "Orphaned compatibility field left after the old Player Session Requests table was retired. Do not use in new code."
+    },
+    {
+     "id": "flde4NkWmpxsicSJo",
+     "name": "LEGACY — Player Session Links",
+     "type": "multipleRecordLinks",
+     "description": "Retired convenience relationship. Do not use to determine Coach access to Players. Access is role- and Session-based."
+    },
+    {
+     "id": "fld86i09qzw7aGhq1",
+     "name": "LEGACY — Coach Role",
+     "type": "multipleRecordLinks",
+     "description": "Retired global/profile role relationship. Session-specific role is authoritative on Session Staff; temporary role changes use Staff Role Overrides."
+    },
+    {
+     "id": "fldXSUMrfAXZn1BHi",
+     "name": "LEGACY — Session Occurrences",
+     "type": "multipleRecordLinks",
+     "description": "Retired convenience relationship from old occurrence staffing. Dated staffing is owned by Occurrence Staff."
+    },
+    {
+     "id": "fldF5uG6Ff06EQYLW",
+     "name": "LEGACY — Schedule Aliases",
+     "type": "singleLineText",
+     "description": "Old name-matching aliases used by spreadsheet-driven scheduling. Do not use in the new architecture; stable Coach ID / linked Coach records are authoritative."
+    },
+    {
+     "id": "fld4mRvqr4Lbn0sNF",
+     "name": "Coach Rate Profiles",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldtqZKSV3TDgWUTH",
+     "name": "Coach Allocations",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldqpfFs7UENc04Hx",
+     "name": "Session Staff",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldiXb8pDg3U9ZLy8",
+     "name": "Staff Role Overrides",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldiAFAY1nf1OSrI3",
+     "name": "Occurrence Staff",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldrYj2g9ixWm1CQm",
+     "name": "Staff Availability Requests",
+     "type": "multipleRecordLinks",
+     "description": "Inverse link to Staff Availability Requests submitted by this Coach."
+    },
+    {
+     "id": "fld8f2Zv6IhEvt5P5",
+     "name": "Staff Availability Requests",
+     "type": "multipleRecordLinks",
+     "description": "Inverse link to Staff Availability Requests where this Coach is the selected Replacement Coach."
+    },
+    {
+     "id": "fldWVr1kgsvi5IBJC",
+     "name": "Needs Attention Exceptions",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldQdTpiVUlmX2NXT",
+     "name": "Coach Availability",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld8mcvstMPIVS4Kl",
+     "name": "Coach Availability Exceptions",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldhx97sCg13FIUU4",
+     "name": "Cover Request Groups",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldgytgCL1cCbtIIV",
+     "name": "Cover Responses",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldzjfEb37l3V1cUM",
+     "name": "Coach Documents",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld4NKY1jQpWbJw5B",
+     "name": "Coach Work Summaries",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  },
+  {
+   "id": "tbl6RsNZpiq7m8gWD",
+   "name": "Coach Roles",
+   "primaryFieldId": "fldb7Zteg62QYpJkz",
+   "description": "Reusable role-capability model for coaches. Role Key is the stable internal identifier the Hub's access logic reads - Role Name is safe to rename without changing what a role can do. Coaches links to this table via its own \"Coach Role\" field.",
+   "fields": [
+    {
+     "id": "fldb7Zteg62QYpJkz",
+     "name": "Role Name",
+     "type": "singleLineText",
+     "description": "SAFE TO EDIT - display wording shown in Airtable. Renaming this never changes permissions."
+    },
+    {
+     "id": "fldMaBwxQLjtUUmAD",
+     "name": "Role Key",
+     "type": "singleLineText",
+     "description": "BACKEND KEY - stable internal identifier (e.g. lead_coach). Do not derive permissions from Role Name; do not rename/reuse a key once in use."
+    },
+    {
+     "id": "fldQUQKU2o9Ix23qJ",
+     "name": "Active",
+     "type": "checkbox"
+    },
+    {
+     "id": "fldYza9YwuHb6aGve",
+     "name": "Can View Players",
+     "type": "checkbox",
+     "description": "Must be true for a coach holding this role to see any player/session data, even when scheduled or covering a session."
+    },
+    {
+     "id": "fldZvOV7JDkqTGmkv",
+     "name": "Can Add Feedback",
+     "type": "checkbox"
+    },
+    {
+     "id": "fldimcEbG1mQEtH4H",
+     "name": "Can Edit Development Plans",
+     "type": "checkbox"
+    },
+    {
+     "id": "fldmrPhQVfggVYXWI",
+     "name": "Can Record Attendance",
+     "type": "checkbox"
+    },
+    {
+     "id": "fldeDr1KGeQ3FqJHg",
+     "name": "LEGACY — Coaches",
+     "type": "multipleRecordLinks",
+     "description": "Retired global/profile reverse link. Do not use to assign role permissions. Coach Roles apply through Session Staff and Staff Role Overrides."
+    },
+    {
+     "id": "fldYeut2fEcrC0eUU",
+     "name": "Session Staff",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldIOOqGMU7Wr9Uvd",
+     "name": "Staff Role Overrides",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldFKExq7OwPGuylh",
+     "name": "Can Send Communications",
+     "type": "checkbox",
+     "description": "Role-level permission for sending session/group/individual notices. Intended final rule: Lead Coach only."
+    },
+    {
+     "id": "fldt1WOlncg3DmCZ1",
+     "name": "Can View Player Names",
+     "type": "checkbox",
+     "description": "Role-level permission to see names on a session. Learning Coach may see names without opening profiles."
+    }
+   ]
+  },
+  {
+   "id": "tbluXrYZwbfCs5M1u",
+   "name": "Players",
+   "primaryFieldId": "fldPP8ZcRUXzOkCRD",
+   "description": "Canonical Player person record for the new Hub. Player identity/profile data remains here; access comes from verified Parent–Player Links, service participation from Player Session Links/Bookings, and Coach access from authorised Session Staff / Occurrence Staff. Fields prefixed LEGACY belong to the retired Hub and must not be used by new code.",
+   "fields": [
+    {
+     "id": "fldPP8ZcRUXzOkCRD",
+     "name": "Player Name",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldlt8DIxslCkpEzp",
+     "name": "Player ID",
+     "type": "singleLineText",
+     "description": "Stable ID used by the Hub and later Supabase links."
+    },
+    {
+     "id": "flde8eF6idaI1FGec",
+     "name": "LEGACY — Team / Session",
+     "type": "singleLineText",
+     "description": "Retired free-text session field from the previous Hub. Do not use in new code. Current service relationships come from Player Session Links."
+    },
+    {
+     "id": "fldCxZxmCxOZHhgf2",
+     "name": "Profile Photo",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fldMyfz8JRuHx2LgY",
+     "name": "LEGACY — Active",
+     "type": "checkbox",
+     "description": "Retired manual player-active flag. Do not use as the canonical activity definition in new code. Player/family activity should derive from current memberships/bookings while preserving the Player record."
+    },
+    {
+     "id": "fldTynn254KX1Sh0k",
+     "name": "Feedback",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld4oNOrEIMEqRIJ5",
+     "name": "LEGACY — Assigned Coaches",
+     "type": "multipleRecordLinks",
+     "description": "Retired direct Player-to-Coach relationship. Never use for permissions. Coach access comes from authorised Session Staff / Occurrence Staff relationships and role permissions."
+    },
+    {
+     "id": "fld8cwQl0dXWkrDqo",
+     "name": "Development Plans",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldoYF7b2vF3j6yvR",
+     "name": "Created",
+     "type": "createdTime"
+    },
+    {
+     "id": "fld2KypNzrLJqHjhw",
+     "name": "Last Updated",
+     "type": "lastModifiedTime"
+    },
+    {
+     "id": "fldTtl9QO2fYIKgeA",
+     "name": "Date of Birth",
+     "type": "date",
+     "description": "Used to safely match a child entered during parent signup to the correct player record. Do not use name alone for matching."
+    },
+    {
+     "id": "fldKDYLK3rmHYYpAF",
+     "name": "Parent–Player Links",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld8mle89zQdUwjjx",
+     "name": "Player Session Links",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldAwUW649P7NBK71",
+     "name": "LEGACY — Player Session Requests",
+     "type": "singleLineText",
+     "description": "Orphaned compatibility field left after the old Player Session Requests table was retired. Do not use in new code."
+    },
+    {
+     "id": "fldGnva5w1DuSqHqH",
+     "name": "Needs Attention Exceptions",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld1CdqwRH7bfqebp",
+     "name": "Player Attendance",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld8CAcAK7LKvxe16",
+     "name": "Families",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldQDfeCsz0iprO2K",
+     "name": "Address Line 1",
+     "type": "singleLineText",
+     "description": "Structured home address for the Player profile. Parent-editable normal family information."
+    },
+    {
+     "id": "fldlAYf1Qw5q46G9D",
+     "name": "Address Line 2",
+     "type": "singleLineText",
+     "description": "Optional second line of the Player home address."
+    },
+    {
+     "id": "flduEYGe2aucWkKgi",
+     "name": "Town / City",
+     "type": "singleLineText",
+     "description": "Town or city for the Player home address."
+    },
+    {
+     "id": "fldGUF14O0rX2UyL2",
+     "name": "County",
+     "type": "singleLineText",
+     "description": "County/region for the Player home address."
+    },
+    {
+     "id": "fldGrYbRHR4sayVZo",
+     "name": "Postcode",
+     "type": "singleLineText",
+     "description": "Postcode for the Player home address."
+    },
+    {
+     "id": "fldpfhDLNbIpBuXUB",
+     "name": "Medical Information State",
+     "type": "singleSelect",
+     "description": "Distinguishes incomplete medical information from an explicit confirmation that there is nothing to report."
+    },
+    {
+     "id": "fldXxl4wJMjsLPqkV",
+     "name": "Medical Information",
+     "type": "multilineText",
+     "description": "Current relevant medical information. Normal history should record that this changed without exposing old/new sensitive values in the standard timeline."
+    },
+    {
+     "id": "fldMEt1hDVHmo3X4f",
+     "name": "Additional Support State",
+     "type": "singleSelect",
+     "description": "Distinguishes incomplete support information from an explicit confirmation that there are no additional support needs."
+    },
+    {
+     "id": "fldnWsu0vEj11nwHS",
+     "name": "Additional Support Needs",
+     "type": "multilineText",
+     "description": "Current additional support needs or useful support information for authorised users."
+    },
+    {
+     "id": "fld9sqqXM8WAcDAP6",
+     "name": "Photo / Video Permission",
+     "type": "singleSelect",
+     "description": "Parent-facing permission state. Keep explicit Unknown/Not set rather than treating a blank as No."
+    },
+    {
+     "id": "fld1wP1MFjgoo3IIO",
+     "name": "School",
+     "type": "singleLineText",
+     "description": "Optional current school for the Player profile."
+    },
+    {
+     "id": "fldelCkS7YSb8ISs8",
+     "name": "School Year",
+     "type": "singleLineText",
+     "description": "Optional current school year / year group. Kept separate from Session age-group eligibility."
+    },
+    {
+     "id": "fldwfk9WeRo4Wq9Uh",
+     "name": "Booking Lines",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldXBWzoQy7io1IfT",
+     "name": "Player Eligibility Overrides",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldsqn7leFkhTiF9q",
+     "name": "Emergency Contacts",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldV8fHg5g5A9NLex",
+     "name": "Player & Parent Requests",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "flds8mICPGIEO9oNr",
+     "name": "Hub Audit Events",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldojjiViTKqNvI1e",
+     "name": "Discount Rules",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  },
+  {
+   "id": "tblDtcbdeXvZhUZqe",
+   "name": "Sessions",
+   "primaryFieldId": "fld72NaGvbf6AB4Jp",
+   "description": "Canonical recurring Session structure for the new Management Hub. Airtable owns operational Session setup; dated truth lives in Session Occurrences. Staffing is owned by Session Staff, venue by linked Venues, client by linked Client / Organisation, and lifecycle by Session Lifecycle Status. Fields prefixed LEGACY are retained only because field deletion is not available through the current connector and must not be used by new code.",
+   "fields": [
+    {
+     "id": "fld72NaGvbf6AB4Jp",
+     "name": "Session ID",
+     "type": "singleLineText",
+     "description": "Permanent stable Session ID used by the Hub and integrations. Created/assigned in the new operational model; do not derive authority from an old Google Sheet row."
+    },
+    {
+     "id": "fldMjTwmu7su0W5Ie",
+     "name": "Session Name",
+     "type": "singleLineText",
+     "description": "Human-readable Session name managed as part of the canonical Airtable Session record."
+    },
+    {
+     "id": "fldxBUn7CF96GdfBo",
+     "name": "LEGACY — Active",
+     "type": "checkbox",
+     "description": "Retired compatibility field from the previous Hub. Do not use in new code. Session Lifecycle Status is the canonical lifecycle field."
+    },
+    {
+     "id": "fld7O55JGZFB56xad",
+     "name": "LEGACY — Permanent Coaches",
+     "type": "multipleRecordLinks",
+     "description": "Retired staffing field from the previous Hub. Do not use in new code. Session Staff is the canonical recurring staffing relationship."
+    },
+    {
+     "id": "fldY3ssq5UCCyzt9C",
+     "name": "Player Session Links",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldFw1Okj4DKNarnP",
+     "name": "LEGACY — Player Session Requests",
+     "type": "singleLineText",
+     "description": "Orphaned compatibility field left after the old Player Session Requests table was retired. Do not use in new code."
+    },
+    {
+     "id": "fldxqc5kYHQ9SazUJ",
+     "name": "Feedback",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldiJILhbu8dj731Z",
+     "name": "Programme",
+     "type": "singleLineText",
+     "description": "Operational programme this session belongs to, e.g. Academy, Jets, School Coaching, TDC. Managed from the Hub."
+    },
+    {
+     "id": "fldjNOJqYlhD3fWsF",
+     "name": "Category",
+     "type": "singleLineText",
+     "description": "Operational category used for grouping/filtering sessions. Keep separate from Programme so reporting can evolve without renaming the session."
+    },
+    {
+     "id": "fldY7HXFP0r6d860s",
+     "name": "Age Group",
+     "type": "singleLineText",
+     "description": "Human-facing age/year group for this session, e.g. U10, Years 3–4."
+    },
+    {
+     "id": "fldoMRI7yJauLqXBr",
+     "name": "Venue",
+     "type": "multipleRecordLinks",
+     "description": "Authoritative operational venue for this session. Link to the Venues table rather than matching venue names as text."
+    },
+    {
+     "id": "fldac1evAy2lFLXpa",
+     "name": "LEGACY — Client / School",
+     "type": "singleLineText",
+     "description": "Old text-based client field. Do not use in new code. Use linked Client / Organisation."
+    },
+    {
+     "id": "fldgBltW3CoQUbVE8",
+     "name": "Default Day",
+     "type": "singleSelect",
+     "description": "Normal recurring day for the session template. Dated truth belongs in Session Occurrences."
+    },
+    {
+     "id": "fld7R9e51RRROe8wW",
+     "name": "Default Start Time",
+     "type": "singleLineText",
+     "description": "Normal start time for recurring occurrences, stored as 24-hour HH:MM, e.g. 16:30. Dated occurrence times override this."
+    },
+    {
+     "id": "fldw6owzZwp4kzc5S",
+     "name": "Default End Time",
+     "type": "singleLineText",
+     "description": "Normal end time for recurring occurrences, stored as 24-hour HH:MM, e.g. 17:30. Dated occurrence times override this."
+    },
+    {
+     "id": "fldKf3plxL4doILvc",
+     "name": "Default Capacity",
+     "type": "number",
+     "description": "Normal operational capacity. Specific occurrences may override this."
+    },
+    {
+     "id": "fldth3rfb7uu38BSv",
+     "name": "Schedule Pattern",
+     "type": "singleSelect",
+     "description": "Describes how occurrences are normally created. Occurrences remain the dated source of truth."
+    },
+    {
+     "id": "fld4jEmPBsUzQFBuE",
+     "name": "Session Occurrences",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldBA3Li8tm0dNFcZ",
+     "name": "LEGACY — Source Coach Names",
+     "type": "singleLineText",
+     "description": "Old name-based migration field. Do not use in new code. Use Session Staff with stable Coach links."
+    },
+    {
+     "id": "fldlvyfqY6z1EWy73",
+     "name": "LEGACY — Operating Periods",
+     "type": "singleLineText",
+     "description": "Orphaned compatibility field from the retired term model. Do not use in new code. Use Start Date, End Date, Schedule Breaks and Session Occurrences."
+    },
+    {
+     "id": "fld552Ma89r9qETpZ",
+     "name": "Delivery Area",
+     "type": "singleSelect",
+     "description": "Top-level operational area of the business. This describes what kind of delivery the session is, not where it happens."
+    },
+    {
+     "id": "fld2voUwtZ4cQlNhU",
+     "name": "Venue Relationship",
+     "type": "singleSelect",
+     "description": "How this session uses its physical venue. Kept on the Session because one venue can be a client site for one session and a hired venue for another."
+    },
+    {
+     "id": "fldWxkK7KuQRZjvbt",
+     "name": "Client / Organisation",
+     "type": "multipleRecordLinks",
+     "description": "Operational client/organisation for this session. Separate from the physical Venue. Semantically one client per session where relevant."
+    },
+    {
+     "id": "fld39tRj639phfJmn",
+     "name": "Start Date",
+     "type": "date",
+     "description": "First date this Session is intended to run. Used with Schedule Pattern and Default Day to generate dated Session Occurrences."
+    },
+    {
+     "id": "fldwkv35sQqVg1xp5",
+     "name": "End Date",
+     "type": "date",
+     "description": "Final date this Session is intended to run. Used with Schedule Pattern and Default Day to generate dated Session Occurrences."
+    },
+    {
+     "id": "fldHfM6THtwTeRRpR",
+     "name": "Schedule Breaks",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldZ6KUNU50QQQa4Z",
+     "name": "Commercial Model",
+     "type": "singleSelect",
+     "description": "How this Session is commercially funded. Controls whether parent booking/payment flows are available."
+    },
+    {
+     "id": "fldeVu9alVfimfqar",
+     "name": "Booking Access",
+     "type": "singleSelect",
+     "description": "Parent access rule for joining/bookings. Independent from the price model."
+    },
+    {
+     "id": "fldCjv3CY18TfDcxl",
+     "name": "Billing Model",
+     "type": "singleSelect",
+     "description": "Operational billing method only. Actual prices, rates, costs and revenue remain in Google Sheets as the financial source of truth."
+    },
+    {
+     "id": "fldv4V4Wtq733nWgh",
+     "name": "Finance Key",
+     "type": "singleLineText",
+     "description": "Stable reference used by the Hub/backend to match this Session to its financial/commercial record in Google Sheets without duplicating prices in Airtable."
+    },
+    {
+     "id": "fldf77d7U4Wa3KKC8",
+     "name": "Billing Rules",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldHJJeioooYjdNUM",
+     "name": "Session Staff",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldHcItrnRpeano0a",
+     "name": "Staff Role Overrides",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld1LnfFKupQej6MW",
+     "name": "Staff Availability Requests",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldS5wB0pBSNCXpc3",
+     "name": "Needs Attention Exceptions",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldZabFHRVPeQTCgK",
+     "name": "Session Change History",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldK9x6eawGYz83DY",
+     "name": "Session Lifecycle Status",
+     "type": "singleSelect",
+     "description": "Canonical Session lifecycle for the new Management Hub. Draft = Management-only and must not generate live occurrences; Active = live/operating; Inactive = retained for history but no longer active."
+    },
+    {
+     "id": "fldZAJedoqQzin74P",
+     "name": "LEGACY — Effective Lifecycle Status",
+     "type": "formula",
+     "description": "Temporary migration formula from the old Active flag. Do not use for new wiring once Session Lifecycle Status is the sole canonical lifecycle field."
+    },
+    {
+     "id": "fldfSFUNYUUub6rwF",
+     "name": "Booking Lines",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld3MdWFlTWp4HZw4",
+     "name": "Session Eligibility Rules",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldvAe0QQSwODpU5h",
+     "name": "Player Eligibility Overrides",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldweIIpgryIDVW0U",
+     "name": "Player & Parent Requests",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld4yX1wmLQGdaiT2",
+     "name": "Hub Audit Events",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldhJhtXEMtQZXQkM",
+     "name": "Discount Rules",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldzy1LWsByfm0bBW",
+     "name": "Discount Rules 2",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  },
+  {
+   "id": "tblZWcAy3EHVK7vV8",
+   "name": "Player Session Links",
+   "primaryFieldId": "fldrw6zQ0cVFCYHdd",
+   "description": "Canonical Player-to-Session membership/service relationship for the new Hub. Membership Lifecycle Status and the additive pause/cancellation/end fields are authoritative for future code. Fields prefixed LEGACY belong to the retired Hub and must not be used when the new Hub is wired. Ended memberships are preserved for history.",
+   "fields": [
+    {
+     "id": "fldrw6zQ0cVFCYHdd",
+     "name": "Link ID",
+     "type": "singleLineText",
+     "description": "Stable Hub relationship ID. Do not reuse."
+    },
+    {
+     "id": "fld22NtZY53D6mti0",
+     "name": "Player",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld9YqUdCC88gZgMy",
+     "name": "Session",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldxEE15xzOXUXvnQ",
+     "name": "LEGACY — Status",
+     "type": "singleSelect",
+     "description": "Retired membership-state field from the previous Hub. Do not use in new code. Membership Lifecycle Status is canonical."
+    },
+    {
+     "id": "fldJ3AEZjTG9D5f1b",
+     "name": "Start Date",
+     "type": "date"
+    },
+    {
+     "id": "fldwx8LQOr8as1f3j",
+     "name": "LEGACY — End Date",
+     "type": "date",
+     "description": "Old membership end-date field tied to the previous 28-day access logic. Do not use in new code. Use Scheduled End Date plus the final lifecycle/access rules."
+    },
+    {
+     "id": "fldaq7jsmmxbC3tSH",
+     "name": "LEGACY — Coaches At End",
+     "type": "multipleRecordLinks",
+     "description": "Old former-access snapshot based on Permanent Coaches. Do not use in new code. Future former-player access is derived from authorised Session Staff/role history under the final 21-day rule."
+    },
+    {
+     "id": "fld0P02WG5Y13R64a",
+     "name": "Player Attendance",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld48xJVg70fvntfS",
+     "name": "Membership Lifecycle Status",
+     "type": "singleSelect",
+     "description": "Canonical membership lifecycle for the new Hub, including Active, Paused, Cancellation Pending, Ending Scheduled and Ended. Fields prefixed LEGACY must not be used by new code."
+    },
+    {
+     "id": "fldEiWQ6w5m2PXbn4",
+     "name": "Pause Start Date",
+     "type": "date",
+     "description": "First date the membership is paused. Paused keeps the place but removes the Player from future live attendance and pauses billing once wired."
+    },
+    {
+     "id": "fld2OZoV2PKYGV7ai",
+     "name": "Pause Return Date",
+     "type": "date",
+     "description": "Optional planned return date. Leave blank when return is Management-controlled."
+    },
+    {
+     "id": "fldO3X9rxY8DaAYdP",
+     "name": "Pause Reason",
+     "type": "multilineText",
+     "description": "Operational reason/context for the pause."
+    },
+    {
+     "id": "fldpJh3WwXGNYaOBB",
+     "name": "Cancellation Requested Date",
+     "type": "date",
+     "description": "Date a Parent requested subscription/membership cancellation. Notice timing is calculated from this request, not from later review."
+    },
+    {
+     "id": "fldYOGrv6z2bct8D8",
+     "name": "Notice Start Date",
+     "type": "date",
+     "description": "Date the cancellation notice period started."
+    },
+    {
+     "id": "fldxyDDBgUjwEFfAs",
+     "name": "Scheduled End Date",
+     "type": "date",
+     "description": "Future effective end date once cancellation/end has been approved or scheduled."
+    },
+    {
+     "id": "fldnGwg6woKKYBOJK",
+     "name": "Membership End Reason",
+     "type": "multilineText",
+     "description": "Reason/context for ending the membership. Historical membership records are retained, not deleted."
+    },
+    {
+     "id": "fldpjGDi9cVtiWYot",
+     "name": "Booked By Parent",
+     "type": "multipleRecordLinks",
+     "description": "Parent/Guardian who originally made the booking or membership request. Kept separate from the person who later pays."
+    },
+    {
+     "id": "fldQvqsso4YWwFdG4",
+     "name": "Billing Rule",
+     "type": "multipleRecordLinks",
+     "description": "Commercial rule that applied to this membership. Current/future rule changes must not rewrite historical membership understanding."
+    },
+    {
+     "id": "fld8lTXiSbUaJGEHE",
+     "name": "Commercial Model Snapshot",
+     "type": "singleLineText",
+     "description": "Historical snapshot of the Session commercial model when this membership was created/confirmed."
+    },
+    {
+     "id": "fldr5pQNHmGWSOrEE",
+     "name": "Billing Model Snapshot",
+     "type": "singleLineText",
+     "description": "Historical snapshot of the billing model used for this membership."
+    },
+    {
+     "id": "fldfT1rMjbHpLlyuh",
+     "name": "Price Snapshot",
+     "type": "currency",
+     "description": "Historical service price associated with this membership at creation/confirmation. Payment transactions themselves remain outside this table."
+    },
+    {
+     "id": "fldtUG9FOEIv9Ht41",
+     "name": "Booking Lines",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldOR7td11Z2kLq6d",
+     "name": "Player & Parent Requests",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldULdC900iu7fKVF",
+     "name": "Hub Audit Events",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldyvXZv8L8EzJ3xU",
+     "name": "Policy Acceptances",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  },
+  {
+   "id": "tbl9NMS5sw9otsSNZ",
+   "name": "Parents & Guardians",
+   "primaryFieldId": "fldmrCkDZrgnn3YVr",
+   "description": "One record per parent or guardian with Hub access. Supabase handles login/security; this table stores the operational parent identity used to link them to players.",
+   "fields": [
+    {
+     "id": "fldmrCkDZrgnn3YVr",
+     "name": "Parent / Guardian Name",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldWdhEdQ0Fm4Lh5n",
+     "name": "Parent ID",
+     "type": "singleLineText",
+     "description": "Stable Hub ID. Do not reuse or change once linked."
+    },
+    {
+     "id": "flduFgTlO3eI6mWDX",
+     "name": "Email",
+     "type": "email"
+    },
+    {
+     "id": "fldPgmuoTAl3OWYkK",
+     "name": "Phone",
+     "type": "phoneNumber"
+    },
+    {
+     "id": "fldUxHzGgfKjXn72j",
+     "name": "Supabase User ID",
+     "type": "singleLineText",
+     "description": "Links this Airtable parent/guardian to the authenticated Supabase user."
+    },
+    {
+     "id": "fld8FhQaOpzi8IRwg",
+     "name": "Active",
+     "type": "checkbox"
+    },
+    {
+     "id": "fldJNcMWFpqOqoNJU",
+     "name": "Created",
+     "type": "createdTime"
+    },
+    {
+     "id": "fldspOegYkeCM2xvI",
+     "name": "Last Updated",
+     "type": "lastModifiedTime"
+    },
+    {
+     "id": "fld5wAFLzbi0Bsa8b",
+     "name": "Parent–Player Links",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fld1hfrSVc8UoA489",
+     "name": "Families",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "flda8A2KHQR59GYhR",
+     "name": "Player Session Links",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldISlS9oPXDOwLj4",
+     "name": "Bookings",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldo8u9yVxZQgzIho",
+     "name": "Emergency Contacts",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldTCU0y1QQ9Qkt8f",
+     "name": "Player & Parent Requests",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldLvHOAkg8uylFuR",
+     "name": "Hub Audit Events",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldoKSDs1pboF5U06",
+     "name": "Policy Acceptances",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldcRHSCHMBLRzZwb",
+     "name": "Commercial Adjustments",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  },
+  {
+   "id": "tbl6YSqyhHFAl1ZGN",
+   "name": "Parent–Player Links",
+   "primaryFieldId": "fldTStUx1SLx7mY57",
+   "description": "Canonical Parent/Guardian-to-Player relationship and access record. Link Lifecycle Status controls the relationship lifecycle; verified relationship logic is the child-access authority. Contact Priority affects communication order only. Fields prefixed LEGACY belong to the retired Hub and must not be used in new code.",
+   "fields": [
+    {
+     "id": "fldTStUx1SLx7mY57",
+     "name": "Link ID",
+     "type": "singleLineText",
+     "description": "Stable Hub relationship ID. Do not reuse."
+    },
+    {
+     "id": "fldH1La67JjjoqRW7",
+     "name": "Parent / Guardian",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldO4ihxlBdgLFU8n",
+     "name": "Player",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldOkgTSMK1eXm5oS",
+     "name": "Relationship",
+     "type": "singleSelect"
+    },
+    {
+     "id": "fldGvFBc7sMLIxJJm",
+     "name": "LEGACY — Link Status",
+     "type": "singleSelect",
+     "description": "Retired relationship-state field from the previous Parent Hub. Do not use in new code. Link Lifecycle Status is canonical."
+    },
+    {
+     "id": "fldQyBtPxcS0oiQeQ",
+     "name": "LEGACY — Primary Contact",
+     "type": "checkbox",
+     "description": "Retired contact-order checkbox. Do not use in new code. Contact Priority is canonical and does not change Player-data permissions."
+    },
+    {
+     "id": "fldNVDUUASMN595cC",
+     "name": "Signup Source",
+     "type": "singleSelect"
+    },
+    {
+     "id": "fldNY8agwTCPDufeJ",
+     "name": "Notes",
+     "type": "multilineText"
+    },
+    {
+     "id": "flda7gdQqRlSHJrTi",
+     "name": "Created",
+     "type": "createdTime"
+    },
+    {
+     "id": "fldK8OLdYr8uOciz2",
+     "name": "Last Updated",
+     "type": "lastModifiedTime"
+    },
+    {
+     "id": "fldP9dvaDFDDxhMZ4",
+     "name": "Contact Priority",
+     "type": "singleSelect",
+     "description": "Communication priority only. Both verified Parents retain equal child-data access; this does not grant extra permission."
+    },
+    {
+     "id": "fld8zDM8ETj0EYItI",
+     "name": "Verification Method",
+     "type": "singleSelect",
+     "description": "How this Parent–Player relationship was verified."
+    },
+    {
+     "id": "fld5LZIsGUYu6jcNe",
+     "name": "Verified At",
+     "type": "dateTime",
+     "description": "When this relationship became Verified."
+    },
+    {
+     "id": "fldG8BlpffIlc0WwT",
+     "name": "Verified By User ID",
+     "type": "singleLineText",
+     "description": "Supabase user ID of the management/user actor responsible where verification involved a user action."
+    },
+    {
+     "id": "fldX2qYUl6LwiJfGF",
+     "name": "Verified By Name Snapshot",
+     "type": "singleLineText",
+     "description": "Readable historical name of the person responsible for verification where applicable."
+    },
+    {
+     "id": "fldil0F71v0xHuEKZ",
+     "name": "Invite Status",
+     "type": "singleSelect",
+     "description": "State of a second-Parent/Guardian invitation. Pending invitation gives zero Player access."
+    },
+    {
+     "id": "fldwLOl2JdVOvxSjP",
+     "name": "Invite Sent At",
+     "type": "dateTime",
+     "description": "When the latest invitation was sent."
+    },
+    {
+     "id": "fldqo3Qi9TKzVfRAg",
+     "name": "Invite Accepted At",
+     "type": "dateTime",
+     "description": "When the invited Parent/Guardian completed verification and access was accepted."
+    },
+    {
+     "id": "fldWGfyRoFlV3ReQe",
+     "name": "Ended At",
+     "type": "dateTime",
+     "description": "When this verified Parent–Player access relationship ended. Ending a link stops access but preserves history."
+    },
+    {
+     "id": "fldxSarIOc83TxXT8",
+     "name": "Ended By User ID",
+     "type": "singleLineText",
+     "description": "Supabase user ID of the management user who ended the relationship where applicable."
+    },
+    {
+     "id": "fldlC3dFrLgW07Ji5",
+     "name": "Ended By Name Snapshot",
+     "type": "singleLineText",
+     "description": "Readable historical name of the management user who ended the relationship."
+    },
+    {
+     "id": "fldrboF3FD9MnOIbt",
+     "name": "End Reason",
+     "type": "multilineText",
+     "description": "Required reason/context when a verified Parent–Player relationship is ended."
+    },
+    {
+     "id": "fldsDVBZqP6p6PJKJ",
+     "name": "Link Lifecycle Status",
+     "type": "singleSelect",
+     "description": "Canonical Parent–Player relationship lifecycle for the new Hub. Future access checks should use this lifecycle together with verification state; fields prefixed LEGACY must not be used."
+    },
+    {
+     "id": "flduJ9u17bP5r2zwY",
+     "name": "Family",
+     "type": "multipleRecordLinks",
+     "description": "Family/household context for this specific Parent–Player relationship. This does not grant Player access; verification state on the Parent–Player Link remains authoritative."
+    },
+    {
+     "id": "flddo0qdwFtanwzdv",
+     "name": "Player & Parent Requests",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldXXABChKMsqf98Y",
+     "name": "Hub Audit Events",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  },
+  {
+   "id": "tblYF2MuT4WstZGpC",
+   "name": "Session Occurrences",
+   "primaryFieldId": "fldBPvHcBK7ZRBhO1",
+   "description": "One record per real dated session. This is the dated source of truth for schedules, covers, cancellations, completed sessions and future attendance/history. The parent Session is the template; this table records what is scheduled and what actually happened.",
+   "fields": [
+    {
+     "id": "fldBPvHcBK7ZRBhO1",
+     "name": "Occurrence Name",
+     "type": "singleLineText",
+     "description": "Human-readable label, e.g. Feltonfleet Football Club — 24 Sep 2026."
+    },
+    {
+     "id": "fldLvVimmDku0NRn1",
+     "name": "Occurrence ID",
+     "type": "singleLineText",
+     "description": "Permanent unique ID used by the Hub and finance joins. Never reuse or change once linked."
+    },
+    {
+     "id": "fldZvtaAx5AEOupRJ",
+     "name": "Session",
+     "type": "multipleRecordLinks",
+     "description": "Parent Session template. Semantically one parent Session per occurrence."
+    },
+    {
+     "id": "fldKSms42zJkcRYVY",
+     "name": "Date",
+     "type": "date",
+     "description": "Calendar date this session is scheduled to happen or happened."
+    },
+    {
+     "id": "fldi9aT9mD2ycLu36",
+     "name": "Start Date & Time",
+     "type": "dateTime",
+     "description": "Actual scheduled start for this occurrence."
+    },
+    {
+     "id": "fldo9FyX28CQmxVms",
+     "name": "End Date & Time",
+     "type": "dateTime",
+     "description": "Actual scheduled end for this occurrence."
+    },
+    {
+     "id": "fldycbd6TmPEB6heo",
+     "name": "Status",
+     "type": "singleSelect",
+     "description": "Dated operational status. Completed preserves historical truth; cancelled occurrences stay in history rather than being deleted."
+    },
+    {
+     "id": "fldJb0wnlJyWAzV49",
+     "name": "LEGACY — Assigned Coaches",
+     "type": "multipleRecordLinks",
+     "description": "Old occurrence staffing convenience field. Do not use in new code. Occurrence Staff is canonical for dated staffing and cover."
+    },
+    {
+     "id": "fldvwPMTmfUgc0BOX",
+     "name": "Venue",
+     "type": "multipleRecordLinks",
+     "description": "Venue for this specific date. Normally copied from the Session when occurrences are created, but can differ for a one-off change."
+    },
+    {
+     "id": "fldgUk5wp9Hz8mNx7",
+     "name": "Capacity Override",
+     "type": "number",
+     "description": "Optional date-specific capacity. Leave blank to use the parent Session Default Capacity."
+    },
+    {
+     "id": "fldxKzwepSOXJvBCL",
+     "name": "Operational Notes",
+     "type": "multilineText",
+     "description": "Date-specific operational notes for management/coaches."
+    },
+    {
+     "id": "fld0N17Dq5zH8tMDB",
+     "name": "Finance Reference",
+     "type": "singleLineText",
+     "description": "Optional external finance/booking reference. Occurrence ID should normally be the primary join key; use this only when the financial source has its own immutable reference."
+    },
+    {
+     "id": "fldKt8KSSoFlcQTQQ",
+     "name": "Created",
+     "type": "createdTime",
+     "description": "When this occurrence record was created."
+    },
+    {
+     "id": "fldRVnvLbfw9uDdcy",
+     "name": "Last Updated",
+     "type": "lastModifiedTime",
+     "description": "Most recent change to this occurrence record."
+    },
+    {
+     "id": "fldThCOX3z1TrTe4B",
+     "name": "LEGACY — Source Assigned Coach Names",
+     "type": "singleLineText",
+     "description": "Old name-based migration field. Do not use in new code. Use Occurrence Staff / Coach Allocations."
+    },
+    {
+     "id": "fldLxdNI1okm7XObD",
+     "name": "Coach Allocations",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldhh5Q1eyeTQjiFK",
+     "name": "Staff Role Overrides",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldMcvNoGkIzas1jn",
+     "name": "Occurrence Staff",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldYRbJtMgKiuy0Az",
+     "name": "Confirmation State",
+     "type": "singleSelect",
+     "description": "Separate from delivery Status. Tracks whether management has confirmed what actually happened on this occurrence."
+    },
+    {
+     "id": "fldY9RKWyR3sQNuBt",
+     "name": "Confirmed At",
+     "type": "dateTime",
+     "description": "When management confirmed the occurrence."
+    },
+    {
+     "id": "fld5A91vu5Tu5cz5z",
+     "name": "Confirmed By User ID",
+     "type": "singleLineText",
+     "description": "Supabase user ID of management user who confirmed the occurrence."
+    },
+    {
+     "id": "fldHj8UpmZMeyLJnr",
+     "name": "Confirmed By Name Snapshot",
+     "type": "singleLineText",
+     "description": "Readable historical name of the person who confirmed the occurrence."
+    },
+    {
+     "id": "fldMxmM7osU9XHfey",
+     "name": "Exception At",
+     "type": "dateTime",
+     "description": "When cancellation/postponement/reschedule/partial-delivery exception was recorded. Used by cancellation-pay rules."
+    },
+    {
+     "id": "fldUmKuEXHGDL3Gf1",
+     "name": "Exception Reason",
+     "type": "singleSelect",
+     "description": "Reason an occurrence did not proceed normally."
+    },
+    {
+     "id": "fldwb38Ge26lLmRCH",
+     "name": "Replacement Occurrence",
+     "type": "multipleRecordLinks",
+     "description": "Replacement dated occurrence when a session is rescheduled."
+    },
+    {
+     "id": "fldB2pnQf0WMkKA6I",
+     "name": "From field: Replacement Occurrence",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldwN57iF6vnMJFls",
+     "name": "Staff Availability Requests",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldd2nM9s81dGD1Oc",
+     "name": "Needs Attention Exceptions",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldbXkM3VxeOM6bZR",
+     "name": "Session Change History",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldQVXQOgQ3JtmmiT",
+     "name": "Schedule Change State",
+     "type": "singleSelect",
+     "description": "Semantic schedule exception state. Blank/Standard = normal occurrence; Changed = same occurrence with a confirmed date/time/venue-type change; Rescheduled = occurrence is part of a reschedule relationship. Lifecycle Status remains separate."
+    },
+    {
+     "id": "fld3qMtlWYRnDqvmv",
+     "name": "Display Status",
+     "type": "formula",
+     "description": "Convenience status for Hub display. Keeps lifecycle Status and schedule-change state separate underneath."
+    },
+    {
+     "id": "fldsCqXQwYLhcpQtc",
+     "name": "Register State",
+     "type": "singleSelect",
+     "description": "Player register status for this exact occurrence. Used by Needs Attention register-incomplete logic."
+    },
+    {
+     "id": "fldcHCESaij9hNi8p",
+     "name": "Register Completed At",
+     "type": "dateTime"
+    },
+    {
+     "id": "fldQohELtFvzV5mWu",
+     "name": "Register Completed By User ID",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldt82pvMt0T5bpUW",
+     "name": "Register Completed By Name Snapshot",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldomw2UN4VfMDIye",
+     "name": "Player Attendance",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldxy74SQpEKwbinc",
+     "name": "Booking Lines",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldzWrs5og9QJ7QGv",
+     "name": "Player & Parent Requests",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldBZRKbYPJRs7qh3",
+     "name": "Hub Audit Events",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  },
+  {
+   "id": "tblEoXRptbS1LOd5I",
+   "name": "Session Staff",
+   "primaryFieldId": "fldaTTXFm8tPVK9vb",
+   "description": "Permanent/regular coach assignments to recurring Sessions. Long-term staffing authority once the Hub is migrated. Existing Permanent Coaches fields remain untouched for rollback.",
+   "fields": [
+    {
+     "id": "fldaTTXFm8tPVK9vb",
+     "name": "Session Staff ID",
+     "type": "singleLineText",
+     "description": "Stable unique ID written by the secure backend, e.g. SS-0001."
+    },
+    {
+     "id": "fldaDMHnQL4G8tZoG",
+     "name": "Session",
+     "type": "multipleRecordLinks",
+     "description": "Recurring Session this assignment belongs to."
+    },
+    {
+     "id": "fldEOQIOZG355PiYD",
+     "name": "Coach",
+     "type": "multipleRecordLinks",
+     "description": "Coach assigned to the Session."
+    },
+    {
+     "id": "flddZUqNh4YVrLrv7",
+     "name": "Role",
+     "type": "multipleRecordLinks",
+     "description": "Authoritative session-specific role for this permanent Session Staff assignment. Role permissions come from Coach Roles."
+    },
+    {
+     "id": "fldrAZpHtu57vogjh",
+     "name": "Active",
+     "type": "checkbox",
+     "description": "Whether this regular assignment is currently active."
+    },
+    {
+     "id": "fldZIjHGGEaz3WMaZ",
+     "name": "Effective From",
+     "type": "date",
+     "description": "Optional date this regular assignment starts."
+    },
+    {
+     "id": "fldEhl5cZFGnuWIkd",
+     "name": "Effective Until",
+     "type": "date",
+     "description": "Optional planned end date. Blank means no planned end."
+    },
+    {
+     "id": "fld3LXjnQWH360qFc",
+     "name": "Inactive At",
+     "type": "dateTime",
+     "description": "Timestamp management made this assignment inactive. Starts former-access window."
+    },
+    {
+     "id": "fldPcOIIRP5tozNfU",
+     "name": "Former Access Until",
+     "type": "dateTime",
+     "description": "21-day former-access expiry, written by the secure backend when assignment becomes inactive."
+    },
+    {
+     "id": "fld8rQJ9NQaLFRZCm",
+     "name": "Notes",
+     "type": "multilineText",
+     "description": "Optional internal management notes."
+    },
+    {
+     "id": "fldcHkSvPMFcJr0a0",
+     "name": "Created",
+     "type": "createdTime"
+    },
+    {
+     "id": "fldZ4mkXSdGhg3Mhh",
+     "name": "Last Updated",
+     "type": "lastModifiedTime"
+    },
+    {
+     "id": "fldvDlLqViZVlOATO",
+     "name": "Staff Role Overrides",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldilanUHYSlTLjbw",
+     "name": "Occurrence Staff",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  },
+  {
+   "id": "tblEgMNq1c6lOve0Y",
+   "name": "Occurrence Staff",
+   "primaryFieldId": "fldV6aOIMMDT8zAtm",
+   "description": "Planned and actual staffing for each dated Session Occurrence. Preserves who was expected, who was absent, who covered, and the role actually worked.",
+   "fields": [
+    {
+     "id": "fldV6aOIMMDT8zAtm",
+     "name": "Occurrence Staff ID",
+     "type": "singleLineText",
+     "description": "Stable unique ID written by the secure backend."
+    },
+    {
+     "id": "fldt46g8lGbiB0p3i",
+     "name": "Session Occurrence",
+     "type": "multipleRecordLinks",
+     "description": "Dated session this staffing record belongs to."
+    },
+    {
+     "id": "fldxhYh6Fz5N6vkdz",
+     "name": "Coach",
+     "type": "multipleRecordLinks",
+     "description": "Coach involved in this dated session."
+    },
+    {
+     "id": "fldR1zkZByz1NhgNA",
+     "name": "Session Staff Source",
+     "type": "multipleRecordLinks",
+     "description": "Optional source permanent Session Staff record. Occurrence Staff is the dated reality and may also represent cover, additional or temporary-role staffing."
+    },
+    {
+     "id": "fldJzR9weTZk8LEWo",
+     "name": "Planned Role Snapshot",
+     "type": "singleLineText",
+     "description": "Role expected for this date, stored as text so history does not change if role names later change."
+    },
+    {
+     "id": "fldgPScFN01uoFsEe",
+     "name": "Actual Role Snapshot",
+     "type": "singleLineText",
+     "description": "Role actually worked on the day, stored as text snapshot."
+    },
+    {
+     "id": "fldqLWwyJZJvoDspg",
+     "name": "Assignment Type",
+     "type": "singleSelect",
+     "description": "Why this coach is on this dated session."
+    },
+    {
+     "id": "fldmLdETMRoayTOyc",
+     "name": "Attendance",
+     "type": "singleSelect",
+     "description": "Simple attendance state for staffing confirmation."
+    },
+    {
+     "id": "flduWM75Vx4MZ6PFZ",
+     "name": "Management Confirmed",
+     "type": "checkbox",
+     "description": "Whether management has confirmed this staffing record as part of the actual delivery."
+    },
+    {
+     "id": "fldc8Jvw1Ajttr4Bc",
+     "name": "Confirmed At",
+     "type": "dateTime",
+     "description": "When this staffing record was confirmed."
+    },
+    {
+     "id": "fldUUW5mjxSCBfU6O",
+     "name": "Confirmed By User ID",
+     "type": "singleLineText",
+     "description": "Supabase user ID of the management user who confirmed the staffing record."
+    },
+    {
+     "id": "fldnFCWBQrfwQFBfp",
+     "name": "Confirmed By Name Snapshot",
+     "type": "singleLineText",
+     "description": "Name snapshot of the confirming management user for readable history."
+    },
+    {
+     "id": "fldOp7sJG7lsaDRBc",
+     "name": "Notes",
+     "type": "multilineText",
+     "description": "Optional operational note."
+    },
+    {
+     "id": "fldeCWEnlck9QwZQY",
+     "name": "Covering",
+     "type": "multipleRecordLinks",
+     "description": "Occurrence Staff row/person being replaced by this cover coach."
+    },
+    {
+     "id": "fldBKnoKeMEhNX9Jb",
+     "name": "From field: Covering",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldFepBpFN3YIloa0",
+     "name": "Created",
+     "type": "createdTime"
+    },
+    {
+     "id": "fldFfhuqxfXnaKIHY",
+     "name": "Last Updated",
+     "type": "lastModifiedTime"
+    },
+    {
+     "id": "fldcPxPplrcKr8LDQ",
+     "name": "Coach Allocations",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldH3k2dbivoK1Deg",
+     "name": "Staff Availability Requests",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  },
+  {
+   "id": "tblNMGpfCgfuwMc9H",
+   "name": "Staff Role Overrides",
+   "primaryFieldId": "fld3YTvg6AsHJVAPY",
+   "description": "Temporary one-off or date-range role changes. Keeps permanent Session Staff history intact and makes exceptional dates explicit.",
+   "fields": [
+    {
+     "id": "fld3YTvg6AsHJVAPY",
+     "name": "Override ID",
+     "type": "singleLineText",
+     "description": "Stable unique ID written by the secure backend."
+    },
+    {
+     "id": "fld24CoXIskWtsUwK",
+     "name": "Session Staff",
+     "type": "multipleRecordLinks",
+     "description": "Regular staffing assignment being temporarily overridden."
+    },
+    {
+     "id": "fld75mpDuk1nsGm9G",
+     "name": "Coach",
+     "type": "multipleRecordLinks",
+     "description": "Coach whose session role is being changed temporarily."
+    },
+    {
+     "id": "fldogNj2MjblOtZNN",
+     "name": "Session",
+     "type": "multipleRecordLinks",
+     "description": "Recurring Session affected by the override."
+    },
+    {
+     "id": "fld0qJbhoIsmfIJGN",
+     "name": "Override Role",
+     "type": "multipleRecordLinks",
+     "description": "Temporary role to apply."
+    },
+    {
+     "id": "fldCpSEkZgAcvIbRD",
+     "name": "Override Type",
+     "type": "singleSelect",
+     "description": "Whether this applies to one dated session or a temporary date range."
+    },
+    {
+     "id": "fldfVB1dHv99u6Wwl",
+     "name": "Session Occurrence",
+     "type": "multipleRecordLinks",
+     "description": "Specific dated session for a one-off override."
+    },
+    {
+     "id": "fldCt3wIR5yvKax27",
+     "name": "Effective From",
+     "type": "date",
+     "description": "Start of date-range override."
+    },
+    {
+     "id": "fldjZQCP2qRin9VAz",
+     "name": "Effective Until",
+     "type": "date",
+     "description": "End of date-range override. Normal role resumes after this date."
+    },
+    {
+     "id": "fld5ZF8ubWdFWaE8F",
+     "name": "Reason",
+     "type": "multilineText",
+     "description": "Optional reason for the temporary role change."
+    },
+    {
+     "id": "fld58SunK2VflzD0Y",
+     "name": "Active",
+     "type": "checkbox",
+     "description": "Whether the override is active/relevant."
+    },
+    {
+     "id": "fldVnwF2HsqMbNgzt",
+     "name": "Created",
+     "type": "createdTime"
+    },
+    {
+     "id": "fld0B5UNBLXetEVLu",
+     "name": "Last Updated",
+     "type": "lastModifiedTime"
+    }
+   ]
+  },
+  {
+   "id": "tblUqSqT0hJ7BAMj4",
+   "name": "Feedback",
+   "primaryFieldId": "fldCAL7ValhYdqQt9",
+   "description": "One record per feedback/review. Multiple records can link to the same player to preserve full history.",
+   "fields": [
+    {
+     "id": "fldCAL7ValhYdqQt9",
+     "name": "Feedback Title",
+     "type": "singleLineText",
+     "description": "Human-readable label, e.g. Archie - 26 Sep 2026."
+    },
+    {
+     "id": "fldNB0i0GTKk57AyW",
+     "name": "Feedback ID",
+     "type": "singleLineText",
+     "description": "Stable ID used by the Hub."
+    },
+    {
+     "id": "fldWhZlExxTxbLkHb",
+     "name": "Feedback Date",
+     "type": "date"
+    },
+    {
+     "id": "fldn6ynws1YgZxUD7",
+     "name": "Coach Name",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldj996PZsKCzd5IW",
+     "name": "Coach User ID",
+     "type": "singleLineText",
+     "description": "Later links the feedback author to their Supabase account."
+    },
+    {
+     "id": "fldqRC8BdQG7NZ0K9",
+     "name": "Summary",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldzGBYEJUrQ2iBma",
+     "name": "Keep Doing",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldONaDENIenjS8QK",
+     "name": "Develop",
+     "type": "multilineText"
+    },
+    {
+     "id": "fld9uO4O34i6r12h0",
+     "name": "Big Focus",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldmViWEGe2Cdn7Nv",
+     "name": "Published",
+     "type": "checkbox",
+     "description": "Tick only when this feedback is ready for the player/parent to see in the Hub."
+    },
+    {
+     "id": "fldEgR4uF8ReRihpb",
+     "name": "Active",
+     "type": "checkbox",
+     "description": "Tick = keep this feedback available. Untick to hide/archive it without deleting the history."
+    },
+    {
+     "id": "fldcgQ35FTt0juntN",
+     "name": "Player",
+     "type": "multipleRecordLinks",
+     "description": "Links each feedback record to the player it belongs to. This preserves full feedback history."
+    },
+    {
+     "id": "fld94g0cTyJj8OSPg",
+     "name": "Coach",
+     "type": "multipleRecordLinks",
+     "description": "Links feedback to the coach who created it."
+    },
+    {
+     "id": "fldGHJy85UGSlf36H",
+     "name": "Feedback Ratings",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldPJkA8Av4i5Stxp",
+     "name": "Session",
+     "type": "multipleRecordLinks",
+     "description": "Session context under which this feedback was created. Backend must verify coach access for this player/session."
+    }
+   ]
+  },
+  {
+   "id": "tblaNAecOztB2Aazj",
+   "name": "Feedback Ratings",
+   "primaryFieldId": "fldTIwvimVhmIIOyi",
+   "description": "One structured rating per Feedback × Development Framework item. This keeps the framework flexible and preserves historical meaning through snapshot fields.",
+   "fields": [
+    {
+     "id": "fldTIwvimVhmIIOyi",
+     "name": "Rating ID",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldlg0JQccNwj13kf",
+     "name": "Feedback",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldIy2XZauYUbulkt",
+     "name": "Framework Item",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldj2ZwLUv82eHrcs",
+     "name": "Rating",
+     "type": "singleSelect"
+    },
+    {
+     "id": "fldQ6NVtrj7S5w9W3",
+     "name": "Label Snapshot",
+     "type": "singleLineText",
+     "description": "Visible framework label at the time this rating was saved."
+    },
+    {
+     "id": "fldLisTPE4HUUtcIQ",
+     "name": "Group Snapshot",
+     "type": "singleLineText",
+     "description": "Framework group at the time this rating was saved."
+    },
+    {
+     "id": "fld6ON3oGFSVtuTx6",
+     "name": "Sort Order",
+     "type": "number"
+    },
+    {
+     "id": "fldrnPSp9QjHNF4Xo",
+     "name": "Visible to Parent/Player",
+     "type": "checkbox"
+    },
+    {
+     "id": "fldAq8Hi7w2cKky5k",
+     "name": "Notes",
+     "type": "multilineText"
+    }
+   ]
+  },
+  {
+   "id": "tblpGOPE5YCLqMw02",
+   "name": "Development Framework",
+   "primaryFieldId": "fldUJap7aRZqDmUvX",
+   "description": "Configurable player-development framework used by Coach feedback and Parent/Player views. Labels/order/visibility are data-driven so future Management can edit them without code changes.",
+   "fields": [
+    {
+     "id": "fldUJap7aRZqDmUvX",
+     "name": "Name",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldlgbWTmXFYsduPZ",
+     "name": "Framework ID",
+     "type": "singleLineText",
+     "description": "Stable internal key; do not change when renaming the visible label."
+    },
+    {
+     "id": "fldn6qQwipFMC706e",
+     "name": "Group",
+     "type": "singleSelect"
+    },
+    {
+     "id": "flda4QHE7p8q9BZ0Z",
+     "name": "Sort Order",
+     "type": "number"
+    },
+    {
+     "id": "fldFp5D64rgfFEQsE",
+     "name": "Active",
+     "type": "checkbox"
+    },
+    {
+     "id": "fldcjP5amkrOvilLt",
+     "name": "Visible to Coach",
+     "type": "checkbox"
+    },
+    {
+     "id": "fld01ebhOJv7h9N5x",
+     "name": "Visible to Parent/Player",
+     "type": "checkbox"
+    },
+    {
+     "id": "fld8BoRWEMGPOq68I",
+     "name": "Rating Enabled",
+     "type": "checkbox"
+    },
+    {
+     "id": "fldaB43bpk5075RDY",
+     "name": "Description",
+     "type": "multilineText"
+    },
+    {
+     "id": "flde8Ss9nNiuCS7cZ",
+     "name": "Feedback Ratings",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldJYgn10VdAgKdt4",
+     "name": "Written Feedback Enabled",
+     "type": "checkbox",
+     "description": "Allows written feedback for this framework item when Per-Area Written Feedback is enabled."
+    },
+    {
+     "id": "fldLEcEvkPYqPAKdV",
+     "name": "Written Prompt",
+     "type": "multilineText",
+     "description": "Optional coach-facing prompt/guidance for written feedback on this framework item."
+    }
+   ]
+  },
+  {
+   "id": "tbllrHCwKkOE3F4IO",
+   "name": "Development Framework Settings",
+   "primaryFieldId": "flds2tKuCi8a8nf5R",
+   "description": "Display/configuration settings for the development framework. Intended to be editable from Management later.",
+   "fields": [
+    {
+     "id": "flds2tKuCi8a8nf5R",
+     "name": "Framework Name",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldhbEytcIfNdDu2L",
+     "name": "Framework Key",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldDDS04KRhpT2aLT",
+     "name": "Temple Image",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fldMQYKD9zwaXCpTO",
+     "name": "Intro Text",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldgQMj3RFDc9QBe1",
+     "name": "Blue Label",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldSo2vn1ANZD3C3d",
+     "name": "Green Label",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldmmZX8OHtpywdTC",
+     "name": "Amber Label",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldTVmb2ZI27615iW",
+     "name": "Red Label",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldCqhVBX9DvVOg0I",
+     "name": "Active",
+     "type": "checkbox"
+    },
+    {
+     "id": "fldVgr1vaXAGU5bMb",
+     "name": "Feedback Mode",
+     "type": "singleSelect",
+     "description": "Controls whether this organisation/framework uses ratings, written feedback, or both. Intended for Management Hub editing."
+    },
+    {
+     "id": "fld20kiGayJfnUc3W",
+     "name": "Show Keep Doing",
+     "type": "checkbox",
+     "description": "Show the Keep Doing written section on coach entry and published feedback."
+    },
+    {
+     "id": "fld2qm104qEmTAPhE",
+     "name": "Show My Focus",
+     "type": "checkbox",
+     "description": "Show the My Focus written section on coach entry and published feedback."
+    },
+    {
+     "id": "fldLxFdKfqVoY5IYI",
+     "name": "Show General Coach Feedback",
+     "type": "checkbox",
+     "description": "Show the General Coach Feedback written section on coach entry and published feedback."
+    },
+    {
+     "id": "fldTTsGsOXIr7GXPY",
+     "name": "Per-Area Written Feedback",
+     "type": "checkbox",
+     "description": "When enabled, coaches can add written feedback against each active framework area. Stored in Feedback Ratings → Notes."
+    }
+   ]
+  },
+  {
+   "id": "tbllqMPggQkZTTqXn",
+   "name": "Hub Settings",
+   "primaryFieldId": "fld0Kp2W5nFKF4n9i",
+   "description": "Configurable labels and simple organisation-level settings used by the Hub so wording can change without editing app code.",
+   "fields": [
+    {
+     "id": "fld0Kp2W5nFKF4n9i",
+     "name": "Setting",
+     "type": "singleLineText",
+     "description": "BACKEND KEY — do not rename casually. The Hub uses this to know which label to load."
+    },
+    {
+     "id": "flda09lLixuGfWdfC",
+     "name": "Label",
+     "type": "singleLineText",
+     "description": "SAFE TO EDIT — this is the wording users will see in the Hub."
+    },
+    {
+     "id": "fldNm3DsuSMQ9ovIc",
+     "name": "Section",
+     "type": "singleSelect"
+    },
+    {
+     "id": "fldDeubPkg9GS8iiu",
+     "name": "Description",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldoQ5ph70dPSySeb",
+     "name": "Active",
+     "type": "checkbox"
+    },
+    {
+     "id": "fld09ds5iwIIgRvGR",
+     "name": "Sort Order",
+     "type": "number"
+    }
+   ]
+  },
+  {
+   "id": "tblgeshPMweGQ1mLC",
+   "name": "Organisation & Branding",
+   "primaryFieldId": "flde4y6avx3lBlARQ",
+   "description": "One record for this organisation. Controls the Hub's name, branding and basic organisation details. Keep this simple: edit the visible values, not the stable Organisation ID.",
+   "fields": [
+    {
+     "id": "flde4y6avx3lBlARQ",
+     "name": "Organisation Name",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldwyIKdPWOttnG6F",
+     "name": "Organisation ID",
+     "type": "singleLineText",
+     "description": "BACKEND ID — do not change once connected. This identifies the organisation to the Hub."
+    },
+    {
+     "id": "fldChubNH7ZSwxsnL",
+     "name": "Hub Name",
+     "type": "singleLineText",
+     "description": "SAFE TO EDIT — the Hub name users will see."
+    },
+    {
+     "id": "fld3TJFiSFa3cXKml",
+     "name": "Logo",
+     "type": "multipleAttachments",
+     "description": "Upload the organisation logo here."
+    },
+    {
+     "id": "fld4Y1nWjEpHrLviw",
+     "name": "Custom Primary Colour (hex)",
+     "type": "singleLineText",
+     "description": "Only needed for an exact colour Primary Colour Preset can't match. If set, this wins over the preset. Leave blank and just use the preset instead - much easier."
+    },
+    {
+     "id": "fldZ3T2HpOGviBaeW",
+     "name": "Custom Secondary Colour (hex)",
+     "type": "singleLineText",
+     "description": "Only needed for an exact colour Secondary Colour Preset can't match. If set, this wins over the preset."
+    },
+    {
+     "id": "fldUsU1M7synk8rxf",
+     "name": "Custom Accent Colour (hex)",
+     "type": "singleLineText",
+     "description": "Only needed for an exact colour Accent Colour Preset can't match. If set, this wins over the preset."
+    },
+    {
+     "id": "fld1jXiSLpCqyPZtD",
+     "name": "Tagline",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldFF2iPlU9DFKv6P",
+     "name": "Website",
+     "type": "url"
+    },
+    {
+     "id": "flduY99LDlKx7OjuE",
+     "name": "Support Email",
+     "type": "email"
+    },
+    {
+     "id": "fldXPfv01eECYL2tv",
+     "name": "Hub Domain",
+     "type": "singleLineText",
+     "description": "Future Hub address/domain, e.g. hub.example.com."
+    },
+    {
+     "id": "fld9CY59HL5vNjxvy",
+     "name": "Timezone",
+     "type": "singleLineText",
+     "description": "Backend timezone, e.g. Europe/London."
+    },
+    {
+     "id": "fldIRayICdLAs0cnb",
+     "name": "Active",
+     "type": "checkbox"
+    },
+    {
+     "id": "flduNNlVsPUKJFtEP",
+     "name": "Primary Colour Preset",
+     "type": "singleSelect",
+     "description": "The Hub's main colour (top bar, headings, hero backgrounds, nav) - pick from the list. Only use Custom Primary Colour (hex) if you need an exact shade this doesn't have."
+    },
+    {
+     "id": "fldLCoy0WyyLBFO59",
+     "name": "Secondary Colour Preset",
+     "type": "singleSelect",
+     "description": "The Hub's secondary highlight colour - pick from the list."
+    },
+    {
+     "id": "fldlcMSavUUkIGEmv",
+     "name": "Accent Colour Preset",
+     "type": "singleSelect",
+     "description": "The colour used for buttons and links - pick from the list."
+    },
+    {
+     "id": "flddlNLXEzCumKhbb",
+     "name": "LEGACY — Sessions Last Synced",
+     "type": "dateTime",
+     "description": "Old Google-Schedule sync timestamp. Do not use in the new architecture because Airtable becomes the operational schedule source."
+    },
+    {
+     "id": "fld645aYVa3hdAsWY",
+     "name": "Needs Attention Settings",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldDEqKNEfLYuuc1l",
+     "name": "Needs Attention Exceptions",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  },
+  {
+   "id": "tblvo85KmQV2mNmUs",
+   "name": "Feature Controls",
+   "primaryFieldId": "fldzozf6KqfjVOEMK",
+   "description": "Simple ON/OFF switches for Hub features. Useful later when different organisations use different parts of the same product.",
+   "fields": [
+    {
+     "id": "fldzozf6KqfjVOEMK",
+     "name": "Feature",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldTyVq4DeSMWm3Gl",
+     "name": "Feature Key",
+     "type": "singleLineText",
+     "description": "BACKEND KEY — do not rename casually. The Hub uses this to identify the feature."
+    },
+    {
+     "id": "fldQ4Xu9rqfqibBIl",
+     "name": "Enabled",
+     "type": "checkbox",
+     "description": "SAFE TO EDIT — tick to enable this feature; untick to disable/hide it."
+    },
+    {
+     "id": "fldPXNmscY6IyONwp",
+     "name": "Who is it for?",
+     "type": "multipleSelects"
+    },
+    {
+     "id": "fldtoK2uwdWLL6xST",
+     "name": "What this controls",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldTVBZRpkrRx3x9H",
+     "name": "Sort Order",
+     "type": "number"
+    }
+   ]
+  },
+  {
+   "id": "tblZ8krbcwLHFEgCc",
+   "name": "Venues",
+   "primaryFieldId": "fldYT29wAea9nGgx8",
+   "description": "Canonical Venue records for the new Management Hub. Airtable owns operational venue information, venue availability/unavailability and links to Sessions/Session Occurrences. Google Sheets may consume venue costs for finance reporting but is not the operational venue source.",
+   "fields": [
+    {
+     "id": "fldYT29wAea9nGgx8",
+     "name": "Venue Name",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldUie4kNSvgyjLsN",
+     "name": "Venue ID",
+     "type": "singleLineText",
+     "description": "Stable ID used by the Hub, e.g. VEN-FREEMENS."
+    },
+    {
+     "id": "fldMdF8oftuabBgCi",
+     "name": "Address",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldqppn2Jltx5Fh6g",
+     "name": "Postcode",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldWKN9Wq9mc1Io0K",
+     "name": "Parking",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldsvaPzPLi1oHexo",
+     "name": "Meeting Point",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldtURsA8UUnyBbTI",
+     "name": "Access",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldDHLezGAbar5my8",
+     "name": "Notes",
+     "type": "multilineText"
+    },
+    {
+     "id": "fld4U7ddS3rTEH4R2",
+     "name": "Hero Image",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "flddk73t90dmnIPLt",
+     "name": "Parking Image",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fldLTPkiZzqVAMnH0",
+     "name": "Site Map",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fldlbWOmIzU7fDLXh",
+     "name": "Active",
+     "type": "checkbox",
+     "description": "Tick = this venue can appear in the Hub. Untick to hide it without deleting the record."
+    },
+    {
+     "id": "fldIXbOvQXUlF0euT",
+     "name": "Sort Order",
+     "type": "number",
+     "description": "Controls the display order. Lower numbers appear first. Example: 1, 2, 3."
+    },
+    {
+     "id": "fldkWaP1rV1O9n5Tn",
+     "name": "Sessions",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldgV0vSjRTFVrd2y",
+     "name": "Session Occurrences",
+     "type": "multipleRecordLinks"
+    },
+    {
+     "id": "fldZ8I4iWlqLbwG78",
+     "name": "Venue Unavailability",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  },
+  {
+   "id": "tblf7Tax6lmdvYZDP",
+   "name": "Resources",
+   "primaryFieldId": "fldNmEIjdR3JhKoHD",
+   "description": "Resources shown in the Hub. Add or update records here without changing app code.",
+   "fields": [
+    {
+     "id": "fldNmEIjdR3JhKoHD",
+     "name": "Title",
+     "type": "singleLineText"
+    },
+    {
+     "id": "flddhxn8mv2hAG0ND",
+     "name": "Resource ID",
+     "type": "singleLineText",
+     "description": "Stable ID used by the Hub."
+    },
+    {
+     "id": "fld5L7nChL2n0izXu",
+     "name": "Category",
+     "type": "singleSelect"
+    },
+    {
+     "id": "fldGXQbC1iBYIEqR4",
+     "name": "Description",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldsTwhW1Pyi0xGW3",
+     "name": "Thumbnail",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fldUlJnY83c49HPat",
+     "name": "Attachment",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fldhGO7pNIkUV5L2K",
+     "name": "Video URL",
+     "type": "url"
+    },
+    {
+     "id": "fld6zaYUDDoNuraa6",
+     "name": "External Link",
+     "type": "url"
+    },
+    {
+     "id": "fldXyUwt0xuAr3Q0d",
+     "name": "Audience",
+     "type": "multipleSelects",
+     "description": "Choose which Hub audiences should be allowed to see this resource."
+    },
+    {
+     "id": "fld7aZg6pL72snDi5",
+     "name": "Active",
+     "type": "checkbox",
+     "description": "Tick = show this resource in the Hub. Untick to hide it without deleting it."
+    },
+    {
+     "id": "fldQwp0GB9s7y3JSL",
+     "name": "Sort Order",
+     "type": "number",
+     "description": "Controls display order. Lower numbers appear first."
+    }
+   ]
+  },
+  {
+   "id": "tbl9zkVnmUdpTovD7",
+   "name": "Coach Support",
+   "primaryFieldId": "fld5vw1331V47WzlN",
+   "description": "Coach handbook/support content. Designed to be easy to edit and reorder in Airtable.",
+   "fields": [
+    {
+     "id": "fld5vw1331V47WzlN",
+     "name": "Title",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldYUmD7NJ1DZubZC",
+     "name": "Support ID",
+     "type": "singleLineText",
+     "description": "Stable ID used by the Hub."
+    },
+    {
+     "id": "fldFsZE6MB5X8Jgvs",
+     "name": "Section",
+     "type": "singleSelect"
+    },
+    {
+     "id": "fldo2IqxmRRgYJ09s",
+     "name": "Body",
+     "type": "richText"
+    },
+    {
+     "id": "fldFFWXRJ7jzhFlcv",
+     "name": "Attachment",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fldbndqNyM0BROsKH",
+     "name": "External Link",
+     "type": "url"
+    },
+    {
+     "id": "fldJ6RY4X86orXeaI",
+     "name": "Audience",
+     "type": "multipleSelects"
+    },
+    {
+     "id": "fldma0V6CpdpU4m6H",
+     "name": "Active",
+     "type": "checkbox",
+     "description": "Tick = show this support item in the Hub. Untick to hide it without deleting it."
+    },
+    {
+     "id": "fldgUwcMzEAwBCAFU",
+     "name": "Sort Order",
+     "type": "number",
+     "description": "Controls display order. Lower numbers appear first."
+    }
+   ]
+  },
+  {
+   "id": "tblFOmJBPmZILnOxE",
+   "name": "Public Pages",
+   "primaryFieldId": "fld5tvkXZWtJ0Hsvs",
+   "description": "Content for the public Hub landing page - shown to visitors before they sign up or sign in. No login required to see this. Add or update records here without changing app code.",
+   "fields": [
+    {
+     "id": "fld5tvkXZWtJ0Hsvs",
+     "name": "Title",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldRnVK5okkttwtS7",
+     "name": "Page ID",
+     "type": "singleLineText",
+     "description": "Stable ID used by the Hub, e.g. PUB-TRIALS-JETS."
+    },
+    {
+     "id": "fld19ymrwGPeA8Rhy",
+     "name": "Category",
+     "type": "singleSelect"
+    },
+    {
+     "id": "fldMDS5nOD3SgdiFz",
+     "name": "Body",
+     "type": "multilineText"
+    },
+    {
+     "id": "fld0kivr7fnpseMZ7",
+     "name": "CTA Label",
+     "type": "singleLineText",
+     "description": "Text for an optional button on this card, e.g. 'Find out more'."
+    },
+    {
+     "id": "fld7bIs4dFjlAjLhz",
+     "name": "CTA Link",
+     "type": "url",
+     "description": "Where the button goes. Leave blank for no button."
+    },
+    {
+     "id": "fldROpsNDGPzMDaYT",
+     "name": "Image",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fld36d0ONUds3Dkd7",
+     "name": "Active",
+     "type": "checkbox",
+     "description": "Tick = show this on the public page. Untick to hide it without deleting it."
+    },
+    {
+     "id": "fldBaXkWmfHo551mG",
+     "name": "Sort Order",
+     "type": "number",
+     "description": "Controls display order. Lower numbers appear first."
+    },
+    {
+     "id": "fldGPvPiK0vqPsNSA",
+     "name": "Summary",
+     "type": "singleLineText",
+     "description": "Short one-line teaser shown on the grid tile, e.g. 'Information, dates and registration'. Body (below) is the fuller text shown once someone taps through."
+    },
+    {
+     "id": "fld1a3PaEtHj8zElW",
+     "name": "Custom Colour (hex)",
+     "type": "singleLineText",
+     "description": "Only needed for an exact colour the presets below can't match (e.g. pure white/black, or a precise brand hex). If set, this wins over Colour Preset. Leave blank and just use Colour Preset instead - much easier day to day."
+    },
+    {
+     "id": "fld5RlyPSMFhCVsqG",
+     "name": "Age Groups",
+     "type": "singleLineText",
+     "description": "Comma-separated list shown as a dropdown on this card's Register Interest form, e.g. 'U7, U8, U9/10, U11/12, U13/14'. Leave blank and the form just asks for age as free text instead."
+    },
+    {
+     "id": "fldAT0CDHuLiQAMNI",
+     "name": "Colour Preset",
+     "type": "singleSelect",
+     "description": "Pick this card's background colour from the list - the easy way to set it. Only use Custom Colour (hex) instead if you need an exact shade this list doesn't have."
+    },
+    {
+     "id": "fldcl0SGhbsik5k5G",
+     "name": "Show Register Form",
+     "type": "checkbox",
+     "description": "On by default. Untick for a card that's just information (e.g. Upcoming Events) with no register-interest form on its page."
+    },
+    {
+     "id": "fldhM6bdeXvMZdMpd",
+     "name": "Event 1 Photo",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fldTl5JkJYhVplwzO",
+     "name": "Event 1 Description",
+     "type": "multilineText"
+    },
+    {
+     "id": "fld2hBt7YKXvxd8z4",
+     "name": "Event 2 Photo",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fldqyXHwMUdAx8Zqu",
+     "name": "Event 2 Description",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldN8idN8gsiNjzz8",
+     "name": "Event 3 Photo",
+     "type": "multipleAttachments"
+    },
+    {
+     "id": "fldfqwsvEWPox4BQH",
+     "name": "Event 3 Description",
+     "type": "multilineText"
+    },
+    {
+     "id": "fld0LAy6YUl7sDCdZ",
+     "name": "Show What We Offer",
+     "type": "checkbox",
+     "description": "Tick to show the shared 'What We Offer' section (from the What We Offer table) underneath this page's content. Normally only ticked on the Welcome/About page."
+    }
+   ]
+  },
+  {
+   "id": "tblkuqDi9gPOC0WPK",
+   "name": "What We Offer",
+   "primaryFieldId": "fldTixgpPjQfA54HY",
+   "description": "Public-facing informational programme cards. Content is useful; manual pricing fields are presentation-only for now and should eventually be fed automatically from the relevant commercial/billing source rather than maintained separately.",
+   "fields": [
+    {
+     "id": "fldTixgpPjQfA54HY",
+     "name": "Title",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldnTtIHeSgEFRGvY",
+     "name": "Offering ID",
+     "type": "singleLineText",
+     "description": "Stable ID used by the Hub, e.g. OFFER-JETS."
+    },
+    {
+     "id": "fldV13jNUTrM6mtHI",
+     "name": "Description",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldPfOYqz7xWDUbaG",
+     "name": "Image",
+     "type": "multipleAttachments",
+     "description": "Optional. Leave blank and the card just shows without a photo."
+    },
+    {
+     "id": "fld2nw4rHK8sSu5oA",
+     "name": "Age / Who For",
+     "type": "singleLineText",
+     "description": "Free text shown on the card if set, e.g. 'U6–U7'. Leave blank to hide this row."
+    },
+    {
+     "id": "fldsHqXJ0KE0nB1mh",
+     "name": "Day / Time",
+     "type": "singleLineText",
+     "description": "Free text shown on the card if set, e.g. 'Tuesday evenings'. Leave blank to hide this row."
+    },
+    {
+     "id": "fldKKogaKE7ZpfJUN",
+     "name": "Venue",
+     "type": "singleLineText",
+     "description": "Free text shown on the card if set, e.g. 'Meadowbank'. Leave blank to hide this row."
+    },
+    {
+     "id": "fld7tYuQQYTZeFBue",
+     "name": "Price",
+     "type": "number",
+     "description": "Manual public display price for the current website/card only. Future aim: derive automatically from the relevant Billing Rule/payment product so pricing is not duplicated."
+    },
+    {
+     "id": "fldsZq6WRdAZB9dis",
+     "name": "Billing Period",
+     "type": "singleSelect",
+     "description": "Manual public billing-period label for now. Future aim: derive from the relevant Billing Rule/payment product."
+    },
+    {
+     "id": "fldB5eKjlxhJ9cJTS",
+     "name": "Price Note",
+     "type": "singleLineText",
+     "description": "Manual public-facing price note. Keep only for wording that cannot be derived automatically."
+    },
+    {
+     "id": "fldPuDBxUt3vojZR3",
+     "name": "Active",
+     "type": "checkbox",
+     "description": "Tick = show this offering in the Hub. Untick to hide it without deleting it."
+    },
+    {
+     "id": "fld5gzoUbUCi9zapG",
+     "name": "Sort Order",
+     "type": "number",
+     "description": "Controls display order. Lower numbers appear first."
+    }
+   ]
+  },
+  {
+   "id": "tblpjMTHhAuvv5ShL",
+   "name": "Trial Interest",
+   "primaryFieldId": "fldNuR4Fi1twzoAJ5",
+   "description": "Leads captured from the public Hub's \"Register Interest\" forms. No login required to submit - written server-side by a dedicated Edge Function, never directly from the browser.",
+   "fields": [
+    {
+     "id": "fldNuR4Fi1twzoAJ5",
+     "name": "Name",
+     "type": "singleLineText"
+    },
+    {
+     "id": "fldbmCRov5R474tUq",
+     "name": "Email",
+     "type": "email"
+    },
+    {
+     "id": "fldstXzhLZ39qRvh9",
+     "name": "Phone",
+     "type": "phoneNumber"
+    },
+    {
+     "id": "fldRU2U6WgnDZo1FM",
+     "name": "Interested In",
+     "type": "singleLineText",
+     "description": "The Public Pages card they registered interest from, e.g. 'Jets Trials'."
+    },
+    {
+     "id": "fldcv3I7scMACDG8D",
+     "name": "Notes",
+     "type": "multilineText"
+    },
+    {
+     "id": "fldze2SAjvtdLdBpg",
+     "name": "Status",
+     "type": "singleSelect"
+    },
+    {
+     "id": "fldr32J7revcMvV0i",
+     "name": "Source Page ID",
+     "type": "singleLineText",
+     "description": "Stable Page ID of the Public Pages card this came from, e.g. PUB-TRIALS-JETS."
+    },
+    {
+     "id": "fld2QotYuLbJcXwjV",
+     "name": "Age Group",
+     "type": "singleLineText",
+     "description": "Which age group they registered interest for."
+    }
+   ]
+  },
+  {
+   "id": "tblKjDv5UuEJFYHQY",
+   "name": "Player & Parent Requests",
+   "primaryFieldId": "fldgVxhZkD9bvl9Wb",
+   "description": "Canonical shared request/workflow record for Players & Parents. One underlying request can surface in Parent, Player, Session and Needs Attention contexts without duplication. This replaces the retired Player Session Requests workflow.",
+   "fields": [
+    {
+     "id": "fldgVxhZkD9bvl9Wb",
+     "name": "Request ID",
+     "type": "singleLineText",
+     "description": "Permanent stable request ID. Do not reuse."
+    },
+    {
+     "id": "fldQqkiamj9j3DIGS",
+     "name": "Request Type",
+     "type": "singleSelect",
+     "description": "What the request is trying to change or achieve."
+    },
+    {
+     "id": "fldFKNd2CxobPlSaJ",
+     "name": "Status",
+     "type": "singleSelect",
+     "description": "Shared request status used across Players & Parents workflows."
+    },
+    {
+     "id": "fldntVG1JCKyxbujg",
+     "name": "Workflow Stage",
+     "type": "singleSelect",
+     "description": "Optional special workflow state only when a request genuinely needs one."
+    },
+    {
+     "id": "fldtO4h9eLmGS8CoT",
+     "name": "Family",
+     "type": "multipleRecordLinks",
+     "description": "Family context for this request where relevant."
+    },
+    {
+     "id": "fldUXsa6VgmPwjCzc",
+     "name": "Parent / Guardian",
+     "type": "multipleRecordLinks",
+     "description": "Parent/Guardian directly involved in this request where relevant."
+    },
+    {
+     "id": "fld2VUu29xVzWG0J5",
+     "name": "Player",
+     "type": "multipleRecordLinks",
+     "description": "Player directly involved in this request where relevant."
+    },
+    {
+     "id": "fldZQflWxaCTNRyZ0",
+     "name": "Parent–Player Link",
+     "type": "multipleRecordLinks",
+     "description": "Specific access relationship affected by the request where relevant."
+    },
+    {
+     "id": "fldyA29RY5bfUNFMX",
+     "name": "Session",
+     "type": "multipleRecordLinks",
+     "description": "Session context for move/trial/offer or similar requests where relevant."
+    },
+    {
+     "id": "fldoVWeEc5o0m1Woh",
+     "name": "Session Occurrence",
+     "type": "multipleRecordLinks",
+     "description": "Exact dated occurrence where the request is occurrence-specific."
+    },
+    {
+     "id": "fldoJVIQJl4FhFJqW",
+     "name": "Booking",
+     "type": "multipleRecordLinks",
+     "description": "Booking affected by the request where relevant."
+    },
+    {
+     "id": "fldYg7ndRtOEOR6BC",
+     "name": "Booking Line",
+     "type": "multipleRecordLinks",
+     "description": "Specific Player/date booking line affected where relevant."
+    },
+    {
+     "id": "fldpeh2oYV6nK09UB",
+     "name": "Player Session Link",
+     "type": "multipleRecordLinks",
+     "description": "Membership affected by cancellation/move or similar request where relevant."
+    },
+    {
+     "id": "fldqTIYGBg3h1Ckmk",
+     "name": "Requested By User ID",
+     "type": "singleLineText",
+     "description": "Supabase user ID of the person who submitted the request where available."
+    },
+    {
+     "id": "fldIullEmaS37hav2",
+     "name": "Requested By Name Snapshot",
+     "type": "singleLineText",
+     "description": "Readable historical name of the requester."
+    },
+    {
+     "id": "fldznyx09oJxPmsUr",
+     "name": "Requested At",
+     "type": "dateTime",
+     "description": "When the request was submitted."
+    },
+    {
+     "id": "fldd8KopUhmOvbJKL",
+     "name": "Reason / Details",
+     "type": "multilineText",
+     "description": "Parent/Management explanation of what is being requested."
+    },
+    {
+     "id": "fldGRdt3odQBGh3iM",
+     "name": "Effective Date",
+     "type": "date",
+     "description": "Optional intended effective date for the resulting change."
+    },
+    {
+     "id": "fldodipKZQtSEwoIs",
+     "name": "Decision / Resolution Note",
+     "type": "multilineText",
+     "description": "Management-facing resolution or decision note."
+    },
+    {
+     "id": "fld1EcB3Zn4RPn8ZE",
+     "name": "Resolved By User ID",
+     "type": "singleLineText",
+     "description": "Supabase user ID of the Management user who resolved the request."
+    },
+    {
+     "id": "fldcmJc8bQzyJPKMd",
+     "name": "Resolved By Name Snapshot",
+     "type": "singleLineText",
+     "description": "Readable historical name of the person who resolved the request."
+    },
+    {
+     "id": "fldpjBfQuBdCs0F7U",
+     "name": "Resolved At",
+     "type": "dateTime",
+     "description": "When the request reached its final resolved state."
+    },
+    {
+     "id": "fldeoD4Mf5pImuNPp",
+     "name": "Hub Audit Events",
+     "type": "multipleRecordLinks"
+    }
+   ]
+  }
+ ]
+}
