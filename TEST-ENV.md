@@ -310,3 +310,102 @@ is not connected to `Session Occurrences` / `Occurrence Staff` in any
 way. This is legacy schedule logic that will eventually need migrating
 to the Airtable occurrence model, per the same architecture decision that
 moved Parent Hub off the Sessions CSV. Left untouched, as asked.
+
+## Players.Active removed from the claim flow — 2026-09-26
+
+TEST only. Production untouched.
+
+### Where it was read (full inspection, before changing anything)
+
+Two live reads in the claim flow, both in `parent-hub`:
+
+1. `handleCreateClaim`'s `matches` filter — `p.fields["Active"] === true &&
+   name-match && DOB-match`. Since `Players.Active` no longer exists as a
+   field (only `LEGACY — Active` does, and Players has no canonical
+   replacement - the earlier finding stands), this clause was always
+   `undefined === true`, i.e. always false. **Every real claim in TEST
+   was matching zero players and landing as "Needs Review", regardless of
+   whether the name and date of birth were correct.**
+2. `handleListClaims`' `activePlayers` list, built for management's
+   manual-link picker when resolving an ambiguous claim - same filter,
+   same always-false result. **The picker was always empty.**
+
+No other `Players.Active` reads exist anywhere in `parent-hub`. (Five
+other `fields["Active"]` reads remain in the file - Sessions via
+`sessionIsActive`, Venues, Development Framework, Development Framework
+Settings, Feedback - all genuine, non-retired fields on those tables,
+correctly left alone.)
+
+### Confirmed replacement rule
+
+Player Active/Inactive is derived, never stored: **a Player counts as
+active while at least one of their Player Session Links has a
+`Membership Lifecycle Status` other than `Ended`** - Active, Paused,
+Cancellation Pending and Ending Scheduled all count, because all four
+mean the player currently belongs somewhere (Paused is included here
+deliberately, unlike the narrower `STILL_ATTENDING` set used for "next
+session" - this is "does this player currently belong anywhere", not
+"are they in today's session"). A Player with zero Player Session Links
+at all - never yet placed on a session - reads as inactive by the same
+rule.
+
+That derived value is **informational only**. It is never used to
+exclude a Player from matching or from the picker - an inactive Player
+is not deleted or unavailable.
+
+### What changed
+
+- **`handleCreateClaim`**: the `Active` clause is removed from the match
+  filter entirely. Matching is now name + Date of Birth alone, exactly as
+  the Players table's own field description already specifies, with no
+  gate on membership state at all - a player between memberships, or one
+  never yet placed on a session, is still matchable.
+- **`handleListClaims`**: now also fetches `Player Session Links`, derives
+  `active: boolean` per player using the rule above, and lists **every**
+  real Player (not a filtered subset) - each one now carries the derived
+  flag as a hint for management, never as an exclusion. The frontend
+  picker (`management.js`) only reads `player_record_id` and
+  `player_name`, so this is additive and needed no frontend change.
+- **Duplicate protection** (`alreadyClaimed` in `handleCreateClaim`) was
+  never gated on `Active` and is untouched.
+- **No new data exposed before verification**: `handleCreateClaim`'s
+  response to the parent is still only `{ ok, status }` - no player
+  fields are echoed back, unchanged. `handleListClaims` was already
+  management-only (403 for any other role) and stays that way; the only
+  addition there is one boolean per player, not new private fields.
+
+### Verified with real Parent Hub calls — parent-hub v6 (TEST)
+
+- **New claim for an existing, currently-active Player** (Dylan Davies,
+  correct name + DOB, submitted via a fresh test parent account): now
+  resolves to **`status: "Pending"` with exactly one match** - previously
+  this landed as `Needs Review` with zero matches, every time.
+- **New claim for an existing Player with no current membership**
+  (synthetic player added with no Player Session Links at all, to prove
+  bullet 3 for real): also resolves to **`status: "Pending"`, matched** -
+  confirming an inactive/never-enrolled Player is not treated as
+  unavailable.
+- **Bella Brown** - still `Pending`, unaffected (her claim was already
+  Pending from before this fix; re-checked, not re-created).
+- **Archie Atkinson** - still connected as a verified child on both his
+  sessions, unaffected.
+- **`parent.ended@test.invalid`** - still sees nothing; the ended-link
+  privacy fix is unaffected by this change.
+- **Session logic** (current/paused/ended, and `next_occurrence`) -
+  re-checked in the same calls, unaffected.
+- **Duplicate protection** - resubmitting the same name+DOB for the same
+  parent still returns "You've already submitted a claim for this
+  child."
+
+Tests: 45/45 files. New `claim-player-matching.test.ts` (10) covers a
+real match with no Active field present, a zero-membership player still
+matching, name normalization, DOB mismatch, every player appearing in the
+picker regardless of derived status, and Paused vs Ended membership
+deriving the flag correctly.
+
+### Flagged, not touched
+
+Nothing else in `parent-hub` reads a retired Player field. The frontend
+claim picker doesn't yet show the new `active` hint (nothing asked for
+it, and nothing broke by adding it unused) - available if management
+ever wants "currently between sessions" shown in that dropdown.

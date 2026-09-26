@@ -929,8 +929,14 @@ async function handleCreateClaim(caller: { userId: string; email: string }, body
     return jsonResponse({ error: "You've already submitted a claim for this child." }, 400);
   }
 
+  // Identity only - name + Date of Birth together, never name alone, per
+  // the Players table's own field description. Deliberately NOT gated on
+  // active/inactive: Player Active/Inactive is derived from current
+  // memberships now, not a standalone field (Players.Active is retired,
+  // LEGACY - Active), and a genuinely real Player whose only membership
+  // has ended - or who has none yet - must still be claimable. An
+  // inactive Player is not deleted or unavailable for a future claim.
   const matches = allPlayers.filter((p: any) =>
-    p.fields["Active"] === true &&
     normalizeName(p.fields["Player Name"]) === norm &&
     p.fields["Date of Birth"] === dob
   );
@@ -966,19 +972,44 @@ async function handleCreateClaim(caller: { userId: string; email: string }, body
 }
 
 async function handleListClaims() {
-  const [linkRows, parentRows, playerRows] = await Promise.all([
+  const [linkRows, parentRows, playerRows, sessionLinkRows] = await Promise.all([
     getAirtableRecords(TBL_PARENT_PLAYER_LINKS),
     getAirtableRecords(TBL_PARENTS),
     getAirtableRecords("Players"),
+    getAirtableRecords("Player Session Links"),
   ]);
   const parentById: Record<string, any> = {};
   for (const p of parentRows) parentById[p.id] = p;
   const playerById: Record<string, any> = {};
   for (const p of playerRows) playerById[p.id] = p;
 
-  const activePlayers = playerRows
-    .filter((p: any) => p.fields["Active"] === true)
-    .map((p: any) => ({ player_record_id: p.id, player_name: p.fields["Player Name"] || "" }))
+  /**
+   * Derived, not stored: a Player counts as active here while at least
+   * one of their memberships is anything other than Ended - Paused,
+   * Cancellation Pending and Ending Scheduled all still mean they are
+   * currently a real member somewhere, same STILL_ATTENDING-adjacent
+   * reasoning as the session-status repair, just inclusive of Paused
+   * too since this is "does this player currently belong anywhere",
+   * not "are they in today's session". A Player with no memberships at
+   * all reads as inactive by the same rule. This is informational only
+   * - it is never used to exclude a Player from this list, per the same
+   * "inactive is not deleted or unavailable" rule as claim matching.
+   * Players.Active no longer exists as a field; nothing here reads it.
+   */
+  const hasOpenMembership = new Set<string>();
+  for (const l of sessionLinkRows) {
+    if (membershipStatus(l.fields) === "Ended") continue;
+    for (const pid of l.fields["Player"] || []) hasOpenMembership.add(pid);
+  }
+
+  // Every real Player is pickable here, active or not - management may
+  // need to link an ambiguous claim to a player between memberships.
+  const players = playerRows
+    .map((p: any) => ({
+      player_record_id: p.id,
+      player_name: p.fields["Player Name"] || "",
+      active: hasOpenMembership.has(p.id),
+    }))
     .sort((a: any, b: any) => a.player_name.localeCompare(b.player_name));
 
   const pending = linkRows
@@ -999,7 +1030,7 @@ async function handleListClaims() {
       };
     });
 
-  return { pending, players: activePlayers };
+  return { pending, players };
 }
 
 async function handleApproveClaim(linkId: string, body: any) {
