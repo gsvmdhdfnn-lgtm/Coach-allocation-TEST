@@ -6192,3 +6192,547 @@ All writes went to TEST base `appQktredAuGa1X7e` / TEST project
 `dkqubldmfyeuudecxmvh`.
 
 **Coaches Slice 8 compliance is ready for Slice 9 cover workflow.**
+
+## Coaches Foundation — Slice 9 (cover workflow) — 2026-09-27
+
+A coach asks for cover on one or more dates. Coaches Accept or Decline
+each date. Management picks the final coach, and only that pick writes
+a date-specific Occurrence Staff (Cover) row. Session Staff is never
+touched. TEST-only: production was read for its schema only, and the
+frontend, Google Sheets and Finance were not touched.
+
+New TEST Edge Function `coach-cover` (v3, `verify_jwt: true`), layered
+like Slices 6-8:
+
+- `cover-workflow.ts` - pure rules and plans.
+- `staffing.ts` - the Slice 2/3 resolver, copied verbatim, plus cover
+  helpers.
+- `coach-availability.ts`, `coach-compliance.ts`, `coach-rates.ts` -
+  byte-identical copies of the Slice 7, 8 and 5 modules.
+- `repository.ts` - Airtable I/O only.
+- `lock-client.ts` - per-date lock RPCs.
+- `orchestrator.ts` - composition.
+- `index.ts` - auth and HTTP.
+
+### Schema: what was inspected, what was mirrored
+
+Production already has **Cover Request Groups**, **Staff Availability
+Requests** and **Cover Responses**. Their schemas were re-read
+(production read-only) and only the fields this slice needs were mirrored
+into TEST. No parallel tables were invented.
+
+- **Cover Request Groups** `tbl6CfJ4kHdhbnxfv` - one request, one or
+  more dates.
+  - Fields: Cover Group ID, Requesting Coach, Reason (Illness /
+    Personal commitment / Holiday / Work clash / Emergency / Other),
+    Handover Note, Status, Requested Via, Active.
+  - Status choices: Open / Partially Filled / Filled / Cancelled /
+    Resolved Without Cover.
+- **Staff Availability Requests** `tbloR6M1OCIepeFNG` - one row per
+  cover DATE.
+  - Fields: Request ID, Coach, Session Occurrence, Request Type
+    ("Cover Request"), Coach Note, Requested Via, Management Note,
+    Decision At, Decision By User ID, Decision By Name Snapshot,
+    Replacement Coach, Occurrence Staff, Cover Request Group, Cover
+    Date Status.
+  - Cover Date Status choices: Open / Filled / Cancelled / Resolved
+    Without Cover.
+  - Not mirrored: production's Session link, LEGACY fields and Coach
+    Notified.
+- **Cover Responses** `tblScRVSVmzISUF7E` - one row per coach per date.
+  - Fields: Cover Response ID, Cover Request Date, Coach, Response
+    Status (Invited / Yes / No / Withdrawn), Eligibility / Suitability
+    Summary, Normal Rate Snapshot (£), Expected Cost Snapshot (£),
+    Response Note, Responded At, Active.
+- Airtable auto-created inverse link fields when these links were
+  added: 4 on Coaches, 1 on Session Occurrences and 1 on Occurrence
+  Staff (plus the Groups↔Requests↔Responses inverses). They are
+  additive and read by nothing else. Remember them when promoting.
+- **Supabase migration `slice9_cover_date_locks`:**
+  - Table `public.cover_date_locks`, RLS enabled.
+  - Functions `acquire_cover_date_lock` / `release_cover_date_lock`,
+    with the same body shape as `occurrence_outcome_locks`: insert on
+    conflict do nothing, a token-owned release, and 5-minute
+    self-heal.
+  - EXECUTE revoked from public/anon/authenticated and granted to
+    `service_role` only (ACL checked:
+    `postgres=X/postgres,service_role=X/postgres`).
+
+### Cover request lifecycle
+
+- One **group** holds one or more **dates**. Each date has its own
+  status and moves independently:
+  - `Open -> Filled` (Management selection);
+  - `Open -> Cancelled` (requester or Management);
+  - Filled and Cancelled are terminal here.
+- Nothing is ever deleted.
+- Group Status is **derived** from its dates:
+  - any Open and any Filled -> Partially Filled;
+  - any Open, none Filled -> Open;
+  - else any Filled -> Filled;
+  - all Cancelled -> Cancelled;
+  - otherwise Resolved Without Cover.
+- The stored group Status is rewritten after each change, from a fresh
+  read of the group's dates. Reads always re-derive it.
+- **Multi-date:** Danny can ask for 10/17/24 Oct in one request; each
+  date is filled, left open or cancelled on its own. No coach is ever
+  forced to take every date.
+- **Creation is all-or-nothing.** Every date must pass before anything
+  is written. A date passes when:
+  - the occurrence exists and is `Scheduled`;
+  - its date is today or later (Europe/London);
+  - the coach is **genuinely staffing it now** - Session Staff applying
+    on that date, or a usable Occurrence Staff row, via the unchanged
+    Slice 3 resolver;
+  - that coach has no Open request for that occurrence already.
+- Creates are serialised per coach (lock key `create:{coachId}`), so a
+  double-submitted form cannot create two Open requests for one date.
+- A coach can only request for themselves. The Coaches record comes
+  from `profiles.airtable_person_id`. A body naming another coach gets
+  a 403; an unassigned occurrence gets a 409.
+- Management may create a request on any coach's behalf
+  (`Requested Via = Management Hub`).
+
+### Candidate suitability (transparent, rule-based, no ranking)
+
+Every candidate is evaluated with the same world read, **as of the cover
+date**. The result is `suitable`, `needs_management_review` or
+`unsuitable`, with each finding listed and coded.
+
+**Blockers** (never selectable):
+
+- **Requester / already staffing:** the candidate is the requester, or
+  already staffs this occurrence.
+- **Inactive:** the Coach record is not Active.
+- **Availability (Slice 7):**
+  - `unavailable` blocks;
+  - `ambiguous` blocks (fails safe);
+  - only `available` counts as confirmed.
+- **Existing staffing:** an overlap with another occurrence the
+  candidate is on (resolved roster, same UK date, half-open time
+  intervals; Cancelled/Postponed occurrences ignored).
+- **Compliance (Slice 8):** any **required** item that is Missing,
+  Expired or Needs Review. Compliance is evaluated as of the cover date,
+  so a DBS that expires before the session counts as Expired.
+- **Role (Coach Roles Role Key rank: learning_coach < coach <
+  lead_coach):**
+  - a Learning Coach can never replace a Coach or Lead Coach;
+  - a Coach cannot replace a Lead Coach when the Session `Requires Lead
+    Coach` and no other Lead Coach would remain (`lead_coach_required`).
+
+**Warnings** (selectable only if Management deliberately sends
+`confirmWarnings: true`, never silently):
+
+- availability `unknown` (unknown is **not** available);
+- availability or overlap not evaluable (the occurrence has no usable
+  times);
+- a same-day assignment with unusable times (`overlap_uncertain`);
+- the covered role cannot be resolved;
+- the candidate holds no current recurring role
+  (`role_capability_unknown` - capability is never assumed);
+- a Coach replacing a Lead Coach where no lead requirement breaks
+  (`role_downgrade`);
+- compliance configuration problems.
+
+**Info** (no effect on status):
+
+- compliance **Review Soon** - stays usable, per the product rule;
+- no organisation requirements configured.
+
+Required Staff Count is unaffected, because cover is a strict 1:1
+swap.
+
+The candidate's role capability is the strongest Session Staff role
+they hold on that date (any session).
+
+**Known limitation:** overlap only sees generated Session Occurrences.
+Commitments that exist nowhere as occurrences are invisible.
+
+### Rate / expected-cost preview
+
+This is a preview only: no Coach Allocation is created by cover.
+
+- **Rate Type** is never inferred from the Session. It comes from
+  either:
+  - an explicit Management value (`rateType` on `/select` or
+    `/manage/detail`); or
+  - the requester's own Coach Allocation(s) for that occurrence, when
+    they agree on a single Rate Type Snapshot.
+- The candidate's rate then comes from Slice 5's
+  `resolveCoachRateProfile`. Paid units:
+  - Per Hour -> the occurrence's duration in hours;
+  - Per Session / Per Day -> 1.
+- The preview is written to Normal Rate Snapshot / Expected Cost
+  Snapshot on the response.
+- **Never guessed.** The snapshots stay **empty** and the preview says
+  `requires_management_review` (with a reason) when any of these hold:
+  - no Rate Type (`no_rate_type`);
+  - allocations disagree (`ambiguous_rate_type`);
+  - unknown type (`invalid_rate_type`);
+  - no applicable profile (`no_rate_profile`);
+  - overlapping profiles (`ambiguous_rate_profile`);
+  - Per Hour without a duration (`duration_unknown`);
+  - a bad amount or pay unit.
+
+### Accept / Decline semantics
+
+- Coach-only, and only for themselves: `{requestDateId, response:
+  "Accept"|"Decline", note?}` maps to Response Status `Yes` / `No`.
+- **An Accept is willingness, never an assignment:** no Occurrence
+  Staff is written.
+- Several coaches may Accept the same date.
+- There is one response per coach per date. Answering again updates the
+  coach's own row, never another coach's.
+- Each response records a JSON suitability-and-rate snapshot at
+  response time. Final selection always re-evaluates.
+- A response is refused when:
+  - it is the requester's own date (409);
+  - the date is not Open (409 `date_not_open`);
+  - the date is past;
+  - the caller is Management (403).
+- Responses run under the per-date lock, so they serialise with
+  selection and cancellation.
+
+### Management final selection
+
+`POST /select {requestDateId, responseId, confirmWarnings?, rateType?}`
+is Management only. The coach JWT gets a 403.
+
+Inside the per-date lock, with everything **re-read after acquiring
+it**:
+
+1. The date must be Open.
+   - Filled by the same coach -> `already_filled` (200, idempotent, no
+     writes).
+   - Filled by someone else -> 409 `already_filled_by_other`.
+   - Cancelled / other -> 409.
+2. The response must belong to this date, be Active and say `Yes`.
+3. Fresh suitability:
+   - unsuitable -> 409 `candidate_unsuitable` with the blockers (even
+     with `confirmWarnings`);
+   - warnings without `confirmWarnings` -> 409
+     `warnings_require_confirmation`.
+4. The requester must still be staffing the occurrence, otherwise 409
+   `requester_no_longer_assigned`.
+5. The post-write roster is **simulated with the unchanged Slice 3
+   resolver** before anything is written. The plan proceeds only if the
+   chosen coach is on and the requester is off; otherwise 409
+   `replacement_not_representable`.
+6. Writes, in this order:
+   - **(a)** one Occurrence Staff row, with these fields:
+     - Occurrence Staff ID `COVER-{dateId}` (deterministic, so a retried
+       selection reuses its own row instead of adding a second);
+     - Session Occurrence = that occurrence only;
+     - Coach = the chosen coach;
+     - Assignment Type **Cover**;
+     - Planned Role Snapshot = the requester's role;
+     - Attendance Planned;
+     - Management Confirmed, Confirmed At/By/Name;
+     - **Session Staff Source = the requester's Session Staff row**
+       (the Slice 3 trace that removes the requester from that date
+       only).
+   - **(b)** any requester Occurrence Staff rows on that occurrence are
+     set to `Attendance = Absent` (kept, not deleted).
+   - **(c)** the date is set to `Filled`, with Replacement Coach,
+     Decision At, Decision By User ID/Name and the Occurrence Staff
+     link. It is written last, so a date is never Filled without its
+     assignment.
+   - **(d)** the group status is refreshed.
+7. Other accepted responses are left exactly as they were
+   (historical).
+
+- **Session Staff is never written.** The next occurrence falls straight
+  back to recurring staffing.
+- Airtable updates the Session Staff row's own *Last Updated* stamp
+  because it maintains the inverse "Occurrence Staff" link. The
+  function itself never PATCHes Session Staff (asserted in unit test
+  18).
+
+### Cancellation
+
+- The requester can cancel their own **Open** date; another coach gets
+  403 `not_own_request`.
+- Management can cancel any Open date.
+- A cancel records Cover Date Status `Cancelled`, Decision At/By and an
+  optional note. The note is appended to Coach Note (coach) or
+  Management Note (Management).
+- Repeating a cancel returns a harmless `already_cancelled`.
+- **A Filled date cannot be cancelled** (409
+  `filled_requires_deliberate_unassignment`, for the requester and for
+  Management). The Occurrence Staff assignment stands until a
+  deliberate Management un-assignment, which is out of scope for this
+  slice.
+- Nothing is ever deleted.
+
+### 24-hour unfilled signal
+
+- The signal is derived, with no new field: `unfilledOver24h` is true
+  when the date is **Open** and at least 24h (inclusive) has passed
+  since the record's own Airtable `createdTime`.
+- Filled or Cancelled dates are never flagged; a missing or invalid
+  `createdTime` never flags.
+- The age is clamped at 0, because `createdTime` has second precision
+  from Airtable's clock.
+- `GET /manage` returns `unfilledOver24h` and `openForMinutes` per date,
+  plus `unfilledOver24hCount`. It accepts `?asOf=` so a boundary can be
+  checked deterministically.
+- The signal is ready for Needs Attention / notifications. **No
+  notification engine was built.**
+
+### Concurrency guarantee
+
+- Every write that changes a cover date (respond, cancel, select) runs
+  inside that date's `cover_date_locks` lock.
+- Each attempt re-reads the world **after** acquiring the lock, so a
+  losing Management selection sees the winner's Filled state and
+  returns 409 `already_filled_by_other`. Two final coaches for one date
+  are impossible.
+- The lock wait budget is 150 × 100ms. One operation re-reads Airtable
+  (~2-4s), so Slice 6's ~1s budget was too short: it produced spurious
+  "retry" conflicts for simultaneous Accepts. That was found live and
+  fixed in v2. A lock still held past the budget returns 409 "please
+  retry".
+- If a selection fails part-way, the retry is safe: the deterministic
+  `COVER-{dateId}` row is patched, not duplicated, and the date is only
+  marked Filled after its row exists.
+- **Airtable rate limit.** Found live in v2: three concurrent operations
+  each fanning out 8 parallel reads got 429s. Nothing was written - both
+  failed during the read phase. v3 fixes it three ways:
+  - every Airtable call retries 429 with backoff (1/2/4/8/16s; a 429
+    was not processed, so retrying even a POST cannot double-write);
+  - reads are waves of at most 5;
+  - each operation reads only the tables it needs (cancel reads 2,
+    create 7, the Management list 5).
+
+### Security
+
+- **Coach:**
+  - may create a request for their own genuine assignment;
+  - may cancel their own Open dates;
+  - may Accept/Decline for themselves only;
+  - may view `/mine` (own requests with accept/decline counts, and Open
+    dates they could take, with their own suitability).
+- **Coaches never see** other coaches' responses, any rates, or
+  Management notes.
+- **Coaches cannot** finalise, alter another coach's response, set
+  rates (rates are computed server-side only), or assign themselves:
+  Occurrence Staff is written only by `/select`, which is Management
+  only.
+- **Management** can do everything:
+  - create/adjust;
+  - `/manage` list with the 24h signal;
+  - `/manage/detail` - all responses with the stored snapshot plus
+    fresh suitability/rate, and the current roster;
+  - select;
+  - cancel.
+- **Parent:** 403 on every route.
+- An inactive profile, or a coach profile without a valid Coaches link,
+  also gets 403.
+- **Pre-existing findings, reported and not fixed** (outside this
+  slice):
+  - `public.cron_auth_secrets` has RLS disabled. Suggested fix:
+    `ALTER TABLE "public"."cron_auth_secrets" ENABLE ROW LEVEL
+    SECURITY;`
+  - the older `occurrence_outcome` / `generation` lock RPCs are still
+    executable by anon/authenticated. The new cover lock RPCs are
+    service_role only.
+
+### Future notification events (documented contract only - nothing is sent)
+
+`FUTURE_NOTIFICATION_EVENTS` in `cover-workflow.ts`, for the later
+Communications system:
+
+- `cover_requested` - group/dates created;
+- `cover_response_received` - a coach Accepted/Declined;
+- `cover_confirmed` - Management selected; Occurrence Staff written;
+- `cover_cancelled` - a date cancelled;
+- `cover_unfilled_escalation` - `unfilledOver24h` became true.
+
+No emails, push notifications or branded delivery were built or sent.
+
+### Future compliance rule (recorded, not built)
+
+- Some qualifications never truly expire, but still need Management
+  **re-verification**.
+- Future compliance configuration should support:
+  - **Expiry required: Yes/No**;
+  - a **re-verification interval/date** where applicable.
+- This must **never** be faked by inventing expiry dates.
+- Slice 9 did not change the compliance schema: cover suitability did
+  not need these fields, and it uses Slice 8's summary unchanged.
+
+### Focused tests
+
+`tests/support/coach-cover.test.ts` (shim `tests/e2e/coachcovertest.js`)
+has **88/88** checks.
+
+It exercises the real orchestrator against an in-memory Airtable (a
+mocked global `fetch`) and an in-memory LockClient. Items 1-27 match the
+brief:
+
+- 1-3: create, including all-or-nothing and multi-date independence.
+- 4-6: Accept/Decline/multiple Accepts.
+- 7-13: suitability (unavailable/unknown/ambiguous, overlap and
+  uncertain overlap, compliance Missing/Expired/Needs Review, Review
+  Soon, role rules including Lead Coach).
+- 14-15: rate resolved/missing/ambiguous.
+- 16-20: selection, the Occurrence Staff row, replacement only on the
+  target date, the next occurrence unchanged, other Accepts preserved.
+- 21-22: cancellation.
+- 23: the 24h boundary.
+- 24: idempotent selection and partial-failure recovery.
+- 25: **deterministic concurrency** - two managers, a delayed mock
+  fetch, exactly one winner. A control shows that without the lock the
+  same race writes two rows.
+- 26: a coach cannot finalise.
+- 27: Parent has no access.
+
+It also covers:
+
+- 429 retry: a read that stays rate-limited fails before any write;
+- per-operation table loading;
+- a requester staffed only via an Additional Occurrence Staff row
+  (that row is set Absent);
+- drift checks:
+  - the three copied modules are byte-identical to their canonical
+    versions;
+  - every chunk of the copied block in `staffing.ts` appears verbatim in
+    `hub-content/player-access.ts`;
+  - all 5 `tests/support/coach-cover-*.ts` mirrors equal the canonical
+    files (only import paths adjusted).
+
+### Deploy
+
+- `coach-cover` v1 went up, then v2 (the 24h clamp and lock budget),
+  then v3 (429 retry and narrowed reads).
+- Each version was downloaded with `get_edge_function` and compared
+  **mechanically** (JSON extraction + `cmp`): all 9 files byte-identical
+  to the repo. v3 is what was verified live.
+
+### Real TEST verification, real HTTP via `pg_net`
+
+- **Accounts:** fresh JWTs for `manager@test.invalid`,
+  `coach.a@test.invalid`, `coach.b@test.invalid` and
+  `parent.a@test.invalid`. Their TEST-only passwords were reset with the
+  established `crypt()` pattern.
+- **Acting as throwaway coaches:** only two coach logins exist, so
+  `coach.a`/`coach.b` had their `profiles.airtable_person_id`
+  temporarily pointed at the throwaway coaches (Danny/Joe/Tom/Uma/Nia/
+  Bea). They were **restored afterwards** and checked: coach.a ->
+  `recYZyiLVud7yoNZS` Alex Test, coach.b -> `rectpAbJCttFzN4XA` Sam
+  Sample.
+- **Throwaway fixtures** (every one deleted by exact ID afterwards; the
+  cover tables and `SLICE9` Coaches/Sessions were re-checked empty):
+  - 6 Coaches;
+  - 3 Sessions, all Draft so the generator ignores them;
+  - 6 Session Occurrences: M1-M5 on Mondays 5 Oct - 2 Nov at
+    17:00-18:00 UK (BST and GMT), plus B1, which overlaps M4;
+  - 6 Session Staff rows (all role Coach);
+  - 5 availability rows (Monday 16:00-21:00);
+  - Uma's Unavailable exception for 26 Oct;
+  - a temporary org-level Enhanced DBS requirement (lead 30 days);
+  - 4 verified DBS documents;
+  - 2 rate profiles (Joe Evening £20/hr, Tom Evening £45/session);
+  - Danny's Evening allocations for M1/M2.
+
+- **Negatives:**
+  - Danny requesting cover for B1 (not his) -> 409 "not assigned";
+  - Danny naming Bea as coachId -> 403;
+  - Parent create -> 403; Parent `/manage` -> 403;
+  - coach `/manage` -> 403;
+  - Joe `/select` -> 403;
+  - Tom cancelling Danny's date -> 403;
+  - Danny cancelling a Filled date -> 409
+    `filled_requires_deliberate_unassignment`.
+- **A - simple cover:**
+  - Danny (coach JWT) asked for M1 -> group + date Open, Requested Via
+    Coach Hub.
+  - Joe's `/mine` showed the date as `suitable`. Joe Accepted: Yes,
+    snapshot £20 / £20 from Danny's Evening allocation.
+  - Management selected Joe -> `filled`, Occurrence Staff
+    `rec9ysjtdx45FeKrg` (Cover, Joe, Session Staff Source = Danny's
+    row, Planned Role Coach, confirmed by Morgan Manager).
+  - `/manage/detail`: **M1 roster = Joe only; M2 roster = Danny only**
+    (the next occurrence returns to recurring staffing).
+- **B - multiple responses:**
+  - Joe and Tom Accepted M2 **at the same moment** (both 201,
+    serialised by the lock).
+  - Management selected Tom -> Occurrence Staff `recz7ArZxEFkjPP5p`,
+    £45 per-session preview.
+  - Joe's Accept stayed `Yes`/Active (historical).
+- **C - multi-date:**
+  - One group for M3/M4/M5.
+  - M3 filled with Joe. The rate preview was `requires_management_review
+    / no_rate_type` because Danny has no allocation for M3 - it did not
+    guess.
+  - M5 was cancelled by Danny (note recorded). M4 stayed Open.
+  - The group derived and stored **Partially Filled**.
+- **D - unsuitable candidates on M4:**
+  - Uma -> `unsuitable / availability_unavailable`;
+  - Nia -> `unsuitable / compliance_blocking` (Enhanced DBS Missing);
+  - Bea -> `unsuitable / overlapping_assignment` (B1);
+  - Management selecting Uma, even with `confirmWarnings: true` -> 409
+    `candidate_unsuitable`.
+- **E - concurrency:**
+  - Joe and Tom Accepted M4 (both suitable).
+  - Two Management `/select` calls (Joe vs Tom) were fired in the same
+    instant: Joe won (`filled`, `rect2MekV416kzozG`), and Tom's got 409
+    `already_filled_by_other`.
+  - Airtable afterwards held **exactly one** Cover row for M4, and
+    exactly 4 Cover rows in total (M1-M4, one each).
+  - A repeat of the winning selection -> 200 `already_filled`, no
+    writes.
+  - `cover_date_locks` read back empty.
+- **F - 24h boundary:**
+  - A fresh Open date had `createdTime` 21:28:45.000Z.
+  - `/manage?asOf=` 24h - 1ms -> `openForMinutes` 1439,
+    `unfilledOver24h` false, count 0.
+  - `asOf` exactly +24h -> 1440, **true**, count 1.
+  - Filled/Cancelled dates were never flagged.
+
+**Found live and fixed before sign-off:**
+
+- `openForMinutes` read -1 just after creation (fixed by the clamp).
+- The lock budget was too short for simultaneous Accepts.
+- Airtable returned 429 under concurrent operations. In v2 two
+  selections failed cleanly with nothing written; v3 retries and
+  narrows reads.
+
+### Regression
+
+`node tests/run-all.js`: **55/55 test files passed.**
+
+- **Slice 9:** `coachcovertest.js` 88/88 (new).
+- **Slice 8:** `coachcompliancetest.js` 87/87.
+- **Slice 7:** `coachavailabilitytest.js` 85/85.
+- **Slice 6:** `occurrencefinancialoutcomestest.js` 37/37.
+- **Slice 5:** `coachallocationstest.js` 25/25.
+- **Slices 2-4:** `accessresolutiontest.js` 74/74,
+  `sessionaccesstest.js` 28/28.
+- **Parent Hub:** `parenthubtest.js` 44/44, `parenthubshelltest.js`
+  65/65, `sessioncoachestest.js` 22/22.
+- **Schedule foundation:** `sessiongeneratortest.js` 37/37,
+  `sessionrepositorytest.js` 19/19, `propagationtest.js` 43/43,
+  `nextoccurrencetest.js` 19/19, `dailytopuptest.js` 7/7.
+
+Slice 9 added one new isolated Edge Function, three TEST tables, one
+Supabase lock table/RPC pair and their tests. No existing function,
+table, field or test was modified.
+
+### Production isolation
+
+- **Production Airtable:** schema read only (Cover Request Groups, Staff
+  Availability Requests, Cover Responses). No record read, nothing
+  written.
+- **Production Supabase:** untouched.
+- **Frontend:** untouched.
+- **Google Sheets:** untouched.
+- **Finance execution:** untouched. No Coach Allocation or cost record
+  is created by cover.
+- **Notifications:** no emails, push notifications or other messages
+  sent.
+
+All writes went to TEST base `appQktredAuGa1X7e` / TEST project
+`dkqubldmfyeuudecxmvh`.
+
+**Coaches Slice 9 cover workflow is ready for Slice 10 coach work summaries.**
