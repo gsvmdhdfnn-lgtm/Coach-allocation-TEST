@@ -2697,3 +2697,610 @@ ID after verification.
   not touched.
 
 **Slice 9 Session History is ready for Slice 10 full regression and handoff.**
+
+## Slice 10 - foundation checkpoint: full regression, source-of-truth audit, cleanup check, handoff
+
+The final Schedule & Sessions foundation checkpoint before this codebase
+moves on to a different foundation area. Scope, per your instruction: prove
+the existing foundation is internally consistent, tested and documented -
+no new product features, no frontend changes, no production changes, and
+no automatic start of Coaches/Needs Attention/Finance. Everything below was
+reconfirmed against the CURRENT deployed `session-occurrences` v9 (the
+hardening-fix build) and the current TEST Airtable/Supabase state; nothing
+in generator.ts/propagation.ts/schedule-utils.ts/repository.ts/
+propagation-repository.ts/lock-client.ts/daily-top-up.ts/session-trigger.ts/
+index.ts has changed since Slice 9/the hardening fix, so this slice is a
+verification pass, not a rebuild.
+
+### A. Source-of-truth audit
+
+Re-read every file in `supabase/functions-test/session-occurrences/` line
+by line (not just diffed) against the intended ownership model. Holds,
+with no newly-added duplicate source of truth:
+
+- **Sessions** = recurring/default structure (Default Day/Start/End Time,
+  Venue, Default Capacity, Schedule Pattern, Start/End Date, Session
+  Lifecycle Status). The only writer is `updateSessionFields()`
+  (propagation-repository.ts) - a single PATCH call, one call site
+  (`propagateForSession()`), never called from the generator or from
+  daily-top-up.
+- **Session Occurrences** = dated operational facts. The only creator is
+  `createOccurrences()` (repository.ts, generator-shells only); the only
+  updater is `applyOccurrenceFieldUpdates()` (propagation-repository.ts,
+  Time/Status/Schedule-Change-State/Venue/Capacity-Override crystallisation
+  only). No other function anywhere writes to this table.
+- **Session Dates** = Included/Excluded date rules. Read-only in this
+  codebase (`fetchSessionDatesForSession()`) - there is still no write path
+  for this table anywhere in the Schedule foundation, confirmed unchanged
+  since Slice 2's original design (Management is expected to maintain these
+  rows directly until a write UI exists - see Section L).
+- **Session Staff** = recurring staffing. Never read or written by any file
+  in `session-occurrences/` - correctly out of scope for generation/
+  propagation/History, exactly as scoped since Slice 2. (Resolved
+  elsewhere, correctly, by `parent-hub`/`hub-content` for coach display -
+  see Section G.)
+- **Occurrence Staff** = date-specific staffing/cover. Same as Session
+  Staff - never touched anywhere in `session-occurrences/`. Confirmed still
+  future work (Section L), not silently started.
+- **Venues** = canonical venue records, referenced only by record ID
+  (`Venue: string[]` link arrays on both Sessions and Session Occurrences -
+  never a free-text venue field anywhere in this foundation).
+  `fetchVenueNames()` resolves IDs to names for History display only, never
+  as a write path.
+- **Session History** = one row per structural dimension per genuine
+  change, create-only (`createHistoryEntries()` is the only writer in the
+  whole codebase; nothing ever updates or deletes a row). Occurrence-level
+  Venue/Capacity Override are legitimate per-occurrence EXCEPTION fields
+  (the ratified fallback-override model), not a second source of truth -
+  blank always means "inherits the Session default," explicit always means
+  "this occurrence's own value," and the two are mutually exclusive by
+  construction.
+- **Supabase `generation_locks`** - inspected the real table (TEST project
+  `dkqubldmfyeuudecxmvh`): `session_record_id`/`lock_token` only, no
+  business data, confirmed empty (0 rows) at rest and after every write
+  path exercised this slice (below). Purely technical concurrency
+  infrastructure, exactly as scoped.
+
+No duplicate source of truth found anywhere in Slices 1-9 or the hardening
+fix.
+
+### B. Legacy contradiction check
+
+Searched the whole repository (not just `session-occurrences/`) for every
+pattern your instruction named. Result, split exactly as you asked:
+
+**Inside the new Schedule foundation (`session-occurrences/` and its
+Airtable-facing collaborators in `hub-content`/`parent-hub`): none found.**
+Specifically:
+- No Google Sheet read anywhere in `session-occurrences/`, `hub-content`,
+  or `parent-hub` (all three explicitly say so in their own header
+  comments - `hub-content/index.ts`: "the auto Sessions-from-Sheet sync
+  that used to fire here... has been retired"; `parent-hub/index.ts`:
+  "Sheets is finance/reporting only"). This was Phase 1/2 work
+  (commits `f77d72d`, `9105b2e`), already done before Slice 1 of the
+  occurrence generator started, and reconfirmed still true now.
+- No Session structure is ever written from a Sheet - `updateSessionFields()`
+  is the only Session-field writer, and it only ever exists as part of
+  `propagateForSession()`, called only from a real Management-authenticated
+  HTTP request.
+- No occurrence date is ever derived from free-text weekday projection -
+  `planGeneration()` reads the Session's own `Default Day` (a real
+  Airtable singleSelect) and Session Occurrences are real dated rows, not
+  a computed-on-read weekly slot.
+- Session Staff is never bypassed for recurring staffing - it is simply
+  never touched by this foundation at all (Section A).
+- Venue is always a linked record, never free text, in every write path
+  this foundation owns (Section A).
+- No propagation path ever mutates a frozen occurrence except
+  crystallisation, which exists specifically to protect its historical
+  record, never to change what it means (`isFrozen()` gates every other
+  write path in `propagation.ts` - reconfirmed by code re-read and by the
+  real crystallisation/frozen-protection check in Section D below).
+
+**Known legacy paths outside the new foundation (reported, not touched,
+per your instruction):**
+- **Coach Hub frontend CSV schedule path** - `core.js` still fetches
+  `CFG.sessionsCsvUrl`/`CFG.calendarCsvUrl`/`CFG.changesCsvUrl` (published
+  Google Sheets CSVs, configured in `config.js`) directly into
+  `state.sessions`/`state.calendar`/`state.changes`, which `coach.js`'s
+  `renderSchedule()` still uses for the Coach's own schedule view. This is
+  entirely independent of `session-occurrences`/Session Occurrences - the
+  Coach frontend has NOT been migrated to occurrence-driven schedule data.
+  Not touched this slice (frontend, deliberately out of scope; the
+  Google-Sheet-as-schedule-truth pattern is exactly the "known future
+  migration work" your instruction named).
+- **Production Edge Functions** (`supabase/functions/player-sessions/`,
+  `player-feedback/`, `hub-content/` - the live, non-`-test` copies) still
+  carry "Google Sheets Sessions = authoritative source for which coaches
+  are scheduled" in their own header comments and coach-identity-matching
+  logic. This is the pre-migration production behaviour the TEST copies
+  (Phase 1/2) already fixed; production itself is deliberately untouched
+  (Section J) and this is exactly the gap the eventual production
+  promotion (Section K) closes, not a Slice 10 defect.
+- **`content-provider.js`** and the Sheet-published Info/Resources/Terms/
+  Themes/Financials tabs are unrelated content feeds (handbook, resources,
+  finance), never Schedule truth - out of scope, not a contradiction.
+
+### C + D. Generator and propagation re-verification
+
+Every behaviour on your list was re-confirmed either by the existing
+hand-kept unit suites (unchanged since their original Slice, now re-run
+fresh - see Section I for exact counts) or by a fresh real-TEST HTTP
+round-trip against the CURRENTLY DEPLOYED v9 function, using one new
+throwaway Session (`SLICE10-CHECK`, `recmtDmtYJWJzz9tp`, Recurring,
+Wednesday) built specifically to exercise several of these in one
+traceable sequence, deleted afterward (Section H):
+
+- **Recurring**: `/generate` on a fresh Active `SLICE10-CHECK` ->
+  `generated, created: 13` (the same 12-week/10-occurrence rolling-horizon
+  count as every prior slice).
+- **Selected Dates / Excluded Dates / One-off / Draft / Active / Inactive
+  / Start-End Date limits / rolling horizon / Occurrence Key idempotency /
+  replacement `:R:` keys**: unchanged code, re-confirmed by
+  `session-generator.test.ts` (37/37, includes explicit BST/GMT-transition
+  cases, an unrecognised-Default-Day fail-closed case, an unparseable-
+  Default-Start-Time fail-closed case, and the exact `:R:` replacement-key
+  non-collision case) and `session-repository.test.ts` (19/19, includes
+  the 5 real hand-seeded TEST-A rows' exact derived keys).
+- **BST/GMT behaviour**: reconfirmed live, not just in the unit suite - the
+  Time-change propagation call below produced `2026-10-14T17:00:00.000Z`
+  and `2026-10-21T17:00:00.000Z` (both still BST) and
+  `2026-10-28T18:00:00.000Z` (the very next Wednesday, already past the UK's
+  real 2026 autumn clock change on 25 Oct) for the identical 18:00 local
+  time - the transition boundary itself resolves correctly against live
+  Airtable data, not just the synthetic fixture dates in the unit suite.
+- **Permanent Time change**: `/propagate` with `time` ->
+  `updated: 12` (13 occurrences minus the one deliberately frozen below),
+  each recomputed via `buildUkDateTimeIso()` for its own date; History row
+  `Time`, "12 future occurrence(s) updated to the new time."
+- **Venue change + frozen-occurrence crystallisation**: one occurrence
+  (30 Sep) was set `Status: Completed` (frozen by status, per `isFrozen()`,
+  regardless of date) with no explicit Venue/Capacity of its own -
+  reproducing the real fallback-dependent-frozen-row case. `/propagate`
+  with `venue` -> `crystallised: 1`, writing the OLD venue (`Test Park`)
+  onto exactly that one frozen row and nothing else (the 12 non-frozen rows
+  correctly received no write - they inherit the new default via fallback);
+  History row `Venue`, old "Test Park" -> new "Sample Sports Hall", "1
+  historical occurrence(s) crystallised with the previous venue."
+- **Day change + backfill**: `/propagate` with `dayOfWeek: Thursday` ->
+  `cancelled: 12` (the frozen Completed row correctly excluded from
+  cancellation too - it stays the historical record of what stood at that
+  slot), `backfillNeeded: true`; a separate `/generate` call then created
+  exactly 13 new Thursday occurrences, distinct record IDs from the
+  (cancelled or frozen) old Wednesday rows. History row `Day`, "Wednesday"
+  -> "Thursday", "12 future occurrence(s) cancelled for the old day; new
+  day's occurrences will be generated by the next trigger or scheduled
+  top-up" - and that is exactly what then happened.
+- **Capacity change / field-level override independence / Time Overridden
+  / crystallisation-before-default-change**: unchanged code, re-confirmed
+  by `propagation.test.ts` (43/43 - includes the merged-single-write case
+  for a row eligible for both Venue AND Capacity crystallisation at once,
+  the Time-Overridden-is-never-touched case, and the exact real TEST-A
+  frozen/cancelled/postponed/rescheduled non-interference cases below).
+- **One-off same-date time edit vs permanent recurring time edit vs
+  Rescheduled move-to-another-date**: restating the approved distinction
+  exactly as ratified in Slice 6/7 - a permanent recurring time edit is a
+  Session-level change (`propagateForSession()`, above); a one-off
+  same-date time edit is meant to be an occurrence-level `Changed` write
+  with `Time Overridden: true` set on that one row, protecting it from
+  every future permanent Time change (`isTimeOverridden()` already gates
+  `planTimeChange()` for this, and is exercised by TEST-A's real 7 Oct
+  replacement row in `propagation.test.ts`); a move to another date is the
+  existing origin/replacement model (`Replacement Occurrence` /
+  `From field: Replacement Occurrence`, `computeReplacementOccurrenceKey()`'s
+  `:R:` shape). **One-off occurrence-level write itself is still not
+  implemented** - `index.ts` exposes no occurrence-level PATCH route at
+  all (only `/generate`, `/propagate`, `/trigger-session-saved`,
+  `/daily-top-up`, all Session-level). Per your instruction, this is
+  recorded as future UI/write workflow (Section L), not a Schedule-
+  foundation failure - the READ side (resolution/display) already handles
+  a Changed/Time-Overridden/Rescheduled row correctly (Section G), only
+  the WRITE side for a brand-new one-off exception doesn't exist yet.
+
+### E. Triggering / automation
+
+- **Manual generation route** (`/generate`): reconfirmed live, above.
+- **Session-save trigger route** (`/trigger-session-saved`): the exact
+  status-transition sequence re-verified during the hardening fix stands
+  (Draft->Active->Inactive->Active->Inactive, one History row per genuine
+  transition, zero on retry) - not re-run again this slice since nothing
+  in `orchestrator.ts`/`session-trigger.ts` changed since that verification
+  a few hours earlier in this same session.
+- **Daily top-up + the 03:00 UTC TEST cron**: read the real
+  `cron.job` row back from Postgres - `session-occurrences-daily-top-up`,
+  schedule `0 3 * * *`, `timeout_milliseconds := 60000` (the Slice 8 fix,
+  still in place), sending the anon key (`apikey`/`Authorization`, satisfies
+  `verify_jwt`) plus the real `X-Cron-Secret` header. Fired the exact same
+  call by hand: `{"considered":3,"generated":0,"noChanges":3,
+  "skippedLocked":0,"failed":0,"occurrencesCreated":0,"failures":[]}` -
+  TEST-A, TEST-B and `SLICE10-CHECK` (all three real Active Sessions at the
+  time) all correctly `no_changes`, cron-secret gate still enforced,
+  failure-isolation contract unchanged (still proven by the Slice 8
+  mocked-fetch unit test, `daily-top-up.test.ts`, 7/7 - a real second
+  Session failing never aborts the sweep for the rest).
+- **Per-Session locking / overlap safety / stale-lock ownership token
+  behaviour**: unchanged `lock-client.ts`, re-confirmed structurally
+  (token-ownership release semantics, Section A) and empirically -
+  `generation_locks` read back as 0 rows both before this slice's real
+  calls and after all of them (multiple sequential `/generate`/`/propagate`/
+  `/daily-top-up` calls against `SLICE10-CHECK`, none left a stale row).
+- **Lock table empty after successful runs**: confirmed, above.
+- **TEST X-Cron-Secret mechanism**: flagged, as instructed, for production
+  review later (Section K) - not changed here. It remains a TEST-only
+  workaround for not having a real production service-role key available
+  to this session; production's real deployment needs its own decision on
+  how the daily sweep authenticates itself (Section K, item 6).
+
+### F. Session History
+
+- **Correct structural dimensions generate History, occurrence-level
+  exceptions do not**: reconfirmed live - the three `/propagate` calls
+  above each produced exactly one History row (Venue, Time, Day), each
+  correctly scoped to the Session-level dimension that actually changed;
+  no occurrence-level exception (the frozen/crystallised row, the 12
+  cancelled Wednesday rows, the 13 new Thursday rows) produced a History
+  row of its own - History audits the STRUCTURAL edit, never the
+  occurrence-level consequences of it, exactly as designed.
+- **Changed By ID + Name Snapshot / Changed At / Change Summary**: all
+  three real rows carry the correct Supabase Auth user id, "Morgan
+  Manager" (the real `manager@test.invalid` profile's display name,
+  snapshotted, not live-looked-up), a UTC `Changed At` matching the real
+  call time, and an accurate, specific Change Summary for each
+  (crystallisation count, cancellation count, update count) - never a
+  generic "something changed."
+- **Multi-field edits**: unchanged design (Slice 9), not re-exercised with
+  a fresh multi-field call this slice (already proven live in Slice 9 -
+  `SLICE9-MULTI`, one call/one plan/one Session write/three History rows -
+  and nothing in the multi-field path has changed since).
+- **No-op retry idempotency / repeated genuine lifecycle transitions
+  preserved**: the hardening fix's own real-TEST verification (same
+  session, a few hours before this checkpoint) stands unmodified -
+  Draft->Active->Inactive->Active->Inactive produced exactly one History
+  row per genuine transition, zero on either immediate retry, including
+  the specific repeated-pair case the hardening fix exists for.
+- **Failed propagation creates no false success History**: unchanged by
+  construction (`buildPropagationHistoryEntries()`/
+  `writeSessionEventHistory()` are only ever reached after the real
+  writes above them have already succeeded - Section A/D's code re-read
+  confirms this is still structurally true, no rollback path exists to get
+  wrong because there is nothing to roll back).
+
+### G. Parent/Coach compatibility
+
+Re-ran real TEST checks as `parent.a@test.invalid` and `coach.a@test.invalid`
+against the current (post-hardening-fix, post-`SLICE10-CHECK`) TEST state:
+
+- **`GET /parent-hub/me`**: identical to every prior slice's documented
+  baseline. Dylan Davies still `paused_sessions` on TEST-B with the same
+  `paused_from`/`returns_on` dates (paused-membership behaviour unchanged).
+  Archie Atkinson still `active_sessions` on both TEST-A and TEST-B, with
+  `ended_sessions` correctly distinguishing TEST-B's actual `end_date`
+  (2026-09-12) from its `scheduled_end_date` (2026-09-30) - unchanged.
+  Pending claim (Bella Brown) still present, unchanged.
+- **Cancelled/postponed/rescheduled resolution, via the REAL TEST-A
+  fixture**: Archie's TEST-A `next_occurrence` resolved to
+  `{"date":"2026-10-07","day":"Wednesday","time":"17:30 – 18:30",
+  "venue":"Sample Sports Hall","rescheduled":true}` - the real hand-seeded
+  5 Oct (Postponed) -> 7 Oct (Rescheduled replacement) fixture, correctly
+  skipping the cancelled 28 Sep origin and the postponed 5 Oct origin,
+  correctly resolving to the REPLACEMENT's own date/weekday/time/venue
+  (not the recurring Monday pattern), with `rescheduled: true` set. This is
+  the single strongest live proof available that TEST-A's original
+  hand-seeded exception fixtures are still valid data (Section H) AND that
+  resolution logic still reads them correctly.
+- **Europe/London occurrence-time display**: Archie's TEST-A occurrence
+  shows `17:30 – 18:30` (the fixture's real UTC instant, 16:30Z, correctly
+  displayed as BST-adjusted local time) and TEST-B's shows `18:00 – 19:00`
+  (already GMT-period-adjacent, still correct) - unchanged since the
+  `a2fa3eb` fix.
+- **TEST-B generated occurrence path**: Archie's TEST-B `next_occurrence`
+  (1 Oct 2026, Thursday, 18:00-19:00, Sample Sports Hall,
+  `rescheduled: false`) is a plain generator-created row, resolving
+  correctly with no exception involved - unchanged.
+- **`available_sessions`**: correctly reflects the real live Active Session
+  set at call time (TEST-A, TEST-B, and `SLICE10-CHECK` while it existed) -
+  confirms this list is genuinely live-derived, not hardcoded.
+  `session_requests_available: false` unchanged (the feature stays
+  switched off, per its own Feature Control gate - unrelated to this
+  foundation).
+- **`GET /hub-content/players`** as `coach.a`: identical to baseline -
+  Archie + Bella, `tier: "permanent"`, `can_edit_feedback`/`can_edit_idp`/
+  `can_edit_attendance` all `true` - Lead Coach access unchanged.
+- **Coach frontend occurrence-driven migration status**: confirmed NOT
+  migrated (Section B) - `coach.js`'s schedule view still reads the legacy
+  CSV feed, not Session Occurrences. This is unchanged and, per your
+  instruction, correctly left alone.
+
+### H. Data integrity
+
+Inspected the real current TEST data directly (not just through the app):
+
+- **TEST-A hand-seeded exception fixtures**: all five original rows
+  present and structurally intact - 28 Sep (Cancelled), 5 Oct (Postponed,
+  outgoing `Replacement Occurrence` link to the 7 Oct row), the 7 Oct
+  replacement itself (incoming `From field: Replacement Occurrence` link
+  back to the 5 Oct origin), 12 Oct and 19 Oct (plain Scheduled Standard).
+  The replacement link is mutual and non-orphaned (both ends exist and
+  point at each other). Independently reconfirmed live via Parent Hub's
+  own resolution of this exact fixture (Section G).
+- **Occurrence Key uniqueness / no duplicate standard slots**: read the
+  entire real Session Occurrences table (53 rows at the time, before this
+  slice's own cleanup) and checked every explicit `Occurrence Key`/derived
+  key - no two rows share a key, no Session+date combination has more than
+  one standard-slot row. TEST-A's 5 legacy rows (no explicit key field
+  set) and TEST-B/`SLICE10-CHECK`'s generator-created rows (explicit key)
+  coexist with no collision, exactly as `deriveOccurrenceKey()` guarantees.
+- **No orphaned replacement links**: the one real replacement pair (above)
+  is intact; no other `Replacement Occurrence`/`From field: Replacement
+  Occurrence` link exists in the current table.
+- **No stale generation locks**: `generation_locks` read back as 0 rows
+  (Section E).
+- **No leftover throwaway Sessions/Session Dates/Session History rows from
+  prior verification**: read the entire real Sessions table (3 rows: TEST-A,
+  TEST-B, and this slice's own `SLICE10-CHECK`, since deleted), the entire
+  Session Dates table (0 rows), and the entire Session History table (only
+  this slice's own 3 rows, since deleted) - no debris survived from Slices
+  6, 7, 8, 9 or the hardening fix's own throwaway Sessions; each of those
+  slices' own cleanup step had already removed everything it created.
+- **This slice's own debris**: `SLICE10-CHECK` (`recmtDmtYJWJzz9tp`), its
+  26 Session Occurrences rows (13 original Wednesday + 13 backfilled
+  Thursday) and its 3 Session History rows were all deleted by exact
+  record ID after the checks above completed. Confirmed by re-reading
+  Sessions (back to 2: TEST-A, TEST-B), Session Occurrences (back to 27:
+  TEST-A's 14 + TEST-B's 13) and Session History (back to 0 rows).
+
+### I. Full regression - exact counts
+
+| Suite | Result |
+|---|---|
+| Generator (`session-generator.test.ts`) | **37/37** |
+| Repository/concurrency (`session-repository.test.ts`) | **19/19** |
+| Propagation (`propagation.test.ts`) | **43/43** |
+| Triggering/daily-top-up (`daily-top-up.test.ts`) | **7/7 checks** |
+| Parent Hub time-format/resolution (`next-occurrence.test.ts`) | **19/19** |
+| **Full TEST suite** (`node tests/run-all.js`, all 50 e2e files incl. the five above) | **50/50 test files passed** |
+
+Run twice this slice (once mid-checkpoint, once as the final record) with
+identical results both times. No failure encountered - nothing stopped
+this slice for the "any failure stops Slice 10" condition.
+
+### J. Production isolation
+
+Re-checked directly, not assumed:
+
+- **Production Supabase** (`bkkukymqaxawnudoxdjs`): `list_edge_functions`
+  shows exactly `hub-content`, `me`, `register-interest`, `approve-coach`,
+  `player-sessions`, `parent-hub`, `player-feedback`,
+  `approve-coach-trial`, `player-feedback-trial` - **no
+  `session-occurrences` function exists in production.** The public schema
+  has exactly one table, `profiles` - **no `generation_locks`, no
+  `cron_auth_secrets`, no `validate_cron_secret`/`acquire_generation_lock`/
+  `release_generation_lock` RPCs exist in production Postgres.**
+- **Production Airtable** (`apprptFotQuVL1mhs`): a genuine finding worth
+  recording precisely, not glossed over. Production's schema is NOT a
+  blank slate - it already has `Sessions`, `Session Occurrences`,
+  `Occurrence Staff`, and a `Session Change History` table, pre-dating this
+  Schedule foundation's work entirely (most likely built for a different,
+  not-yet-wired purpose, since none of it does anything without the
+  generator/propagation/History code this foundation built in TEST).
+  Comparing field-by-field against TEST:
+  - Present in BOTH (safe, no gap): `Default Day`, `Default Start Time`,
+    `Default End Time`, `Default Capacity`, `Schedule Pattern`, `Session
+    Lifecycle Status`, `Venue` (linked record, not free text) on Sessions;
+    `Date`, `Start/End Date & Time`, `Status`, `Venue`, `Capacity Override`,
+    `Schedule Change State`, `Replacement Occurrence`/`From field:
+    Replacement Occurrence` on Session Occurrences.
+  - **Missing in production** (genuine TEST-only additions this
+    foundation made): the `Occurrence Key` field (idempotency), the
+    `Time Overridden` field (one-off/reschedule protection), and the
+    entire `Session Dates` table (Included/Excluded rules) - none of these
+    three exist in production yet.
+  - **Shaped differently** (a real decision point, not yet resolved):
+    production's `Session Change History` has `Change ID`/`Scope`/
+    `Effective From`/`Previous Value`/`Reason`/`Source`/an occurrence-level
+    `Session Occurrence` link, alongside `Change Type`/`Changed At`/
+    `Changed By User ID`/`Changed By Name Snapshot` - broader than TEST's
+    `Session History` (`History ID`/`Session`/`Change Type`/`Old Value`/
+    `New Value`/`Change Summary`/`Changed At`/`Changed By User ID`/`Changed
+    By Name Snapshot`, Session-level only). The two are not interchangeable
+    as-is; **flagged as a promotion decision, not resolved here** (Section
+    K).
+  This changes the promotion manifest's shape for the better (a smaller
+  schema delta than "build everything from scratch"), but it means the
+  original Slice 9 claim that "production does not yet have the TEST-only
+  Schedule schema additions" was too broad - the ACCURATE statement is:
+  production already has the base Sessions/Occurrences/Occurrence-Staff/
+  Change-History structure, but not Occurrence Key, Time Overridden,
+  Session Dates, or a History table shaped like TEST's. See Section K.
+- **Production frontend**: no frontend file (`auth.js`, `coach.js`,
+  `config.js`, `content-provider.js`, `core.js`, `feedback.js`,
+  `main.js`, `management.js`, `parent.js`, `styles.css`, `index.html`) was
+  read for write or edited this slice.
+- **Google Sheets / finance workbook**: no Sheet or finance file was
+  touched this slice (or at any point in Slices 1-9/the hardening fix -
+  every write this foundation ever made was to the TEST Airtable base
+  `appQktredAuGa1X7e` or the TEST Supabase project `dkqubldmfyeuudecxmvh`).
+
+### K. Production promotion manifest
+
+Nothing promoted. This is the controlled reference for when that move
+happens later.
+
+1. **Exact Git commits comprising the Schedule & Sessions foundation**
+   (branch `foundation/test-base-isolation`, chronological):
+   `8d95959` (isolated TEST base + boot guard) ->
+   `b8870a8` (Slice 2: pure generator) ->
+   `52583c0` (ratify Selected Dates/One-off decisions) ->
+   `269187a` (Slice 3: repository/orchestration/locking) ->
+   `afe9677` + `8d852be` (Slice 4: manual `/generate` endpoint + 404 fix) ->
+   `356f8b1` (Slice 5 checkpoint) ->
+   `a2fa3eb` + `cf789e8` (Parent Hub occurrence-time display fix) ->
+   `5b01f9f` (Slice 6: propagation) ->
+   `7c2abb3` (Slice 7: Selected Dates/One-off verification) ->
+   `7cca720` (Slice 8: triggering/daily top-up) ->
+   `04d1958` (Slice 9: Session History) ->
+   `4c7ff27` (hardening fix: Active Status idempotency). Slice 1 (the
+   original Session Occurrences/Session Dates/Session History TEST schema
+   creation) was an Airtable-only change with no corresponding code commit -
+   documented in this file's early Slice sections, not in git.
+2. **Airtable schema additions required in production** (Section J's
+   diff): add the `Occurrence Key` field to Session Occurrences; add the
+   `Time Overridden` field to Session Occurrences; add the `Session Dates`
+   table (`Session Date ID`, `Session` link, `Date`, `Date Type`
+   singleSelect: Included/Excluded); **decide** whether Session History
+   writes go into production's existing `Session Change History` table
+   (mapping TEST's narrower field set into it, deciding what to do with its
+   extra `Scope`/`Effective From`/`Reason`/`Source`/occurrence-link fields)
+   or a new dedicated table matching TEST's exact shape - this decision
+   should be made before any promotion work starts, not defaulted silently.
+3. **Supabase schema/functions/RPCs required**: the `generation_locks`
+   table + `acquire_generation_lock`/`release_generation_lock` RPCs
+   (Slice 3's exact migration, re-applicable verbatim); a real production
+   equivalent of TEST's `cron_auth_secrets` table +
+   `validate_cron_secret()` RPC, OR (preferable in production, where a real
+   service-role key is presumably obtainable through proper secret
+   management) authenticate the daily sweep with the actual service-role
+   key the way the lock RPCs already authenticate themselves, rather than
+   reproducing the TEST-only workaround - this is exactly the "flag for
+   production review" item from Section E.
+4. **Edge Functions/routes to deploy**: `session-occurrences` (all 12
+   files: `index.ts`, `generator.ts`, `schedule-utils.ts`, `repository.ts`,
+   `lock-client.ts`, `orchestrator.ts`, `propagation.ts`,
+   `propagation-repository.ts`, `propagation-orchestrator.ts`,
+   `session-trigger.ts`, `daily-top-up.ts`) as a genuinely new production
+   function - routes `/generate`, `/propagate`, `/trigger-session-saved`,
+   `/daily-top-up`, `verify_jwt: true`, production `AIRTABLE_BASE_ID`/
+   `AIRTABLE_TOKEN`/`SUPABASE_URL`/`SUPABASE_ANON_KEY`/
+   `SUPABASE_SERVICE_ROLE_KEY` env vars. The `PRODUCTION_BASE_IDS` boot
+   guard in `index.ts` must be REMOVED (or inverted to guard the other way)
+   before this ever runs against the real base - deploying this file
+   unchanged against production would make it refuse to start, by design.
+5. **cron/scheduled-job setup required**: a `session-occurrences-daily-
+   top-up` pg_cron job in the production Postgres, same `0 3 * * *`
+   schedule, `timeout_milliseconds := 60000` (do not reuse the TEST default
+   - Slice 8's own finding), pointed at the production function URL, with
+   whatever auth item 3 above resolves to.
+6. **Secrets/config required**: production Airtable token with write
+   access to Sessions/Session Occurrences/Session Dates/Session History (or
+   Session Change History, per item 2's decision)/Venues; production
+   Supabase service-role key (already presumably held by other production
+   functions); the daily-sweep secret/mechanism per item 3.
+7. **Production data backfill/generation required**: once deployed, every
+   real production Active Session needs an initial `/generate` (or the
+   first daily sweep) to create its rolling-horizon occurrences - there is
+   no historical backfill of PAST occurrences (the generator is
+   forward-looking only, by design, same as every TEST Session).
+8. **Known migration risks**: (a) the `Session Change History` schema
+   mismatch (item 2) - the single biggest open decision; (b) production's
+   Sessions/Session Occurrences tables carry many fields this foundation
+   never touches (`Client / Organisation`, `Schedule Breaks`, `Billing
+   Rules`, `Needs Attention Exceptions`, `Booking Lines`, `Player
+   Eligibility Overrides`, `Hub Audit Events`, `Discount Rules` on
+   Sessions; `Coach Allocations`, `Player Attendance`, `Booking Lines` on
+   Session Occurrences) - confirm none of these are expected to interact
+   with generation/propagation before promoting, since this foundation was
+   never designed or tested against them; (c) the Coach Hub CSV frontend
+   path (Section B) will keep showing its own, separately-sourced schedule
+   data even after promotion, until it is migrated too - promoting the
+   backend alone does not retire it; (d) the TEST cron-secret workaround
+   (item 3) should not be copied into production as-is.
+9. **Rollback points**: every commit in item 1 is independently
+   revertable (each Slice's own commit is self-contained per this file's
+   own Slice-by-Slice verification sections); the Edge Function itself can
+   be rolled back to "not deployed" by simply not deploying it (nothing
+   else depends on it existing); the Airtable schema additions in item 2
+   are additive-only (new fields/table), so rollback is "stop using them,"
+   never "must delete data."
+10. **Post-deploy verification checklist** (mirrors this file's own TEST
+    verification convention): (a) boot guard confirms it's pointed at the
+    real production base, not TEST/Master Copy; (b) one real throwaway-safe
+    production Session exercises `/generate` end to end; (c) one real
+    `/propagate` call confirms Time/Venue/Capacity/Day/EndDate each still
+    behave per Sections C/D; (d) `/trigger-session-saved` confirms
+    Created/Active-Status History with the corrected (post-hardening-fix)
+    idempotency rule; (e) the daily cron fires once manually and reports
+    `failed: 0`; (f) `generation_locks` empty after all of the above; (g)
+    Parent Hub/`hub-content` continue to resolve real production Sessions
+    correctly (Section G's checks, against production data); (h) the
+    Coach Hub frontend is confirmed still working unchanged (it doesn't
+    consume this function yet, so it should show zero behavioural
+    difference - any difference found here would itself be a bug).
+
+### L. Remaining Schedule work after this foundation
+
+**Foundation complete:**
+- Pure generation (Recurring/Selected Dates/One-off, rolling horizon,
+  Occurrence Key idempotency, BST/GMT-safe).
+- Pure recurring-edit propagation (Time/Venue/Capacity/Day/EndDate,
+  frozen protection, crystallisation, override independence, backfill
+  reporting).
+- Concurrency (per-Session locking, ownership-token release safety).
+- Immediate triggering + daily scheduled top-up + failure isolation.
+- Session History (structural dimensions only, Changed By/At snapshot,
+  no-op-retry-safe, genuine-repeat-safe idempotency).
+- Real-TEST verification discipline and documentation for all of the
+  above, this file, commit by commit.
+
+**Still needed before Coach/frontend schedule cutover:**
+- Migrate `coach.js`'s `renderSchedule()` off the Sheets CSV feed onto
+  real Session Occurrences (Section B/G's confirmed-not-yet-done item).
+- A real Management "save Session" write flow that calls
+  `/trigger-session-saved` (the documented integration point, Section D/L
+  of Slice 8/9) - today nothing in this codebase actually calls it except
+  this file's own TEST verification.
+- The one-off occurrence-level write workflow (Section D) - resolution
+  already works, creation doesn't exist yet.
+
+**Still needed during Management Schedule PDF implementation:**
+- Whatever UI actually lets Management create/edit Session Dates rows
+  (still read-only from this foundation's side).
+- The Session Change History schema decision (Section K, item 2) most
+  likely needs resolving here, since a Management screen is exactly where
+  "what does History look like to a human" gets decided.
+
+**Known future work (deliberately deferred, not a Slice 10 failure):**
+- Coach Hub CSV schedule migration (Section B).
+- Calendar frontend migration (same CSV dependency, `calendarCsvUrl`).
+- Occurrence Staff / cover migration - this foundation never touches
+  Occurrence Staff at all yet.
+- Venue availability (no conflict/capacity-checking logic exists anywhere
+  in this foundation - Venues are referenced, never validated against each
+  other).
+- Occurrence-level historical correction audit (explicitly out of scope
+  since Slice 9 - a past occurrence's own record can be corrected by
+  direct write, but there is no dedicated audit trail for THAT kind of
+  edit, only for Session-level structural changes).
+- Management Schedule screens generally (nothing in this foundation is
+  wired to any UI yet - every real call this file documents was made
+  directly over HTTP for verification).
+- Frontend "Sync Sessions" button retirement (Phase 1/2 already retired
+  the AUTOMATIC sync - confirm during frontend migration whether a manual
+  button/reference still exists to remove).
+- Production-only `player-sessions` Sheet-sync retirement (Section B/J) -
+  the production Edge Function still carries the pre-migration Sheet-as-
+  authority logic; this is exactly what promotion (Section K) is expected
+  to eventually replace, not something this TEST-only foundation slice can
+  touch.
+
+### Verdict
+
+**Schedule & Sessions backend foundation is ready to be treated as
+complete in TEST.** Every ownership boundary in Section A holds with no
+newly-introduced duplicate source of truth; every legacy contradiction
+search in Section B came back clean inside the new foundation, with the
+known legacy paths outside it (Coach Hub CSV, production Sheet-authority)
+correctly identified and left alone; every generation/propagation/
+triggering/History behaviour in Sections C-F was re-confirmed against the
+currently deployed v9 function with real TEST HTTP calls, not just
+unchanged unit tests; Parent/Coach compatibility (Section G) is unchanged
+and Parent Hub's live resolution of TEST-A's own hand-seeded exception
+fixture doubles as independent proof of Section H's data-integrity claims;
+the full regression suite is 50/50 (Section I); production, its frontend,
+Google Sheets and the finance workbook remain fully untouched, and Section
+J's closer look at production's Airtable schema turned up a genuine,
+now-documented finding (a pre-existing, differently-shaped schema this
+foundation will need to reconcile with, not build from scratch) that the
+promotion manifest (Section K) now accounts for explicitly instead of
+leaving to be rediscovered later.
+
+Do not start the Coaches foundation automatically.
