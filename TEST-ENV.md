@@ -3498,20 +3498,24 @@ frontend, Google Sheets, or finance file touched.
 **Cancellation / reschedule financial outcome** (for the later Coach
 Allocations / Finance work, not Slice 1): when an occurrence is cancelled
 or rescheduled, Management should eventually be able to confirm the
-financial outcome of the ORIGINAL occurrence - coach cost, venue cost, and
-any other applicable cost, each independently resolvable to Paid / Unpaid
-/ Partial, with a final amount and an optional reason/note. For a
+financial outcome of the ORIGINAL occurrence for each of coach, parent
+and venue, with a final amount and an optional reason/note. For a
 reschedule specifically: the original occurrence keeps its own financial
 outcome; the replacement occurrence carries its own normal costs
 separately - the two are never merged into one record. No fields or logic
 for this exist yet; recorded here so the requirement isn't lost before the
 relevant later slice.
 
-### Cancellation/weather pay rules - confirmed still out of scope
-
-Not touched this slice, per instruction - the 5-hour cancellation rule and
-10-minute weather rule remain unbuilt, pending product clarification on
-exact boundary conditions, same finding as the Coaches Foundation Audit.
+**Correction (Slice 6):** this note and the "out of scope" note below it
+both originally implied a 5-hour cancellation rule and a 10-minute
+weather rule were the expected eventual shape of this work, and that all
+three outcome families would share one Paid/Unpaid/Partial choice set.
+Neither was ever built; both were superseded by the approved model
+Coaches Slice 6 actually implemented - explicit per-occurrence Management
+decisions, with Coach (Paid/Unpaid/Partial), Parent (Credit/Refund/None)
+and Venue (Paid/Credit/None) as three independent choice sets, never
+auto-selected by time-before-cancellation, weather, or any other signal.
+See the Coaches Foundation — Slice 6 section for the full write-up.
 
 **Coaches Slice 1 is ready for Slice 2 Session Staff effective dating.**
 
@@ -4666,21 +4670,25 @@ this slice inferred.
 Recorded here as the already-agreed future rule, per the brief, with no
 code built against it this slice: when an occurrence is cancelled or
 rescheduled, Management should eventually confirm - is the coach being
-paid, is the venue being paid, is credit being added to the parent?
-Coach/venue outcomes may ultimately be Paid/Unpaid/Partial with a final
-amount and optional reason. For a reschedule specifically: the original
-occurrence retains its own financial outcome; the replacement occurrence
-has its own costs entirely separately (no cost/outcome is ever
-transferred or merged between the two). This belongs to later
-Coach/Finance logic, not this slice.
+paid, is the venue being paid, is credit being added to the parent? For
+a reschedule specifically: the original occurrence retains its own
+financial outcome; the replacement occurrence has its own costs entirely
+separately (no cost/outcome is ever transferred or merged between the
+two). This belongs to later Coach/Finance logic, not this slice.
 
-### Unresolved - deferred to Slice 6
-
-Explicitly NOT implemented this slice, per the brief: the 5-hour
-cancellation rule and the 10-minute weather rule. Both remain unresolved
-product rules. This slice only covers the normal allocation cost case
-(an occurrence that happened, staffed, and is being paid for as
-planned).
+**Correction (Slice 6):** the sentence above and the "Unresolved -
+deferred to Slice 6" note that originally followed it both implied a
+5-hour cancellation rule and a 10-minute weather rule were the expected
+shape of that later work. They were superseded before being built.
+Coaches Slice 6 implemented the actual approved model instead: explicit
+per-occurrence Management decisions (Coach Paid/Unpaid/Partial, Parent
+Credit/Refund/None, Venue Paid/Credit/None - not a single shared
+Paid/Unpaid/Partial across all three, as this section used to say).
+Organisation settings may later suggest defaults, but no universal
+automatic payment rule - time-based, weather-based, or otherwise - is
+assumed. See the Coaches Foundation — Slice 6 section below for the full
+write-up. No automatic 5-hour/weather logic exists anywhere in this
+codebase, TEST or production.
 
 ### Security
 
@@ -4846,3 +4854,369 @@ integrated.
 decisions and implementation.**
 
 Do not start Slice 6 automatically.
+
+## Coaches Foundation — Slice 6 (cancellation/reschedule financial outcomes) — 2026-09-27
+
+TEST-only. Production Airtable, production Supabase, frontend, Google
+Sheets and Stripe untouched throughout. This slice replaces the
+previously-discussed idea of hard-coded 5-hour cancellation / 10-minute
+weather pay rules with the agreed, simpler model: **when Management
+cancels or reschedules a specific occurrence, the Hub records what
+actually happens financially for that occurrence, as an explicit
+per-occurrence decision.** No automatic cancellation/weather payment
+logic was built - see the Slice 5 corrections above, where the old
+wording implying that automatic rule was still coming has been fixed.
+
+### Schema re-read first, nothing invented
+
+Session Occurrences, Coach Allocations, and the full production Airtable
+schema (66 tables) were re-read fresh before any code or schema change.
+Two findings shaped the design:
+- **Session Occurrences already has everything needed for the
+  cancellation/reschedule states themselves** - `Status`
+  (Scheduled/Completed/Cancelled/Postponed) and the `Replacement
+  Occurrence`/`From field: Replacement Occurrence` link pair from the
+  Schedule foundation slices. Nothing new was added here; Slice 6 reads
+  these, never writes them.
+- **Production has an extensive Finance layer** (Family Credits, Family
+  Credit Applications, Commercial Adjustments, Bookings, Booking Lines,
+  Refund Policies, and more) that TEST does not mirror - but every one
+  of those tables is an **execution/ledger** layer (real credit
+  balances, Draft/Pending/Sent/Applied workflow states, amounts actually
+  charged) tied to a Family/Booking, not a simple per-occurrence
+  Management *decision*. Using them here would mean building the
+  parent wallet/credit ledger the brief explicitly said not to build.
+  Production's own Session Occurrences/Coach Allocations tables are
+  structurally identical to TEST's (same fields, different ids) - no
+  hidden production field for this already exists there either. Per the
+  brief's own fallback ("if the current schema genuinely has nowhere
+  clean to store these three outcome families, propose the smallest
+  additive TEST schema"), a small additive schema was proposed and
+  built, documented below.
+
+### Final financial-outcome model
+
+Three independent fact families per occurrence, never inferred from one
+another, from occurrence Status, from coach attendance, or from time
+before cancellation:
+- **Coach outcome** - `Paid` / `Unpaid` / `Partial`.
+- **Parent outcome** - `Credit` / `Refund` / `None`.
+- **Venue outcome** - `Paid` / `Credit` / `None`.
+
+Each supports an explicit final amount and an optional reason/note where
+relevant. These are recorded **decisions**, not executed money movement:
+`Parent Outcome = Refund` means "Management has decided a refund is
+owed," not that a refund has been sent; `Coach Outcome = Paid` means
+"this occurrence should still count as paid work," not that money has
+been transferred. No Stripe refund, parent wallet/credit ledger, venue
+invoice settlement, coach payment, Xero integration, or finance export
+exists anywhere in this slice.
+
+### Occurrence ownership - Coach stays on Coach Allocations, Parent/Venue get one new table
+
+Per the brief's explicit preference ("do not duplicate coach-cost truth
+onto Session Occurrences if Coach Allocations can own it cleanly"):
+- **Coach outcome** lives on the existing Coach Allocation (Slice 5).
+  One new `Coach Outcome` singleSelect field (Paid/Unpaid/Partial) plus
+  three small audit fields (`Coach Outcome Decided By User ID`/`...Name
+  Snapshot`/`...Decided At`, same "Decided/Confirmed By" convention used
+  everywhere else in this schema - Session Occurrences' `Confirmed By`,
+  Session History's `Changed By`, etc.). No new coach-cost table.
+- **Parent outcome and Venue outcome** live on a brand-new TEST-only
+  table, **`Occurrence Financial Outcomes`** - one row per Session
+  Occurrence, created only when Management first makes a Parent or Venue
+  decision for that occurrence (never auto-created). Both families share
+  this one table (Outcome/Amount/Reason/Decided-By-User-ID/Decided-By-
+  Name-Snapshot/Decided-At, x2, one set per family) since they are the
+  same shape of fact about the same occurrence and splitting them into
+  two tables would be "overcomplicating" for no benefit. `Outcome ID` is
+  a plain human-label field (same convention as `Allocation ID`/`Rate
+  Profile ID`), not a uniqueness key - see Idempotency below.
+
+This is a new TEST-only proposal, confirmed above to have no production
+equivalent; it should be reviewed by Finance/Management before any
+future production promotion, same as Slice 1's TEST-only Coach Documents
+verification fields.
+
+### Reschedule separation rule
+
+The original occurrence's financial outcomes are recorded against its
+own record id; the replacement occurrence (linked via the existing
+`Replacement Occurrence` field from the Schedule foundation) is a
+completely separate Session Occurrence record with its own Coach
+Allocations and its own (initially absent) Occurrence Financial
+Outcomes row. Nothing in this slice ever reads the original's outcome to
+populate the replacement's, or vice versa - `setParentOutcome`/
+`setVenueOutcome`/`setCoachOutcome` all take an explicit occurrence/
+allocation id and touch only that one record. Proven live below
+(Scenario C): after recording Coach=Unpaid/Parent=Refund/Venue=Credit on
+a Postponed original, the linked replacement occurrence's combined read
+showed zero Coach Allocations and both outcomes null.
+
+### Historical snapshot behaviour (Coach outcome)
+
+Reuses Slice 5's model unchanged. `buildCoachOutcomePatch()` never
+touches `Rate Profile`/`Rate Type Snapshot`/`Pay Unit Snapshot`/`Rate
+Amount Snapshot` - only `Coach Outcome`/`Cost Override`/`Override
+Reason`/`Final Coach Cost`/the new audit fields:
+- **Paid** - `Final Coach Cost` is recalculated from THIS allocation's
+  own already-stored `Rate Amount Snapshot x Paid Units` (never the
+  Coach's current live Rate Profile), `Cost Override` cleared. This is
+  the brief's "preserve the intended full payable cost."
+- **Unpaid** - `Cost Override = 0`, `Final Coach Cost = 0`, using the
+  existing model to represent "no coach cost" without inventing a
+  second cost field.
+- **Partial** - `Cost Override`/`Final Coach Cost` become the explicit
+  Management-agreed amount (required - see Backend/API validation
+  below); the rate snapshot basis is untouched. Proven live below
+  (Scenario B): a £30 basis allocation given a Partial £15 outcome kept
+  `Rate Amount Snapshot = 30` and showed `Final Coach Cost = 15`.
+
+### Idempotency
+
+**Coach outcome** is always an UPDATE to one specific, caller-supplied
+`allocationId` - never a create - so repeating or editing a decision is
+trivially idempotent/safe by construction; there is no create path to
+duplicate.
+
+**Parent/Venue outcome** uses the same application-level uniqueness
+pattern as Slice 5's Coach Allocations: at most one Occurrence Financial
+Outcomes row per Session Occurrence, enforced by `fetchOutcomeRowForOccurrence()`
+being called before every write. If no row exists, one is created; if
+one exists, it is updated in place (a genuine upsert, unlike Slice 5's
+Coach Allocations, which treats a repeat as a no-op - here Management
+may legitimately revise a decision, so the second call must apply the
+new values, not just report "already exists"). Proven live and in unit
+tests (items 14/15): a repeated identical confirmation updates the same
+row and makes zero additional create calls; a later edit (e.g. Venue
+Paid £50 -> Credit £30) updates the same row to the new values.
+
+**Known limitation, documented rather than engineered around:** the
+check-then-write upsert has the same theoretical race as any
+check-then-act pattern without a database-level unique constraint or
+transaction - two genuinely *concurrent* writes to the same occurrence's
+Parent and Venue outcome (not a sequential repeat/edit, which is what
+the brief's idempotency requirement actually describes) could each see
+"no existing row" and both create one. This was observed once during
+real TEST verification, when this session itself fired Parent-outcome
+and Venue-outcome calls in parallel rather than sequentially, and was
+resolved by deleting the duplicate and re-issuing the second call
+sequentially (a human Management user submitting one decision at a time
+would never trigger this). Airtable's REST API has no compare-and-swap
+primitive to close this without building real infrastructure, which
+would be "a full event-sourcing system" the brief said not to build
+this slice; flagged here as a real, narrow limitation for
+Finance/Management to weigh if concurrent multi-user editing of the
+same occurrence's outcome becomes a real scenario, rather than silently
+left undocumented.
+
+### Management-only security
+
+Every `occurrence-financial-outcomes` route (`/coach-outcome`,
+`/parent-outcome`, `/venue-outcome`, `/outcomes`) is Management-only,
+using `isManagementCaller()` - a small pure predicate in
+`financial-outcomes.ts`, called by `index.ts`'s `requireManagement()`
+rather than an inline check, so the exact deployed rule is directly
+unit-testable (items 16/17) as well as proven live. Coach users cannot
+decide whether they are paid; Parent users cannot assign themselves a
+refund/credit. Verified live: Management JWT succeeds on all three write
+routes; a Coach JWT and a Parent JWT each get 403 `"Management access
+required"` on their respective attempts, and the target records were
+confirmed unchanged afterward.
+
+### Future organisation-setting defaults
+
+Not built this slice, per the brief ("do not build Settings in this
+slice"). Recorded as the agreed future shape: Organisation Settings may
+later provide suggested defaults or preselected answers for Coach/
+Parent/Venue outcome (e.g. a default Coach outcome for a Weather-tagged
+cancellation), but Management confirmation remains the source of truth
+for the final outcome - a suggested default is never silently applied
+without a Management decision recording it.
+
+### Backend/API
+
+New, entirely isolated Edge Function `occurrence-financial-outcomes` -
+no existing function was modified. Same layering as Schedule/Slice 5:
+- **`financial-outcomes.ts`** - pure validation/patch-building logic, no
+  Airtable/Supabase/network calls. `validateCoachOutcomeInput()`
+  requires a valid non-negative `amount` when outcome is `Partial`
+  (the brief: "Management provides the agreed partial amount"); a
+  garbage amount supplied for Paid/Unpaid still fails closed rather than
+  being silently ignored. `validateParentOutcomeInput()`/
+  `validateVenueOutcomeInput()` do not require an amount (the brief left
+  this open - "if amount/value is required, record it" - so an outcome
+  decision can exist before Management has a number to attach) but still
+  reject an invalid one if supplied.
+- **`repository.ts`** - Airtable I/O only, portable (no `Deno.*`), same
+  convention as every other TEST function's repository.
+- **`orchestrator.ts`** - `setCoachOutcome`/`setParentOutcome`/
+  `setVenueOutcome` (three separate entry points, never one shared
+  "setOutcome" that could blur the families together) plus
+  `readFinancialOutcomes()`, a combined read-only view (all Coach
+  Allocations linked to the occurrence + the Parent/Venue row) that
+  never recomputes or infers between families.
+- **`index.ts`** - Management-only Deno HTTP wrapper, same TEST
+  DEPLOYMENT GUARD as every other TEST function. Routes: `POST
+  /coach-outcome`, `POST /parent-outcome`, `POST /venue-outcome`, `GET
+  /outcomes?occurrenceId=`.
+
+### Focused tests
+
+All 18 required items plus a positive-control auth check and a
+Coach-Outcome-choices sanity check, in
+`tests/support/occurrence-financial-outcomes.test.ts` (mirrors of
+`financial-outcomes.ts`/`repository.ts`/`orchestrator.ts` kept by hand
+in `tests/support/` under domain-prefixed names, same convention as
+Slice 5):
+1-4. Cancelled occurrence + Coach Paid/Unpaid/Partial with explicit
+   amount, and Partial preserves the original rate snapshot (both that
+   the snapshot object itself is never mutated and that the payload
+   never contains a Rate Amount Snapshot/Rate Profile/Rate Type
+   Snapshot/Pay Unit Snapshot key at all).
+5-7. Parent Credit/Refund/None - amount/reason recorded independently;
+   None needs no amount and carries a null one rather than a stale
+   value.
+8-10. Venue Paid/Credit/None - same shape as Parent, independent
+   validators/patch-builders.
+11. All three outcome families coexist independently on one occurrence -
+   proven via a mocked-`fetch` orchestration test (see below) that sets
+   all three and reads back a combined view showing each exactly as set.
+12-13. A rescheduled original retains its own outcomes; the linked
+   replacement inherits nothing - proven via the same mocked-orchestration
+   harness with two linked occurrence ids.
+14. Repeated identical confirmation is idempotent - only one real create
+   call across two identical calls, second call updates the same row.
+15. Management can update a prior outcome safely - a later edit updates
+   the same row (not a new one) and the stored state reflects the latest
+   decision.
+16-17. Coach/Parent JWT cannot write - `isManagementCaller()` unit-tested
+   directly (a Coach-role or Parent-role caller fails; a positive-control
+   Management-role/active caller passes, so these aren't vacuously
+   true; an inactive Management-role caller still fails).
+18. Missing/invalid amounts fail safely where amount is required - Coach
+   Partial with a missing/negative/non-numeric amount all fail
+   validation; an invalid (negative/NaN) Parent/Venue amount fails even
+   though amount isn't strictly required for those families.
+
+Items 11-15 use the same mocked-`fetch` orchestration convention as
+Slice 5's idempotency test (item 16) and `daily-top-up.test.ts`, against
+an in-memory Airtable-shaped store, so the real orchestrator/repository
+code runs end to end without a real network call.
+`occurrence-financial-outcomes.test.ts`: **32/32** assertions passing.
+
+### Deploy
+
+`occurrence-financial-outcomes` v1 (project `dkqubldmfyeuudecxmvh`) -
+all four files (`index.ts`, `financial-outcomes.ts`, `orchestrator.ts`,
+`repository.ts`), a brand-new function, first deploy. Deployed content
+downloaded via `get_edge_function` and `diff`'d byte-for-byte against
+the local repo files after deployment; confirmed **identical** for all
+four files before any real TEST HTTP verification was trusted, per the
+discipline established after Slice 3's "PLACEHOLDER" incident.
+
+### Real TEST verification - all four required scenarios, real HTTP via `pg_net`
+
+One throwaway Coach (`SLICE6-TEST Coach Y`, `recCIodJ38Hfy6Bh2`,
+deleted), one throwaway Session (`SLICE6-TEST-SESSION`,
+`recZd0WJfjIYIPxx6`, deleted), one throwaway Coach Rate Profile
+(Evening/£30/hr, `recD93ezNbkBhTilB`, deleted), four throwaway Session
+Occurrences (A `recM8B06ch0RFx3MH` Cancelled, B `recWwVQ1DFbo1MekL`
+Cancelled, C `rec6SrCTZviEJph2k` Postponed with its `Replacement
+Occurrence` link pointing at D, D `recDvvJSevForn7jH` Scheduled - all
+deleted), and three real Coach Allocations created via Slice 5's own
+`coach-allocations /allocate` route for A/B/C (`recWmxX0jGj0ZfCNL`/
+`recWaCiT7pvfVPRG6`/`recw5yD6LTizi6VnV`, each £30 snapshot, all
+deleted). `manager@test.invalid` re-authenticated for a fresh Management
+JWT via `pg_net`; `coach.a@test.invalid`/`parent.a@test.invalid`
+likewise for Scenario D (same established password-reset-via-`crypt()`
+pattern).
+
+- **Scenario A - cancellation, all three outcomes independent**:
+  occurrence A set to Coach=Paid (`POST /coach-outcome`), Parent=Credit/
+  £20/"Weather cancellation - goodwill credit" (`POST /parent-outcome`),
+  Venue=Paid/£50 (`POST /venue-outcome`). Real combined `GET /outcomes`
+  result: `{"coachAllocations":[{"coachOutcome":"Paid",
+  "rateAmountSnapshot":30,"finalCoachCost":30}],"parentOutcome":
+  {"outcome":"Credit","amount":20,"reason":"Weather cancellation -
+  goodwill credit"},"venueOutcome":{"outcome":"Paid","amount":50}}` -
+  all three independently persisted on the one Occurrence Financial
+  Outcomes row (`recMOVwBcuSzLnueQ`, deleted).
+- **Scenario B - partial coach pay**: occurrence B's allocation (£30
+  basis) set to Coach=Partial/£15/"Agreed partial for late
+  cancellation". Real result: `{"status":"updated",
+  "recordId":"recWaCiT7pvfVPRG6","finalCoachCost":15,
+  "costOverride":15}`. The allocation record itself was then read
+  directly: `Rate Amount Snapshot: 30` (untouched), `Rate Profile`
+  still linked to the original profile, `Rate Type Snapshot: "Evening"`,
+  `Pay Unit Snapshot: "Per Hour"` (all untouched), `Cost Override: 15`,
+  `Final Coach Cost: 15`, `Coach Outcome: "Partial"`, `Override Reason`
+  persisted - **original rate snapshot unchanged, actual final cost
+  £15**, exactly the brief's own worked example.
+- **Scenario C - reschedule separation**: occurrence C (original,
+  Postponed) set to Coach=Unpaid, Parent=Refund/£40, Venue=Credit/£25.
+  Real combined read of C: `{"occurrenceStatus":"Postponed",
+  "coachAllocations":[{"coachOutcome":"Unpaid","rateAmountSnapshot":30,
+  "costOverride":0,"finalCoachCost":0}],"parentOutcome":
+  {"outcome":"Refund","amount":40},"venueOutcome":{"outcome":"Credit",
+  "amount":25}}`. Real combined read of the linked replacement D (same
+  call, immediately after): `{"occurrenceStatus":"Scheduled",
+  "coachAllocations":[],"parentOutcome":null,"venueOutcome":null}` -
+  **the original keeps its own outcomes; the replacement inherits
+  nothing**, exactly as required.
+- **Scenario D - permissions**: the same `/coach-outcome` and
+  `/parent-outcome` calls that succeeded as Management were repeated
+  against occurrence A/allocation A with a fresh `coach.a@test.invalid`
+  JWT and a fresh `parent.a@test.invalid` JWT respectively. Real result,
+  both: HTTP 403 `{"error":"Management access required"}`. A follow-up
+  `GET /outcomes` for occurrence A as Management confirmed the record
+  was untouched by either rejected attempt (`Parent Outcome` still
+  `Credit`/£20, not the rejected `Refund`/£100 the Parent JWT attempted).
+
+One real concurrency artifact was hit and resolved during this
+verification (documented under Idempotency above, not a code defect):
+firing Parent-outcome and Venue-outcome for Scenario A in parallel
+(rather than sequentially, as a real Management user would) caused both
+calls to see "no existing row" and each create one; the duplicate was
+deleted and the Venue call re-issued sequentially, which then correctly
+updated the Parent call's row.
+
+All exact throwaway record ids were captured at creation and deleted by
+those exact ids afterward (Coach Allocations first, then Occurrence
+Financial Outcomes rows, then Session Occurrences, then the Coach Rate
+Profile, then the Session, then the Coach) - reconfirmed via `contains
+"SLICE6"` searches across the Coaches and Sessions tables and a full
+listing of Occurrence Financial Outcomes: zero results/rows remaining.
+TEST-A/TEST-B were never write targets this slice.
+
+### Regression
+
+Full TEST suite (`node tests/run-all.js`), run after deploying and
+completing real TEST verification, includes
+`occurrence-financial-outcomes.test.ts` (32/32, new this slice)
+alongside every prior slice's tests - `coach-allocations.test.ts`
+(Slice 5 rate resolution/historical snapshots/overrides),
+`access-resolution.test.ts` (Slices 2-4 effective dating/Occurrence
+Staff/cover-tier retirement), `session-coaches.test.ts` (Parent Hub),
+and the full Schedule-foundation suite. Slice 6 added one brand-new,
+entirely isolated Edge Function, four new fields on Coach Allocations,
+and one brand-new table - no existing file (`hub-content`, `parent-hub`,
+`session-occurrences`, `coach-allocations`, or any of their test copies)
+was modified, so no other slice's staffing, schedule, player-access, or
+Parent Hub behaviour could have changed as a side effect.
+
+### Production isolation
+
+No production Airtable, production Supabase, frontend, Google Sheets, or
+Stripe was read, written, or otherwise touched at any point in this
+slice - every Airtable call targeted the TEST base `appQktredAuGa1X7e`,
+every Supabase call targeted the TEST project `dkqubldmfyeuudecxmvh`,
+and `occurrence-financial-outcomes` carries the same TEST DEPLOYMENT
+GUARD as every other TEST function. No real parent credit/refund was
+executed, no real coach payment was executed, no real venue payment was
+executed - this slice only records the operational decision that later
+Finance/Payments work can safely consume.
+
+**Coaches Slice 6 is ready for Slice 7 coach availability.**
+
+Do not start Slice 7 automatically.
