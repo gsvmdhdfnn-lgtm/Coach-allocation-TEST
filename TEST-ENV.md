@@ -2433,15 +2433,14 @@ that plays this same role (nothing on the Session record proves "this
 exact transition was already recorded" the way the Default Day field
 does for Day), so these two Change Types instead check Session History
 itself before writing: `Created` is skipped if any `Created` row
-already exists for the Session; `Active Status` is skipped if a row
-with the exact same OLD/NEW status pair already exists. **Known,
-documented limitation**: a genuine LATER real toggle back to an
-identical old/new status pair would also be suppressed by this check -
-accepted as fine for how this field is actually used (a Session
-doesn't realistically flip Draft/Active repeatedly moment to moment),
-not claimed as a fully general event-sourced guarantee. No new schema
-was needed for this, so nothing was flagged/stopped for your review per
-the "if an explicit request/change ID is genuinely required, stop and
+already exists for the Session; `Active Status` is skipped only when
+the requested `newStatus` already equals the Session's own current
+recorded status - see "Post-Slice-9 hardening fix" below for the
+corrected rule and why the original version of this check (comparing
+against "does a row with this exact OLD/NEW pair already exist") was
+replaced before this slice was signed off. No new schema was needed for
+either check, so nothing was flagged/stopped for your review per the
+"if an explicit request/change ID is genuinely required, stop and
 report" instruction - it genuinely wasn't required.
 
 ### Session creation - documented integration point
@@ -2589,5 +2588,112 @@ unchanged; no frontend file touched; no Google Sheets file touched; no
 finance file touched. `session-occurrences` (TEST project
 `dkqubldmfyeuudecxmvh`) deployed as **v8** - the only Edge Function
 touched this slice, and only in the TEST project.
+
+## Post-Slice-9 hardening fix - Active Status idempotency correction
+
+Approved subject to one correction: the `Active Status` idempotency
+check above originally compared the incoming `(oldStatus, newStatus)`
+pair against "does a History row with this exact pair already exist" -
+which wrongly suppressed a genuine LATER real toggle back to a status
+pair that had occurred at some earlier point (e.g. a second
+Active -> Inactive after an intervening Inactive -> Active). Flagged as
+a known limitation when Slice 9 was first delivered; rejected as
+unacceptable and fixed before Slice 10, per your instruction.
+
+### The corrected rule
+
+`orchestrator.ts`'s `status_changed` branch no longer asks "has this
+exact pair been recorded before". It now asks a single question -
+`mostRecentRecordedStatus()` - "what status does Session History's own
+most recently written `Created`/`Active Status` row say this Session is
+currently at":
+
+- `requested newStatus == that most-recently-recorded status` -> no-op:
+  nothing is written (this is what makes an immediate retry safe).
+- `requested newStatus != that most-recently-recorded status` -> a
+  genuine transition: the real generation runs and exactly one new
+  `Active Status` History row is written - regardless of whether that
+  same OLD/NEW pair was ever recorded earlier in this Session's history.
+
+`Created`'s own idempotency (skip if any `Created` row already exists)
+is untouched - a Session still only ever gets one genuine Created event,
+and that check was never the bug.
+
+Why this - and not the Session's own live Lifecycle Status field -
+is the correct signal: by the time this code runs, the Session's own
+field has *already* been written by whoever called the trigger (see
+this file's Session-creation/Slice-8 integration-contract notes above),
+so the live field reads the same "new" value on the very first genuine
+call and on any retry of it - it cannot tell those two cases apart.
+History's own most-recent row can, because it only ever advances when
+this function itself writes to it. This is the opposite of Day/Time/
+Venue/Capacity/EndDate, where the Session's own live field IS a safe
+idempotency signal, because `propagateForSession()` itself is the one
+thing that ever writes it.
+
+Only `orchestrator.ts` changed for this fix - `mostRecentRecordedStatus()`
+added, `writeSessionEventHistory()`'s `status_changed` branch rewired to
+use it, `existing` History rows fetched once and shared between the
+`created`/`status_changed` branches. No schema change. Redeployed as
+`session-occurrences` **v9** (TEST project `dkqubldmfyeuudecxmvh`).
+
+### Real TEST verification - all real HTTP calls via `pg_net`
+
+One throwaway Session, `SLICE9-HARDEN` (`rec5qnLJqwGx7uCyr`, Recurring,
+Friday), created Draft and driven through the exact sequence the bug
+required to prove itself - a status repeated a second time, not just
+three distinct transitions:
+
+1. **Draft -> Active** (PATCHed to Active, then
+   `sessionEvent:{oldStatus:"Draft",newStatus:"Active"}`) ->
+   `generated, created: 13`; exactly **one** `Active Status` History row
+   (Old `Draft`, New `Active`).
+2. **Immediate retry of the same call** -> `no_changes`; **zero**
+   additional History rows (still exactly one).
+3. **Active -> Inactive** -> `no_changes` (Inactive Sessions generate
+   nothing, as designed); exactly **one new** `Active Status` row (Old
+   `Active`, New `Inactive`) - two rows total.
+4. **Inactive -> Active** (the case Slice 9 originally got right even
+   under the old buggy check, since this exact pair hadn't occurred
+   before) -> **one new** row (Old `Inactive`, New `Active`) - three
+   rows total.
+5. **Active -> Inactive again** - the actual bug scenario: this exact
+   `(Active, Inactive)` pair already exists at row 3. The OLD check
+   would have wrongly matched it and written nothing. The FIXED check
+   correctly compares against the most-recently-recorded status
+   (`Active`, from row 4) rather than "has this pair ever occurred", so
+   it wrote **one new** row (Old `Active`, New `Inactive`) - **four**
+   rows total. This is the row that proves the fix.
+6. **Immediate retry of step 5's exact call** -> `no_changes`; **zero**
+   additional rows - still exactly four.
+
+All four rows re-read afterward, sorted by `Changed At`: `Draft->Active`
+(08:24:55) -> `Active->Inactive` (08:27:41) -> `Inactive->Active`
+(08:29:26) -> `Active->Inactive` (08:31:28) - correct chronological
+order, each row independently readable with its own accurate Old
+Value/New Value/Change Summary/Changed By, exactly as required.
+
+`generation_locks`: confirmed 0 rows after the full sequence. Every
+call above ran generation exactly once per genuine transition (never
+on a no-op retry) - the outcome quoted for each step above is the one
+and only generation call that step made.
+
+Cleanup: `SLICE9-HARDEN` (`rec5qnLJqwGx7uCyr`), its 13 Session
+Occurrences, and its 4 Session History rows all deleted by exact record
+ID after verification.
+
+### Regression
+
+- **TEST-A** (`rec4cME6ncL4IAvlK`) / **TEST-B** (`recklh0OeaAMakQCJ`):
+  still exactly 14 / 13 occurrences, untouched.
+- **Full TEST suite**: `node tests/run-all.js` -> **50/50 test files
+  passed**, unchanged from Slice 9 (no new local test file - this fix
+  lives entirely inside `orchestrator.ts`, verified by real HTTP per the
+  same convention as the rest of this file's orchestration-layer code).
+- **Production / frontend / Sheets / finance**: untouched - the only
+  file changed for this fix is `orchestrator.ts`, redeployed only to
+  the TEST project's `session-occurrences` function (v9). Production
+  Airtable/Supabase, the frontend, Google Sheets and finance files were
+  not touched.
 
 **Slice 9 Session History is ready for Slice 10 full regression and handoff.**
