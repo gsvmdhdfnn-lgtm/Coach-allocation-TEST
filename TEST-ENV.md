@@ -5401,3 +5401,335 @@ carries the same TEST DEPLOYMENT GUARD as every other TEST function.
 **Slice 6 concurrency hardening is complete and ready for Slice 7.**
 
 Do not start Slice 7 automatically.
+
+## Coaches Foundation — Slice 7 (coach availability truth layer) — 2026-09-27
+
+Makes coach availability real in the TEST backend. It answers one question
+only: **"has this coach said they are nominally available for this UK date
+and time?"** It does not rank coaches, recommend cover, assign anyone, send
+notifications or suggest staffing. It also does not say whether a coach is
+*free* (see "Availability is not the same as free" below).
+
+### Schema used (re-read live from TEST, not redesigned)
+
+Both tables were mirrored from production in Slice 1 and were still empty
+in TEST when this slice began. No field was added, renamed or changed.
+
+- **Coach Availability** (`tblFU568fUAtDFuM0`) - recurring weekly pattern:
+  `Coach` (link), `Day of Week` (Monday..Sunday), `Available` (checkbox),
+  `Start Time`/`End Time` (text, `HH:MM`), `Active` (checkbox), `Notes`.
+- **Coach Availability Exceptions** (`tbl1TTBfX0kVeitxj`) - date-specific
+  overrides: `Coach` (link), `Start Date`/`End Date` (date),
+  `Availability Type` (`Unavailable` / `Available All Day` /
+  `Different Hours`), `Start Time`/`End Time` (text), `Active`, `Note`.
+
+No code read these tables before this slice, so there was no existing
+semantics to preserve. Every rule below comes from these fields. Where the
+schema is silent, the rule takes the conservative reading and is written
+down here instead of being silently decided.
+
+### Result states
+
+`GET /coach-availability/resolve` returns exactly one of four states.
+`unknown` and `unavailable` are deliberately kept apart because they will
+matter differently when Management later searches for cover.
+
+- **`available`**: the coach has said they are available for the whole
+  work interval.
+- **`unavailable`**: the coach has said they are not available for at
+  least part of the interval. This includes a coach who gave hours for
+  that day that don't cover the work.
+- **`unknown`**: the coach has supplied nothing for that date/day
+  (`reason: no_availability_supplied`). This is never collapsed into
+  "unavailable", and never treated as "available".
+- **`ambiguous`**: the data cannot be trusted to give an answer
+  (conflicting exceptions, or a malformed row that could apply). A human
+  needs to look. This is never guessed and never resolves to `available`.
+
+Every result also carries `reason`, `source` (`exception` / `recurring` /
+`none`), `matchedRecordId`/`matchedWindow`, every applicable row that was
+considered, and a `problems` list naming each conflicting or malformed
+record id and its issue, for Management/developer diagnosis.
+
+### Recurring availability rule
+
+- Only rows that are `Active` (ticked) **and** linked to this coach count.
+  An unticked `Active` (the field is absent in the API response) means the
+  row is ignored. Another coach's rows are never read into the result.
+- The weekday comes from the UK calendar date.
+- `Available` ticked = an availability window. Several windows on the same
+  day are supported and are **never merged**, not even when they touch
+  exactly (09:00-12:00 and 12:00-15:00 do not make 11:00-13:00 available).
+- `Available` unticked = a declared unavailability for that window. With
+  no times, it means unavailable all day (the conservative reading). If it
+  overlaps the work at all, it wins over any positive window.
+- If the coach supplied positive windows that weekday and none contains
+  the work -> `unavailable` (`outside_recurring_windows`).
+- If there are no positive rows that weekday -> `unknown`, even if the
+  coach has rows on other days.
+
+### Interval containment rule
+
+The coach is available only if **one single window fully contains the
+whole work interval**: `windowStart <= workStart` and
+`workEnd <= windowEnd`. Boundary equality counts (17:00-20:00 availability
+covers work 17:00-18:00, 19:00-20:00 and 17:00-20:00). Partial overlap is
+never enough (16:30-18:00 and 19:30-20:30 are both unavailable against
+17:00-20:00).
+
+Unavailability windows block work on **any** overlap, using half-open
+intervals: an unavailability ending at 18:00 does not block work starting
+at 18:00.
+
+Times are strict `HH:MM` from 00:00 to 23:59. A work interval must have
+end > start and cannot cross midnight.
+
+### Exception precedence
+
+Exceptions whose inclusive `Start Date`..`End Date` range covers the date
+are always consulted first:
+
+1. `Available All Day` or `Different Hours` **replaces** the recurring
+   pattern for that date entirely. For example, a Different Hours
+   09:00-12:00 exception on a normal 17:00-20:00 Monday makes 18:00-19:00
+   `unavailable` that Monday. A positive exception on a day the coach
+   normally declares unavailable makes that one date available.
+2. `Unavailable` with no times -> unavailable all that day. `Unavailable`
+   with times blocks only its own window, and the rest of that day falls
+   through to the recurring pattern (a 10:00-11:00 appointment does not
+   erase evening availability).
+3. Date ranges are inclusive at both ends and never leak outside the
+   range. A blank `End Date` means a single-day exception.
+
+### Overlapping / conflicting exceptions
+
+There is no precedence field in the schema, so no "latest wins" or other
+invented tiebreak is applied:
+
+- A positive exception and an `Unavailable` exception covering the same
+  date -> `ambiguous` (`conflicting_exceptions`).
+- Two *different* positive exceptions on the same date (e.g. two Different
+  Hours rows with different windows) -> `ambiguous`.
+- Identical duplicates, or several `Unavailable` exceptions (all pointing
+  the same way), are **not** a conflict.
+- Conflicts are per date. Where a range overlaps a single-day exception,
+  only the shared date is ambiguous.
+
+Every conflicting exception id is listed in `problems`. Whether two
+Different Hours rows on one date should mean "two windows" instead of a
+conflict is left as a product decision.
+
+### Malformed / incomplete rows fail closed
+
+A malformed row that could apply to the query makes the result
+`ambiguous`. It is never silently skipped in a way that could turn the
+answer into `available`. This covers:
+
+- garbled or missing times on a positive row;
+- end time not after start time;
+- a positive recurring row with no times (never assumed to mean all day);
+- an `Available All Day` exception that also carries times
+  (contradictory);
+- a missing `Availability Type`;
+- a missing or invalid `Start Date`.
+
+A row that cannot be placed (blank `Day of Week`, unreadable dates) is
+treated as possibly applying to every date. A malformed row whose day or
+date range is readable only matters on that day or range.
+
+### Europe/London handling
+
+Availability is a local operational schedule, so every comparison uses UK
+**wall-clock minutes-of-day on a UK calendar date**. No UTC instant is
+ever compared against a recurring window, so a BST/GMT change cannot
+shift a window by an hour. The weekday is computed at UTC midnight of the
+plain date string, so the host's own timezone cannot shift it either. The
+unit tests were re-run under `America/Los_Angeles`, `Pacific/Auckland` and
+`UTC` host timezones: 74/74 each time.
+
+Callers can instead pass real instants (`startAt`/`endAt`, e.g. an
+occurrence's Start/End Date & Time). These are converted once to
+Europe/London wall-clock via `Intl` (not hand-rolled clock-change rules)
+before any comparison. Both instants must land on the same UK date.
+Supplying both input forms at once is rejected rather than preferring one.
+
+### Availability is not the same as free
+
+A coach can be `available` 17:00-20:00 on a Monday and still already be
+coaching another Session at 18:00. Slice 7 deliberately does not consult
+Session Staff, Occurrence Staff or Coach Allocations, and does not build
+double-booking detection. Deciding that a coach is actually *suitable for
+cover* later needs all of:
+
+- this availability answer;
+- existing **Session Staff** commitments (Slice 2 effective dating);
+- existing **Occurrence Staff** commitments and date-specific overrides
+  (Slice 3);
+- possibly travel time / venue location between back-to-back commitments;
+- compliance (Slice 8: documents/DBS etc).
+
+### Backend/API
+
+A new, entirely isolated Edge Function, `coach-availability`. No existing
+function or table was modified. It is **read-only** and makes no Airtable
+writes of any kind. No write route was needed to prove the tables end to
+end: TEST fixtures were created directly and deleted afterwards.
+
+It uses the same layering as Slices 5/6:
+
+- **`coach-availability.ts`**: pure resolution, validation,
+  `ukWallClockFromInstant()` and the `isManagementCaller()` predicate. No
+  I/O.
+- **`repository.ts`**: Airtable reads only. It fetches all rows and filters
+  to the coach by linked record id in code, never via `filterByFormula`
+  (inside a formula a link renders as display names, which could match
+  the wrong coach by name).
+- **`orchestrator.ts`**: normalises input (wall-clock or instants), checks
+  the coach exists (a non-existent coach is 404, not `unknown`), loads
+  rows and calls the resolver.
+- **`index.ts`**: Management-only HTTP wrapper with the same TEST
+  DEPLOYMENT GUARD as every other TEST function. Route:
+  `GET /resolve?coachId=&date=YYYY-MM-DD&startTime=HH:MM&endTime=HH:MM`
+  (or `&startAt=&endAt=` instants).
+
+### Security / organisation isolation
+
+The endpoint is Management-only via `isManagementCaller()`. Coach and
+Parent JWTs get 403, and a coach cannot query even their own availability
+through this slice. The TEST architecture is one organisation per Airtable
+base, so a Management caller can only reach coaches in this base. No
+cross-organisation path exists, and none was added.
+
+**Future Covaro boundary**: a multi-organisation deployment must scope the
+coach lookup and both availability reads to the caller's organisation
+before this route is exposed commercially. Nothing here weakens the
+current rules, and no multi-org auth was invented this slice.
+
+### Focused tests
+
+`tests/support/coach-availability.test.ts` (run by the
+`tests/e2e/coachavailabilitytest.js` shim): **74/74** assertions passing.
+It covers all 18 required items, plus security predicates and orchestrator
+end-to-end checks against a mocked Airtable. The mock also fails the test
+on any non-GET call, proving the function is read-only.
+
+1-5. Containment: fully inside, starts before, ends after, exact start
+boundary, exact end boundary, plus the brief's own 13:00 example.
+6-7. Multiple windows, and the gap between them. Spanning the gap is
+unavailable, and touching windows are not merged.
+8. Normally available + Unavailable exception -> unavailable. The
+following Monday resumes. Blank End Date = single day. A timed Unavailable
+blocks only its window.
+9. Unknown/declared-unavailable + Available All Day -> available on that
+date only. Different Hours replaces the recurring pattern. Exception
+choices match the live schema.
+10-12. Range inclusive on Start Date and End Date, and no leak outside the
+range.
+13. No rows, other-day rows only, or a non-overlapping declared-off window
+-> unknown.
+14. Inactive recurring rows, inactive exceptions and an absent `Active`
+field are all ignored.
+15. Unavailable + Available All Day -> ambiguous (both ids surfaced).
+Differing Different Hours -> ambiguous. Agreeing Unavailables -> not a
+conflict. An overlapping range is ambiguous only on the shared date.
+16. Garbled/blank/reversed times, blank Day of Week, a malformed exception
+(missing End Time / Start Date / Type, All Day with times) all fail
+closed. A malformed row outside its own day or range does not poison
+other dates. Query validation covers impossible dates, end <= start, bad
+times and a bad coach id.
+17. Another coach's rows (positive, negative or malformed) never affect
+this coach.
+18. BST and GMT instant conversion, and the UK date rolling forward near
+midnight in BST. On clock-change days, 01:30Z on 29 Mar resolves to 02:30
+and 01:30Z on 25 Oct to 01:30. A discriminating case: 19:30Z-20:00Z is
+20:30 UK in BST (unavailable against 17:00-20:00; a raw UTC comparison
+would wrongly say available) but 19:30 in GMT (available). A pair crossing
+UK midnight is rejected.
+
+### Deploy
+
+`coach-availability` v1 (project `dkqubldmfyeuudecxmvh`) with all four
+files. After deploying, the content was downloaded via `get_edge_function`
+and `diff`'d byte-for-byte against the local repo files. All four were
+confirmed **identical** before any real TEST HTTP verification was trusted.
+
+### Real TEST verification, real HTTP via `pg_net`
+
+Throwaway fixtures, all deleted afterwards by exact id:
+
+- Coaches `SLICE7-TEST Coach Danny` (`recjZg4JNLEyxmsYe`) and
+  `SLICE7-TEST Coach Nobody` (`recWLAXfPXwJPt33P`, no availability rows).
+- Danny's recurring rows: Monday 17:00-20:00 (`recWrZnaAAeLkuzbd`),
+  Wednesday 09:00-12:00 (`recV5nohSZwji0Dhz`), Wednesday 16:00-21:00
+  (`recINRPn8xdPciQLF`).
+- Danny's exceptions: Unavailable 12 Oct (`recd7d891aHZ27EOv`), plus a
+  deliberately conflicting pair on 26 Oct, Unavailable
+  (`rec9iQQHyOy54zYtA`) + Available All Day (`rec6y4MIYdGuTejDU`).
+
+Fifteen real `GET /resolve` calls were made (Management JWT unless noted):
+
+- **Scenario A** (Monday 17:00-20:00): 19 Oct 18:00-19:00 -> `available`
+  (`within_recurring_window`, matched `recWrZnaAAeLkuzbd`); 16:00-18:00 ->
+  `unavailable` (`outside_recurring_windows`).
+- **Scenario B** (Unavailable exception 12 Oct): 12 Oct 18:00-19:00 ->
+  `unavailable` (`exception_unavailable`, matched `recd7d891aHZ27EOv`); the
+  following Monday 19 Oct -> `available` from recurring.
+- **Scenario C**: Nobody, 19 Oct 18:00-19:00 -> `unknown`
+  (`no_availability_supplied`), even though Danny has a Monday row. This
+  also proves one coach's rows don't leak to another.
+- **Scenario D** (Wednesday 09-12 + 16-21, 14 Oct): 10:00-11:00 ->
+  `available` (matched the morning row); 14:00-15:00 -> `unavailable`;
+  18:00-19:00 -> `available` (matched the evening row).
+- **Conflict**: 26 Oct 18:00-19:00 -> `ambiguous`
+  (`conflicting_exceptions`), with both exception ids and issues in
+  `problems`.
+- **Europe/London**: instants 19 Oct 19:30Z-20:00Z -> resolved as
+  20:30-21:00 UK -> `unavailable`; 2 Nov 19:30Z-20:00Z -> resolved as
+  19:30-20:00 UK -> `available`.
+- **Errors/security**: end before start -> HTTP 400; non-existent coach id
+  -> HTTP 404; Coach JWT -> HTTP 403 and Parent JWT -> HTTP 403, both
+  `"Management access required"`.
+
+Cleanup was reconfirmed: Coach Availability and Coach Availability
+Exceptions both list 0 records, and a `contains "SLICE7"` search on Coaches
+returns 0. TEST-A/TEST-B and every existing coach were never read targets
+for fixtures or write targets.
+
+### Regression
+
+Full TEST suite (`node tests/run-all.js`), run after deployment and real
+TEST verification: **53/53 test files passing**, exit code 0, zero `FAIL`
+lines (52 prior files plus the new `coachavailabilitytest.js`). Explicitly
+reconfirmed per the brief:
+
+- **Slice 6 financial outcomes + concurrency hardening**:
+  `occurrencefinancialoutcomestest.js` 37/37.
+- **Slice 5 historical allocations**: `coachallocationstest.js` 25/25.
+- **Slices 2-4** (Session Staff effective dating, Occurrence Staff, player
+  access cleanup): `accessresolutiontest.js` 74/74.
+- **Parent Hub**: `parenthubtest.js` 44/44, `parenthubshelltest.js` 65/65,
+  `sessioncoachestest.js` 22/22.
+- **Schedule foundation**: `sessiongeneratortest.js` 37/37,
+  `sessionrepositorytest.js` 19/19, `propagationtest.js` 43/43,
+  `nextoccurrencetest.js` 19/19, `dailytopuptest.js` 7/7.
+- **Slice 7 itself**: `coachavailabilitytest.js` 74/74.
+
+Slice 7 added one new, entirely isolated, read-only Edge Function and its
+test copies. No existing function, table, field or test file was
+modified, so staffing, access, cost and financial-outcome behaviour cannot
+have changed as a side effect.
+
+### Production isolation
+
+- **Production Airtable**: untouched (not read, not written). Every
+  Airtable call targeted the TEST base `appQktredAuGa1X7e`.
+- **Production Supabase**: untouched. Every Supabase call targeted the
+  TEST project `dkqubldmfyeuudecxmvh`.
+- **Frontend**: untouched.
+- **Google Sheets**: untouched.
+- **Finance execution**: untouched. No Stripe, payments or exports.
+
+`coach-availability` carries the same TEST DEPLOYMENT GUARD as every other
+TEST function.
+
+**Coaches Slice 7 is ready for Slice 8 compliance.**
