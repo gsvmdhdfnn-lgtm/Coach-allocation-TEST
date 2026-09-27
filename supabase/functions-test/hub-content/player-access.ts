@@ -16,6 +16,19 @@
  *    and what ROLE they hold there. This replaced the published Sessions
  *    Google Sheet's free-text `coaches` column as the access authority -
  *    the Sheet is no longer consulted for this at all.
+ *  - Coaches Slice 2 (see TEST-ENV.md): a Session Staff row's `Active`
+ *    checkbox is an independent administrative enable/disable flag, never
+ *    "applies forever" - whether an enabled row applies on a given date is
+ *    decided separately by its `Effective From`/`Effective Until` (both
+ *    inclusive, both optional), via the one shared rule in
+ *    sessionStaffAppliesOnDate() below. This is what makes a planned
+ *    recurring handover (Danny weeks 1-2, Tom weeks 3-4, Joe weeks 5-7)
+ *    work as successive Session Staff rows on the SAME Session, resolved
+ *    correctly per date, with no fake Sessions and no per-date Occurrence
+ *    Staff rows - and it is the only place either resolver in this
+ *    codebase (this file's player-access tier, and parent-hub/index.ts's
+ *    coach-display tier) is allowed to decide "does this assignment apply
+ *    today/on this date" - never re-derived separately in either file.
  *  - Airtable Player Session Links = authoritative source for which
  *    players belong to a session (Membership Lifecycle Status, canonical;
  *    `LEGACY -` / original names read only as compatibility fallbacks).
@@ -95,6 +108,78 @@ function attachmentUrl(fields: Record<string, any>, fieldName: string): string {
 function firstLink(fields: Record<string, any>, name: string): string {
   const list = fields[name];
   return Array.isArray(list) && list.length ? list[0] : "";
+}
+
+const ISO_DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Today's Europe/London calendar date as "YYYY-MM-DD" - Coaches Slice 2.
+ * Never a UTC-midnight slice: near midnight UTC, the UK's own calendar
+ * date can already be tomorrow (BST) or still be today when UTC has
+ * rolled over - a naive `toISOString().slice(0,10)` would silently apply
+ * or drop a Session Staff assignment a day early/late right at that
+ * boundary. Uses the same Intl double-format technique as this codebase's
+ * other UK-local date/time helpers (parent-hub/index.ts's formatUkTime(),
+ * session-occurrences/schedule-utils.ts's ukOffsetMinutesAt()) rather than
+ * hand-rolled BST rules.
+ */
+export function ukTodayIso(now: Date = new Date()): string {
+  const parts: Record<string, string> = {};
+  for (const p of new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now)) {
+    parts[p.type] = p.value;
+  }
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+/**
+ * THE one shared rule (Coaches Slice 2, see TEST-ENV.md) for "does this
+ * Session Staff row apply on this date" - used by every resolver in this
+ * codebase that needs to know, never re-derived separately.
+ *
+ * `Active` is an independent administrative enable/disable flag, checked
+ * first and absolute: a retracted (Active=false) row never applies,
+ * regardless of what its date range says. `Effective From`/`Effective
+ * Until` then decide whether an ENABLED row applies on THIS particular
+ * date - both inclusive, both optional (blank From = applies from the
+ * start of time; blank Until = applies indefinitely; both blank = applies
+ * whenever Active, exactly the pre-Slice-2 behaviour for a row that never
+ * needed date-scoping). Plain "YYYY-MM-DD" string comparison is safe and
+ * deliberate, matching session-occurrences/schedule-utils.ts's own
+ * isoDateLte()/isoDateGte() convention - lexicographic order equals
+ * chronological order for this exact format.
+ *
+ * Overlap is never resolved here - deliberate co-coaching, a Lead Coach
+ * and a Coach both covering the same date, or even two rows for the same
+ * coach, are all valid and this function answers "does THIS ONE row
+ * apply", nothing more; a caller checking several rows for the same
+ * session/date simply calls this once per row and keeps every row that
+ * returns true.
+ *
+ * Fails closed on malformed data: a non-blank Effective From/Until that
+ * isn't a valid "YYYY-MM-DD" string is never treated as absent (which
+ * would silently widen an intended boundary into an open-ended range) -
+ * the whole row is excluded instead. This is a data problem to fix in
+ * Airtable, never something for this function to guess past or for any
+ * caller to auto-correct.
+ */
+export function sessionStaffAppliesOnDate(row: { fields: Record<string, any> }, dateIso: string): boolean {
+  if (row.fields["Active"] !== true) return false;
+  const from = row.fields["Effective From"];
+  if (from != null && from !== "") {
+    if (typeof from !== "string" || !ISO_DATE_ONLY_RE.test(from)) return false;
+    if (dateIso < from) return false;
+  }
+  const until = row.fields["Effective Until"];
+  if (until != null && until !== "") {
+    if (typeof until !== "string" || !ISO_DATE_ONLY_RE.test(until)) return false;
+    if (dateIso > until) return false;
+  }
+  return true;
 }
 
 /**
@@ -269,70 +354,92 @@ function isPlayerAccessRole(caps: CoachRoleCapabilities | null): boolean {
 }
 
 /**
- * Session RECORD id -> Coach RECORD id -> that coach's own Active Session
- * Staff row for that session. A coach can hold different roles on
- * different sessions (Lead Coach on one, Learning Coach on another), so
- * this is looked up per session, never once globally per coach. If a
- * coach somehow has two Active rows on the same session (a data-entry
- * duplicate), the later one in Airtable's own return order wins - the
- * same tolerance resolveSessionCoachNames() in parent-hub already applies
- * to the equivalent duplicate case.
+ * Session RECORD id -> Coach RECORD id -> ALL of that coach's own Session
+ * Staff rows for that session - Coaches Slice 2: a coach can legitimately
+ * have more than one row on the same session over time (a planned
+ * recurring handover, or simply an old row someone forgot to retire), so
+ * this keeps every row rather than collapsing to one, and leaves the
+ * question of which row(s) actually apply to sessionStaffAppliesOnDate()
+ * at lookup time - never decided here, and never by an `Active` filter at
+ * this stage (a row's own Active/date-range validity is entirely that
+ * function's job, applied uniformly). A coach can also hold different
+ * roles on different sessions (Lead Coach on one, Learning Coach on
+ * another), so this is still keyed per session, never once globally per
+ * coach.
  */
-export function buildActiveSessionStaffByCoachAndSession(sessionStaffRows: any[]): Record<string, Record<string, any>> {
-  const map: Record<string, Record<string, any>> = {};
+export function buildSessionStaffByCoachAndSession(sessionStaffRows: any[]): Record<string, Record<string, any[]>> {
+  const map: Record<string, Record<string, any[]>> = {};
   for (const row of sessionStaffRows) {
-    if (row.fields["Active"] !== true) continue;
     const sessionId = firstLink(row.fields, "Session");
     const coachId = firstLink(row.fields, "Coach");
     if (!sessionId || !coachId) continue;
     if (!map[sessionId]) map[sessionId] = {};
-    map[sessionId][coachId] = row;
+    if (!map[sessionId][coachId]) map[sessionId][coachId] = [];
+    map[sessionId][coachId].push(row);
   }
   return map;
 }
 
 /**
- * A coach's capabilities FOR ONE SESSION, from their own Active Session
- * Staff row on that session - never a role fixed to the Coach record.
- * Returns null (no access) when the coach has no Active row on this
- * session, their row's Role doesn't resolve, the role isn't Active, Can
- * View Players is false, or the role isn't in PLAYER_ACCESS_ROLE_PRIORITY
- * (Learning Coach, or anything unrecognised) - fail closed in every case.
+ * A coach's capabilities FOR ONE SESSION ON ONE DATE, from whichever of
+ * their own Session Staff rows on that session actually applies on
+ * `dateIso` (sessionStaffAppliesOnDate() - Active + Effective From/Until,
+ * Coaches Slice 2) - never a role fixed to the Coach record, and never
+ * decided from `Active` alone any more. Returns null (no access) when the
+ * coach has no row that applies on this date, the applying row's Role
+ * doesn't resolve, the role isn't Active, Can View Players is false, or
+ * the role isn't in PLAYER_ACCESS_ROLE_PRIORITY (Learning Coach, or
+ * anything unrecognised) - fail closed in every case. If more than one of
+ * the coach's rows applies on the same date (a genuine overlap, or a
+ * data-entry duplicate), the first one found that grants access wins -
+ * this only ever needs ONE applicable row to grant the coach access, not
+ * every one of them.
  */
 export function sessionStaffCapabilitiesForSession(
   sessionId: string,
   coachId: string,
-  sessionStaffBySessionAndCoach: Record<string, Record<string, any>>,
+  dateIso: string,
+  sessionStaffBySessionAndCoach: Record<string, Record<string, any[]>>,
   roleCapsById: Record<string, CoachRoleCapabilities>
 ): CoachRoleCapabilities | null {
-  const row = (sessionStaffBySessionAndCoach[sessionId] || {})[coachId];
-  if (!row) return null;
-  const roleId = firstLink(row.fields, "Role");
-  const caps = roleId ? roleCapsById[roleId] : null;
-  return isPlayerAccessRole(caps) ? caps : null;
+  const rows = (sessionStaffBySessionAndCoach[sessionId] || {})[coachId] || [];
+  for (const row of rows) {
+    if (!sessionStaffAppliesOnDate(row, dateIso)) continue;
+    const roleId = firstLink(row.fields, "Role");
+    const caps = roleId ? roleCapsById[roleId] : null;
+    if (isPlayerAccessRole(caps)) return caps;
+  }
+  return null;
 }
 
 /**
- * A coach's own STANDING capabilities - their highest-priority
- * player-access-eligible role across ANY of their own current Active
- * Session Staff rows, regardless of session. Used only for the cover
- * tier: a coach covering a session they hold no Session Staff row on
- * still needs some capability floor, and their normal standing role is
- * the closest replacement for what the old single "Coach Role" field on
- * the Coach record used to provide (that field is now retired - LEGACY -
- * Coach Role - and was never a per-session concept anyway). Null means
- * the coach holds no player-access-eligible role anywhere right now.
+ * A coach's own STANDING capabilities RIGHT NOW - their highest-priority
+ * player-access-eligible role across ANY of their own Session Staff rows
+ * that apply TODAY (sessionStaffAppliesOnDate(), Coaches Slice 2 -
+ * Active + Effective From/Until, never `Active` alone any more),
+ * regardless of session. Used only for the cover tier: a coach covering a
+ * session they hold no Session Staff row on still needs some capability
+ * floor, and their normal standing role is the closest replacement for
+ * what the old single "Coach Role" field on the Coach record used to
+ * provide (that field is now retired - LEGACY - Coach Role - and was
+ * never a per-session concept anyway). Null means the coach holds no
+ * player-access-eligible role anywhere as of today. `today` is the same
+ * instant every other "as of now" decision in this request uses - passed
+ * in, never independently re-read, so nothing in one request can disagree
+ * with itself about what day it is.
  */
 export function coachOwnStandingCapabilities(
   coachId: string,
   sessionStaffRows: any[],
-  roleCapsById: Record<string, CoachRoleCapabilities>
+  roleCapsById: Record<string, CoachRoleCapabilities>,
+  today: Date
 ): CoachRoleCapabilities | null {
+  const todayIso = ukTodayIso(today);
   let best: CoachRoleCapabilities | null = null;
   let bestPriority = Infinity;
   for (const row of sessionStaffRows) {
-    if (row.fields["Active"] !== true) continue;
     if (firstLink(row.fields, "Coach") !== coachId) continue;
+    if (!sessionStaffAppliesOnDate(row, todayIso)) continue;
     const roleId = firstLink(row.fields, "Role");
     const caps = roleId ? roleCapsById[roleId] : null;
     if (!isPlayerAccessRole(caps)) continue;
@@ -396,8 +503,8 @@ export interface ResolveInput {
   players: any[];
   sessions: any[];
   links: any[];
-  /** Session RECORD id -> Coach RECORD id -> Active Session Staff row, from buildActiveSessionStaffByCoachAndSession(). */
-  sessionStaffBySessionAndCoach: Record<string, Record<string, any>>;
+  /** Session RECORD id -> Coach RECORD id -> that coach's Session Staff rows on that session, from buildSessionStaffByCoachAndSession(). */
+  sessionStaffBySessionAndCoach: Record<string, Record<string, any[]>>;
   /** Coach Roles record id -> capabilities, from roleCapabilitiesById(). */
   roleCapsById: Record<string, CoachRoleCapabilities>;
   /** Airtable Session RECORD ids the caller is covering today (date-specific, from the Changes sheet) - unchanged mechanism, deliberately still separate from Session Staff (see file header). */
@@ -411,13 +518,20 @@ export interface ResolveInput {
  * to appears twice, once per session, each with its own tier - access is
  * always evaluated per session membership, never globally per player.
  *
- * Current-session access (tier "permanent") is resolved from the caller's
- * own Active Session Staff row on THAT session - Lead Coach and Coach
- * roles only, Learning Coach never, checked fresh via
- * sessionStaffCapabilitiesForSession() on every call. Cover access (tier
- * "cover") stays on the pre-existing Changes-sheet mechanism (see file
- * header) and uses the caller's own standing capabilities instead, since
- * they hold no Session Staff row on the session they're covering.
+ * Current-session access (tier "permanent") is resolved from whichever of
+ * the caller's own Session Staff rows on THAT session actually applies
+ * TODAY (Coaches Slice 2 - Active + Effective From/Until, via
+ * sessionStaffAppliesOnDate() inside sessionStaffCapabilitiesForSession(),
+ * checked fresh via `input.today` on every call) - Lead Coach and Coach
+ * roles only, Learning Coach never. A coach whose assignment has ended (or
+ * not yet started) gets no access here even if the row is still Active,
+ * exactly the "an ended assignment must not retain current access merely
+ * because the row is still Active" rule this slice exists to enforce.
+ * Cover access (tier "cover") stays on the pre-existing Changes-sheet
+ * mechanism (see file header) and uses the caller's own standing
+ * capabilities instead (also now date-aware - see
+ * coachOwnStandingCapabilities()), since they hold no Session Staff row
+ * on the session they're covering.
  *
  * A Player Session Link with any status other than "Ended" counts as
  * current for this purpose (Active, Paused, Cancellation Pending, Ending
@@ -450,6 +564,7 @@ export function resolvePlayerAccess(input: ResolveInput): PlayerAccessRow[] {
     coverSessionIds,
     today,
   } = input;
+  const todayIso = ukTodayIso(today);
 
   const sessionById: Record<string, any> = {};
   for (const s of sessions) sessionById[s.id] = s;
@@ -522,7 +637,7 @@ export function resolvePlayerAccess(input: ResolveInput): PlayerAccessRow[] {
         // A coach merely being staffed/covering must NEVER grant access
         // if their role/capabilities prohibit it - checked before
         // anything else, every call, every session.
-        const staffCaps = sessionStaffCapabilitiesForSession(sid, coachRecordId, sessionStaffBySessionAndCoach, roleCapsById);
+        const staffCaps = sessionStaffCapabilitiesForSession(sid, coachRecordId, todayIso, sessionStaffBySessionAndCoach, roleCapsById);
         const isStaffed = !!staffCaps;
         const isCovering = !isStaffed && coverSessionIds.has(sid);
         const caps = isStaffed ? staffCaps : isCovering ? coachCoverCapabilities : null;

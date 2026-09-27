@@ -5,7 +5,11 @@
 // Agreed behaviour:
 //  - Coaches shown to parents come from Session Staff (Session <-> Coach
 //    <-> Role), never the retired free-text schedule field.
-//  - Only Active:true Session Staff rows count.
+//  - Coaches Slice 2: a row counts only when it APPLIES ON THE GIVEN DATE
+//    (sessionStaffAppliesOnDate() - Active + Effective From/Until, both
+//    inclusive), never "any Active row regardless of date". This is the
+//    exact rule hub-content/player-access.ts uses for player-data access -
+//    duplicated identically here, never re-derived.
 //  - Lead Coach, Coach and Learning Coach are ALL shown - there is no
 //    product rule hiding Learning Coach from parents.
 //  - Display order: Lead Coach, then Coach, then Learning Coach, then
@@ -38,15 +42,36 @@ function buildSessionStaffBySessionId(rows: any[]): Record<string, any[]> {
   return out;
 }
 
+const ISO_DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Exact duplicate of hub-content/player-access.ts's sessionStaffAppliesOnDate()
+// and parent-hub/index.ts's own copy of it - see either file's comment for
+// the full rule. Must never drift from either.
+function sessionStaffAppliesOnDate(row: { fields: Record<string, any> }, dateIso: string): boolean {
+  if (row.fields["Active"] !== true) return false;
+  const from = row.fields["Effective From"];
+  if (from != null && from !== "") {
+    if (typeof from !== "string" || !ISO_DATE_ONLY_RE.test(from)) return false;
+    if (dateIso < from) return false;
+  }
+  const until = row.fields["Effective Until"];
+  if (until != null && until !== "") {
+    if (typeof until !== "string" || !ISO_DATE_ONLY_RE.test(until)) return false;
+    if (dateIso > until) return false;
+  }
+  return true;
+}
+
 const ROLE_DISPLAY_PRIORITY: Record<string, number> = { "Lead Coach": 0, "Coach": 1, "Learning Coach": 2 };
 
 function resolveSessionCoachNames(
   sessionId: string,
+  dateIso: string,
   sessionStaffBySessionId: Record<string, any[]>,
   coachById: Record<string, any>,
   roleById: Record<string, any>
 ): string[] {
-  const rows = (sessionStaffBySessionId[sessionId] || []).filter((r) => r.fields["Active"] === true);
+  const rows = (sessionStaffBySessionId[sessionId] || []).filter((r) => sessionStaffAppliesOnDate(r, dateIso));
   const seen = new Set<string>();
   const entries: { name: string; priority: number }[] = [];
   for (const row of rows) {
@@ -93,7 +118,7 @@ const coachById = {
   const staff = buildSessionStaffBySessionId([
     { id: "ss1", fields: { Session: ["sessA"], Coach: ["alex"], Role: ["lead"], Active: true } },
   ]);
-  const names = resolveSessionCoachNames("sessA", staff, coachById, roleById);
+  const names = resolveSessionCoachNames("sessA", "2026-09-20", staff, coachById, roleById);
   ck("A real Session Staff row resolves to the coach's actual name", names.length === 1 && names[0] === "Alex Test", JSON.stringify(names));
 }
 {
@@ -101,7 +126,7 @@ const coachById = {
   const staff = buildSessionStaffBySessionId([
     { id: "ss2", fields: { Session: ["sessB"], Coach: ["sam"], Role: ["coach"], Active: true } },
   ]);
-  const names = resolveSessionCoachNames("sessB", staff, coachById, roleById);
+  const names = resolveSessionCoachNames("sessB", "2026-09-20", staff, coachById, roleById);
   ck("Session B resolves to Sam Sample via the Coach role", names.length === 1 && names[0] === "Sam Sample", JSON.stringify(names));
 }
 {
@@ -111,7 +136,7 @@ const coachById = {
     { id: "ss4", fields: { Session: ["sessC"], Coach: ["sam"], Role: ["coach"], Active: true } },
     { id: "ss5", fields: { Session: ["sessC"], Coach: ["alex"], Role: ["lead"], Active: true } },
   ]);
-  const names = resolveSessionCoachNames("sessC", staff, coachById, roleById);
+  const names = resolveSessionCoachNames("sessC", "2026-09-20", staff, coachById, roleById);
   ck("Lead Coach, Coach, Learning Coach display in that priority order regardless of row order",
     names.join(",") === "Alex Test,Sam Sample,Morgan Manager", names.join(","));
 }
@@ -120,7 +145,7 @@ const coachById = {
   const staff = buildSessionStaffBySessionId([
     { id: "ss6", fields: { Session: ["sessD"], Coach: ["morgan"], Role: ["learning"], Active: true } },
   ]);
-  const names = resolveSessionCoachNames("sessD", staff, coachById, roleById);
+  const names = resolveSessionCoachNames("sessD", "2026-09-20", staff, coachById, roleById);
   ck("Learning Coach is included in the parent-facing coach list", names.length === 1 && names[0] === "Morgan Manager");
 }
 {
@@ -129,7 +154,7 @@ const coachById = {
     { id: "ss7", fields: { Session: ["sessE"], Coach: ["alex"], Role: ["lead"], Active: true } },
     { id: "ss8", fields: { Session: ["sessE"], Coach: ["alex"], Role: ["coach"], Active: true } },
   ]);
-  const names = resolveSessionCoachNames("sessE", staff, coachById, roleById);
+  const names = resolveSessionCoachNames("sessE", "2026-09-20", staff, coachById, roleById);
   ck("A coach linked twice to the same session dedupes to one name", names.length === 1 && names[0] === "Alex Test", JSON.stringify(names));
 }
 {
@@ -141,7 +166,7 @@ const coachById = {
     { id: "ss9", fields: { Session: ["sessF"], Coach: ["d1"], Role: ["lead"], Active: true } },
     { id: "ss10", fields: { Session: ["sessF"], Coach: ["d2"], Role: ["coach"], Active: true } },
   ]);
-  const names = resolveSessionCoachNames("sessF", staff, byIdWithDupNames, roleById);
+  const names = resolveSessionCoachNames("sessF", "2026-09-20", staff, byIdWithDupNames, roleById);
   ck("Two different coach records that happen to share a name both still appear (dedupe is by id, not text)",
     names.length === 2, JSON.stringify(names));
 }
@@ -150,13 +175,13 @@ const coachById = {
   const staff = buildSessionStaffBySessionId([
     { id: "ss11", fields: { Session: ["sessG"], Coach: ["alex"], Role: ["lead"], Active: false } },
   ]);
-  const names = resolveSessionCoachNames("sessG", staff, coachById, roleById);
+  const names = resolveSessionCoachNames("sessG", "2026-09-20", staff, coachById, roleById);
   ck("An inactive Session Staff row is excluded from the coach list", names.length === 0, JSON.stringify(names));
 }
 {
   // A coach with no Session Staff link anywhere (Morgan Manager in real TEST data) never appears unprompted.
   const staff = buildSessionStaffBySessionId([]);
-  const names = resolveSessionCoachNames("sessH", staff, coachById, roleById);
+  const names = resolveSessionCoachNames("sessH", "2026-09-20", staff, coachById, roleById);
   ck("A session with zero Session Staff rows returns an empty list, not a throw", names.length === 0);
 }
 {
@@ -167,7 +192,7 @@ const coachById = {
     { id: "ss14", fields: { Session: ["sessI"], Coach: ["blank"], Role: ["learning"], Active: true } },
     { id: "ss15", fields: { Session: ["sessI"], Coach: ["alex"], Role: ["learning"], Active: true } },
   ]);
-  const names = resolveSessionCoachNames("sessI", staff, coachById, roleById);
+  const names = resolveSessionCoachNames("sessI", "2026-09-20", staff, coachById, roleById);
   ck("Login-style, email-style, and blank coach names are dropped; a presentable one still comes through",
     names.length === 1 && names[0] === "Alex Test", JSON.stringify(names));
 }
@@ -176,7 +201,7 @@ const coachById = {
   const staff = buildSessionStaffBySessionId([
     { id: "ss16", fields: { Session: ["sessJ"], Coach: ["missing"], Role: ["lead"], Active: true } },
   ]);
-  const names = resolveSessionCoachNames("sessJ", staff, coachById, roleById);
+  const names = resolveSessionCoachNames("sessJ", "2026-09-20", staff, coachById, roleById);
   ck("A dangling Coach link resolves to an empty list rather than throwing", names.length === 0);
 }
 {
@@ -185,9 +210,46 @@ const coachById = {
     { id: "ss17", fields: { Session: ["sessK"], Coach: ["sam"], Role: [], Active: true } },
     { id: "ss18", fields: { Session: ["sessK"], Coach: ["alex"], Role: ["lead"], Active: true } },
   ]);
-  const names = resolveSessionCoachNames("sessK", staff, coachById, roleById);
+  const names = resolveSessionCoachNames("sessK", "2026-09-20", staff, coachById, roleById);
   ck("A coach with no resolvable Role still appears, ordered after named roles",
     names.join(",") === "Alex Test,Sam Sample", names.join(","));
+}
+
+// --- Coaches Slice 2, item 12: parent coach display is date-aware, not just Active ---
+{
+  const coachHandover = {
+    danny: { fields: { "Coach Name": "Danny Handover" } },
+    tom: { fields: { "Coach Name": "Tom Handover" } },
+  };
+  const staff = buildSessionStaffBySessionId([
+    { id: "ssDanny", fields: { Session: ["sessL"], Coach: ["danny"], Role: ["lead"], Active: true, "Effective From": "2026-09-07", "Effective Until": "2026-09-20" } },
+    { id: "ssTom", fields: { Session: ["sessL"], Coach: ["tom"], Role: ["lead"], Active: true, "Effective From": "2026-09-21", "Effective Until": "2026-10-04" } },
+  ]);
+  const namesOn19 = resolveSessionCoachNames("sessL", "2026-09-19", staff, coachHandover, roleById);
+  ck("12a. A date inside Danny's window shows Danny, not Tom", namesOn19.join(",") === "Danny Handover", namesOn19.join(","));
+  const namesOn22 = resolveSessionCoachNames("sessL", "2026-09-22", staff, coachHandover, roleById);
+  ck("12b. A date inside Tom's window shows Tom, not Danny, even though Danny's row is still Active=true", namesOn22.join(",") === "Tom Handover", namesOn22.join(","));
+  const namesOn20 = resolveSessionCoachNames("sessL", "2026-09-20", staff, coachHandover, roleById);
+  ck("12c. Danny's own Effective Until boundary is inclusive - still Danny, not both/neither", namesOn20.join(",") === "Danny Handover", namesOn20.join(","));
+  const namesOn21 = resolveSessionCoachNames("sessL", "2026-09-21", staff, coachHandover, roleById);
+  ck("12d. Tom's own Effective From boundary is inclusive - already Tom", namesOn21.join(",") === "Tom Handover", namesOn21.join(","));
+  ck("Do not show both merely because both rows are Active - exactly one coach per non-overlapping date", namesOn19.length === 1 && namesOn22.length === 1);
+}
+{
+  // Active=false suppresses display even when the date falls inside the range.
+  const staff = buildSessionStaffBySessionId([
+    { id: "ssRetracted", fields: { Session: ["sessM"], Coach: ["alex"], Role: ["lead"], Active: false, "Effective From": "2026-09-07", "Effective Until": "2026-09-20" } },
+  ]);
+  const names = resolveSessionCoachNames("sessM", "2026-09-14", staff, coachById, roleById);
+  ck("A retracted (Active=false) row is never shown, even inside its own date range", names.length === 0, JSON.stringify(names));
+}
+{
+  // Malformed Effective From/Until fails closed for display too, never shown.
+  const staff = buildSessionStaffBySessionId([
+    { id: "ssBadDate", fields: { Session: ["sessN"], Coach: ["alex"], Role: ["lead"], Active: true, "Effective From": "07/09/2026" } },
+  ]);
+  const names = resolveSessionCoachNames("sessN", "2026-09-14", staff, coachById, roleById);
+  ck("A malformed Effective From excludes the row from display rather than showing it as unbounded", names.length === 0, JSON.stringify(names));
 }
 
 console.log(R.map(([s, n, x]) => `${s}  ${n}${x ? "  -- " + x : ""}`).join("\n"));

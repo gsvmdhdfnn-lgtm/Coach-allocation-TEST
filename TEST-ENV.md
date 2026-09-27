@@ -3516,3 +3516,217 @@ exact boundary conditions, same finding as the Coaches Foundation Audit.
 **Coaches Slice 1 is ready for Slice 2 Session Staff effective dating.**
 
 Do not start Slice 2 automatically.
+
+## Coaches Foundation — Slice 2 (Session Staff effective dating) — 2026-09-27
+
+TEST-only. Production Airtable/Supabase, frontend, Google Sheets and
+finance untouched throughout.
+
+### The rule
+
+A Session Staff row applies on date `D` only when:
+- `Active = true` — an independent administrative enable/disable flag,
+  checked first and absolute. A retracted row never applies, whatever its
+  date range says.
+- `Effective From` is blank OR `D >= Effective From`.
+- `Effective Until` is blank OR `D <= Effective Until`.
+
+Both bounds are inclusive. Both blank means the row applies whenever
+`Active` — exactly the pre-Slice-2 behaviour for a row that never needed
+date-scoping, so nothing already-Active-only regresses. `D` is always a
+plain `YYYY-MM-DD` Europe/London calendar date (`ukTodayIso()`, an
+`Intl.DateTimeFormat` double-format read, never a UTC-midnight slice —
+the UK calendar date can already have rolled over relative to UTC right
+around BST/GMT midnight).
+
+This is the ONE shared rule (`sessionStaffAppliesOnDate()`), maintained as
+a byte-identical duplicate in `hub-content/player-access.ts` (exported,
+canonical copy, with the full rationale in its own comment) and
+`parent-hub/index.ts` (private duplicate, per this codebase's
+self-contained-Edge-Function convention — no shared filesystem across
+functions at deploy time). Both files carry an explicit comment
+cross-referencing the other and stating any change must be made
+identically in both. Neither resolver re-derives date applicability any
+other way.
+
+### What changed
+
+- `hub-content/player-access.ts`: added `ukTodayIso()` and
+  `sessionStaffAppliesOnDate()`. `buildActiveSessionStaffByCoachAndSession()`
+  renamed to `buildSessionStaffByCoachAndSession()` and changed from one
+  Active-filtered row per (session, coach) to ALL of that pair's rows,
+  unfiltered — a coach can legitimately hold more than one Session Staff
+  row on the same session over time (a planned handover, or simply an old
+  row not yet retired); filtering by date is entirely
+  `sessionStaffAppliesOnDate()`'s job at lookup time, never the builder's.
+  `sessionStaffCapabilitiesForSession()` gained a `dateIso` parameter and
+  now returns the first of the coach's rows that both applies on that date
+  and grants a player-access-eligible role. `coachOwnStandingCapabilities()`
+  gained a `today: Date` parameter and now applies the same date rule
+  instead of a raw `Active` check. `resolvePlayerAccess()` computes
+  `todayIso` from its existing `today` input and passes it through.
+- `hub-content/index.ts`: renamed import; `today = new Date()` is now
+  computed once, before `coachOwnStandingCapabilities()`'s call, and the
+  same instant is passed into it, `resolveCoverSessionIds()` and
+  `resolvePlayerAccess()` — one "now" per request.
+- `parent-hub/index.ts`: added the private duplicate helpers described
+  above. `resolveSessionCoachNames()` gained a `dateIso` parameter and now
+  filters Session Staff rows by `sessionStaffAppliesOnDate()` instead of
+  raw `Active`. `handleParentMe()` keeps its pre-existing `todayIso`
+  (UTC-based, Schedule-foundation-approved, used only by
+  `resolveNextOccurrence()`'s occurrence-floor check) completely
+  untouched, and adds a separate `ukToday` (Europe/London) used only for
+  this slice's date rule — the two are deliberately never conflated. For
+  each active session, the coach names shown use the resolved
+  `next_occurrence`'s own date when one exists, else fall back to
+  `ukToday` (the recurring-pattern-only case, and `pausedSessions`, which
+  have no occurrence context at all) — a next occurrence three weeks out
+  during a planned handover shows the coach who applies THEN, not whoever
+  is on today's date.
+
+### Player-access date-context decision
+
+`resolvePlayerAccess()` is evaluated as of "today" (`input.today`, the
+same instant already used for former-access day math), not a specific
+occurrence date — live "can this coach currently see this player" access
+has no occurrence-date context of its own to use instead. This was judged
+sufficiently date-contextual, not the brief's "stop and report" case, and
+is documented here and in the code rather than silently assumed.
+
+### Role security unchanged
+
+`PLAYER_ACCESS_ROLE_PRIORITY` (`lead_coach: 0, coach: 1`), keyed by the
+stable `Role Key` and independent of the editable `Can View Players`
+checkbox, is untouched by this slice — Lead Coach and Coach may be
+granted access, Learning Coach never is, enforced server-side, whatever a
+Session Staff row's own dating says. Confirmed by real TEST verification
+below even for a Learning Coach row with fully valid, currently-applying
+dates.
+
+### Real TEST verification
+
+All throwaway — two Sessions (`SLICE2-HANDOVER`, `SLICE2-LEARNINGCOACH`),
+one further throwaway Session created and reused for the sequential
+handover (`SLICE2-HANDOVER-SEQ`, isolated from `SLICE2-HANDOVER` once its
+own real coach — Sam, via `SLICE2-P2-Sam-Current` — turned out to be
+open-ended and would otherwise have kept appearing alongside every later
+handover window on the same session, which is *correct* per-row
+behaviour, just not a clean isolated proof of the sequential pattern), 3
+throwaway Players, matching Parent-Player Links / Player Session Links,
+8 Session Staff rows and one Session Occurrence record (moved between 3
+dates in turn to walk through the handover). Verified through the real
+deployed TEST backend (`dkqubldmfyeuudecxmvh`, hub-content v5, parent-hub
+v9) via `pg_net` from inside the TEST Supabase project itself (the
+session's own outbound network policy blocks direct HTTPS to
+`*.supabase.co`, so requests were issued server-side against
+`/functions/v1/hub-content/players` and `/functions/v1/parent-hub/me`
+using fresh JWTs for `coach.a@test.invalid` (Alex Test),
+`coach.b@test.invalid` (Sam Sample) and `parent.a@test.invalid` (Priya
+Parent)). All throwaway records deleted afterward; TEST-A/TEST-B never
+altered.
+
+- **Active + no date bounds; open-ended `Effective Until`** — Sam's
+  `SLICE2-P2-Sam-Current` row (`Effective From` 2026-09-21, `Effective
+  Until` blank) granted Sam real `/hub-content/players` access to the
+  throwaway player on `SLICE2-HANDOVER` (`"tier":"permanent"`) as of the
+  real current date, 2026-09-27.
+- **An ended assignment does not retain access despite `Active = true`**
+  — Alex's `SLICE2-P1-Alex-Ended` row (`Effective From` 2026-08-01,
+  `Effective Until` 2026-09-20, `Active = true`) did NOT grant Alex
+  access to that same player as of 2026-09-27; confirmed by Alex's real
+  `/hub-content/players` response containing no row from
+  `SLICE2-HANDOVER` via that assignment.
+- **`Active = false` suppresses even inside a valid date range** — Alex's
+  `SLICE2-P3-Alex-InactiveInRange` row (`Effective From` 2026-09-01,
+  `Effective Until` 2026-10-01, `Active = false`) also granted no access,
+  confirming `Active` is a true administrative off-switch, independent of
+  the date range.
+- **Deliberate overlap resolves for both coaches** — with Sam covering
+  today via `SLICE2-P2-Sam-Current` and Alex covering today via a fourth
+  row, `SLICE2-P4-Alex-OverlapWithSam` (`Effective From` 2026-09-25,
+  `Effective Until` 2026-10-10): Alex's own `/hub-content/players`
+  response showed the `SLICE2-HANDOVER` player via `SLICE2-P4` (his other
+  two rows on that session correctly excluded, per above), and the real
+  `/parent-hub/me` response for Priya Parent showed
+  `"coaches":["Alex Test","Sam Sample"]` for that session — both coaches,
+  not just one, confirming overlap is never collapsed to a single winner.
+- **Danny → Tom → Joe planned recurring handover, boundary-inclusive** —
+  three sequential Session Staff rows on `SLICE2-HANDOVER-SEQ`: Alex
+  ("Danny", `Effective From` 2026-10-05, `Effective Until` 2026-10-18,
+  Lead Coach), Sam ("Tom", `Effective From` 2026-10-19, `Effective Until`
+  2026-11-01, Coach), Morgan Manager ("Joe", `Effective From` 2026-11-02,
+  `Effective Until` blank/open-ended, Lead Coach). A single Session
+  Occurrence record was moved through three dates and `/parent-hub/me`
+  called fresh each time:
+  - Date 2026-10-18 (Danny's last day, inclusive boundary) →
+    `"coaches":["Alex Test"]` only.
+  - Date 2026-10-19 (Tom's first day) → `"coaches":["Sam Sample"]` only.
+  - Date 2026-11-02 (Joe's first day, open-ended) →
+    `"coaches":["Morgan Manager"]` only.
+  No date ever showed more than the one coach whose window actually
+  covered it — confirms the display never falls back to "every Active
+  row" once dating is present.
+- **Learning Coach excluded from player-data access even with fully
+  valid dating** — Sam's `SLICE2-LC1-Sam-LearningCoachOnly` row on the
+  separate `SLICE2-LEARNINGCOACH` session (`Effective From` 2026-09-01,
+  `Effective Until` blank, `Active = true` — unambiguously valid today)
+  never appeared in Sam's real `/hub-content/players` response for that
+  session's throwaway player, even though Sam legitimately had
+  simultaneous, valid, non-Learning-Coach access to a different session
+  in the very same response. Confirms the Learning Coach exclusion is not
+  weakened by effective dating.
+- **Malformed date data** — attempted directly against real Airtable: a
+  `create_records_for_table` call setting `Effective From` to the literal
+  string `"not-a-date"` was rejected outright by Airtable's own API with
+  `422 Cannot parse date value "not-a-date" for field Effective From`.
+  Airtable's `date` field type structurally prevents this specific
+  malformed-value case from ever reaching the resolver through a normal
+  write, which is itself a useful defense-in-depth confirmation, but it
+  means this scenario cannot be demonstrated as live Airtable data. The
+  code's fail-closed handling (`sessionStaffAppliesOnDate()` excludes a
+  row whose date field is present but not a valid `YYYY-MM-DD` string,
+  rather than treating it as absent/open) is instead verified by the unit
+  test suite, which can construct such a row directly in memory —
+  `access-resolution.test.ts` (non-string and invalid-format cases) and
+  `session-coaches.test.ts` (excluded from parent display).
+
+### Regression
+
+- `coach.a`/`coach.b` real `/hub-content/players` responses (captured
+  during the verification above) also contained their pre-existing
+  TEST-A/TEST-B rows exactly as before this slice — Alex still sees
+  TEST-A's players, Sam still sees TEST-B's (plus TEST-B's former-access
+  row for Archie, unaffected), with permissions unchanged.
+- Priya Parent's real `/parent-hub/me` response (captured during the
+  verification above) still resolves TEST-A/TEST-B correctly — Dylan
+  Davies' paused TEST-B session, Archie Atkinson's active TEST-A/TEST-B
+  sessions with correct `next_occurrence` dates and coach lists
+  (`["Sam Sample","Alex Test"]` for TEST-B, unchanged), the ended TEST-B
+  link, and the one pending claim — all identical in shape to before this
+  slice.
+- Full TEST suite (`node tests/run-all.js`), run immediately before
+  deploying: **50/50 test files passed**, including the two files this
+  slice extended (`access-resolution.test.ts`: 52/52 individual
+  assertions; `session-coaches.test.ts`: 18/18).
+- Schedule-foundation tests (Slice 6-10, generator/propagation/
+  triggering/History) untouched this slice and included in the same
+  50/50 green run.
+
+### Production isolation
+
+No production Airtable, production Supabase, frontend, Google Sheets or
+finance code/data was read or written at any point in this slice — every
+Airtable call targeted the TEST base `appQktredAuGa1X7e`, every Supabase
+call targeted the TEST project `dkqubldmfyeuudecxmvh`, and both deployed
+Edge Functions retain their unchanged TEST DEPLOYMENT GUARD (refuses to
+start against either known production Airtable base id).
+
+### Occurrence Staff — confirmed still out of scope
+
+Not touched this slice, per instruction. Occurrence Staff (one-date
+exception/cover) is Slice 3.
+
+**Coaches Slice 2 is ready for Slice 3 Occurrence Staff date-specific
+resolution.**
+
+Do not start Slice 3 automatically.

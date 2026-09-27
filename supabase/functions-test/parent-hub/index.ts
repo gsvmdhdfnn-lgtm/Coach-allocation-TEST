@@ -155,6 +155,57 @@ function firstLink(fields: Record<string, any>, name: string): string {
   return Array.isArray(list) && list.length ? list[0] : "";
 }
 
+const ISO_DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Today's Europe/London calendar date as "YYYY-MM-DD" - Coaches Slice 2.
+ * Same technique as this file's own formatUkTime() (Intl double-format,
+ * never a UTC-midnight slice) and the identical twin of
+ * hub-content/player-access.ts's ukTodayIso() - kept as an exact duplicate
+ * rather than a shared import, per this codebase's own "each Edge
+ * Function is self-contained" convention (see player-access.ts's file
+ * header for why). Any change here must be made identically there.
+ */
+function ukTodayIso(now: Date = new Date()): string {
+  const parts: Record<string, string> = {};
+  for (const p of new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now)) {
+    parts[p.type] = p.value;
+  }
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+/**
+ * THE one shared rule (Coaches Slice 2, see TEST-ENV.md) for "does this
+ * Session Staff row apply on this date" - the exact duplicate of
+ * hub-content/player-access.ts's sessionStaffAppliesOnDate() (see that
+ * file's own comment for the full rationale: Active is an independent
+ * administrative flag checked first and absolute; Effective From/Until
+ * then decide date applicability, both inclusive, both optional; overlap
+ * is never resolved here; malformed date data fails closed, never
+ * silently treated as an open range). This file's coach-display tier and
+ * player-access.ts's player-data-access tier must never drift apart on
+ * this rule - any change here must be made identically there.
+ */
+function sessionStaffAppliesOnDate(row: { fields: Record<string, any> }, dateIso: string): boolean {
+  if (row.fields["Active"] !== true) return false;
+  const from = row.fields["Effective From"];
+  if (from != null && from !== "") {
+    if (typeof from !== "string" || !ISO_DATE_ONLY_RE.test(from)) return false;
+    if (dateIso < from) return false;
+  }
+  const until = row.fields["Effective Until"];
+  if (until != null && until !== "") {
+    if (typeof until !== "string" || !ISO_DATE_ONLY_RE.test(until)) return false;
+    if (dateIso > until) return false;
+  }
+  return true;
+}
+
 /**
  * A parent must never be shown an internal handle. Anything that reads
  * like a login rather than a person's name - an email address, or a
@@ -449,15 +500,26 @@ function buildSessionStaffBySessionId(rows: any[]): Record<string, any[]> {
 const ROLE_DISPLAY_PRIORITY: Record<string, number> = { "Lead Coach": 0, "Coach": 1, "Learning Coach": 2 };
 
 /**
- * Real coach names for one Session, from Session Staff - the canonical
- * recurring staffing relationship - never the retired free-text source
- * (which is why this always returned [] before this repair). Only
- * Active staffing rows count. A coach linked twice to the same Session
- * (a data-entry duplicate row) still produces one name, deduplicated by
- * the Coach's own record id - never by the name text, since two
- * different coaches who happen to share a name must both still appear.
- * An unpresentable name (a login-style handle, an email) is dropped
- * rather than shown, same rule as everywhere else in this file.
+ * Real coach names for one Session ON ONE DATE, from Session Staff - the
+ * canonical recurring staffing relationship - never the retired free-text
+ * source (which is why this always returned [] before this repair).
+ *
+ * Coaches Slice 2: only rows that apply on `dateIso`
+ * (sessionStaffAppliesOnDate() - Active + Effective From/Until, both
+ * inclusive) count, never "every Active row" - a planned handover (Danny
+ * weeks 1-2, Tom weeks 3-4) must show Danny for a date in his own window
+ * and Tom for a date in his, never both merely because both rows are
+ * Active. A genuine overlap (deliberate co-coaching, or a Lead Coach and
+ * a Coach both covering the same date) still shows every coach whose row
+ * applies on that date - this only filters by date, never by "just the
+ * one best match".
+ *
+ * A coach linked twice to the same Session (a data-entry duplicate row,
+ * or two of their own rows that both apply on this date) still produces
+ * one name, deduplicated by the Coach's own record id - never by the name
+ * text, since two different coaches who happen to share a name must both
+ * still appear. An unpresentable name (a login-style handle, an email) is
+ * dropped rather than shown, same rule as everywhere else in this file.
  *
  * Occurrence-specific cover (Occurrence Staff) is deliberately not
  * folded in here - this is the recurring Session Staff roster only. See
@@ -465,11 +527,12 @@ const ROLE_DISPLAY_PRIORITY: Record<string, number> = { "Lead Coach": 0, "Coach"
  */
 function resolveSessionCoachNames(
   sessionId: string,
+  dateIso: string,
   sessionStaffBySessionId: Record<string, any[]>,
   coachById: Record<string, any>,
   roleById: Record<string, any>
 ): string[] {
-  const rows = (sessionStaffBySessionId[sessionId] || []).filter((r) => r.fields["Active"] === true);
+  const rows = (sessionStaffBySessionId[sessionId] || []).filter((r) => sessionStaffAppliesOnDate(r, dateIso));
   const seen = new Set<string>();
   const entries: { name: string; priority: number }[] = [];
   for (const row of rows) {
@@ -690,6 +753,17 @@ async function handleParentMe(caller: { userId: string; email: string }) {
   // Computed once per request so every session's "next" resolves against
   // the exact same instant, rather than drifting mid-request.
   const todayIso = new Date().toISOString().slice(0, 10);
+  // Coaches Slice 2's own reference date for Session Staff resolution -
+  // deliberately a SEPARATE value from todayIso above, not a reuse of it:
+  // todayIso is the pre-existing Schedule-foundation occurrence-floor
+  // check (untouched by this slice), while ukToday is the Europe/London
+  // operational date this slice's own date-resolution rule requires (see
+  // sessionStaffAppliesOnDate()/ukTodayIso()). The two happen to agree
+  // almost always and only could disagree in the narrow window right
+  // around a UTC/UK midnight mismatch - kept distinct rather than
+  // quietly reusing todayIso for a rule that was never specified to use
+  // it, and never means the recurring pattern floor.
+  const ukToday = ukTodayIso(new Date());
 
   const myLinks = linkRows.filter((l: any) => (l.fields["Parent / Guardian"] || []).includes(parentRecord.id));
 
@@ -719,9 +793,17 @@ async function handleParentMe(caller: { userId: string; email: string }) {
           // Session - null means none has been generated yet, and the
           // client shows the recurring pattern rather than a guessed date.
           const nextOcc = resolveNextOccurrence(session.id, occurrencesBySessionId, occurrenceById, todayIso);
+          // Coaches Slice 2: show whoever is staffed for the occurrence
+          // date actually being displayed, not just "today" - a next
+          // occurrence 3 weeks out during a planned handover must show
+          // the coach who applies THEN, not whoever is on today's date.
+          // Falls back to today only when no dated occurrence exists yet
+          // (the recurring-pattern-only case), so the roster still shows
+          // someone rather than nothing.
+          const staffDateIso = nextOcc && typeof nextOcc.fields["Date"] === "string" ? nextOcc.fields["Date"] : ukToday;
           return {
             ...sessionPayload(session, venueByRecordId),
-            coaches: resolveSessionCoachNames(session.id, sessionStaffBySessionId, coachById, roleById),
+            coaches: resolveSessionCoachNames(session.id, staffDateIso, sessionStaffBySessionId, coachById, roleById),
             start_date: l.fields["Start Date"] || "",
             next_occurrence: nextOcc ? nextOccurrencePayload(nextOcc, session, venueByRecordId) : null,
           };
@@ -738,7 +820,9 @@ async function handleParentMe(caller: { userId: string; email: string }) {
           if (!session) return null;
           return {
             ...sessionPayload(session, venueByRecordId),
-            coaches: resolveSessionCoachNames(session.id, sessionStaffBySessionId, coachById, roleById),
+            // No occurrence context for a paused session - today's roster
+            // is the closest sensible answer (Coaches Slice 2).
+            coaches: resolveSessionCoachNames(session.id, ukToday, sessionStaffBySessionId, coachById, roleById),
             paused_from: l.fields["Pause Start Date"] || "",
             returns_on: l.fields["Pause Return Date"] || "",
           };

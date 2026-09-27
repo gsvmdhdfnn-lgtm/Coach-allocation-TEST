@@ -1,6 +1,6 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import {
-  buildActiveSessionStaffByCoachAndSession,
+  buildSessionStaffByCoachAndSession,
   capabilitiesForCoach,
   coachIdentityKeys,
   coachOwnStandingCapabilities,
@@ -456,12 +456,15 @@ async function handlePlayers(authHeader: string | null) {
   const coachNameKeys = coachIdentityKeys(callerCoachRecord, caller.displayName);
   // Legacy Assigned Coaches fallback only (see this function's own docstring) - deliberately untouched.
   const coachCapabilities = capabilitiesForCoach(callerCoachRecord, roleCapsById);
-  const sessionStaffBySessionAndCoach = buildActiveSessionStaffByCoachAndSession(sessionStaffRows);
+  const sessionStaffBySessionAndCoach = buildSessionStaffByCoachAndSession(sessionStaffRows);
+  // Computed here (not after) so coachOwnStandingCapabilities' Coaches
+  // Slice 2 date check uses the exact same instant as resolvePlayerAccess()
+  // below and resolveCoverSessionIds() further down - one "now" per request.
+  const today = new Date();
   const coachCoverCapabilities = caller.airtablePersonId
-    ? coachOwnStandingCapabilities(caller.airtablePersonId, sessionStaffRows, roleCapsById)
+    ? coachOwnStandingCapabilities(caller.airtablePersonId, sessionStaffRows, roleCapsById, today)
     : null;
 
-  const today = new Date();
   const coverSessionIds =
     caller.role === "management"
       ? new Set<string>()

@@ -15,8 +15,8 @@
 // membershipStatus(). Former-access snapshot/end-date fields now read
 // their current (LEGACY-prefixed) names.
 import {
-  buildActiveSessionStaffByCoachAndSession,
   buildScheduledCoachNameKeysBySessionId,
+  buildSessionStaffByCoachAndSession,
   capabilitiesForCoach,
   coachIdentityKeys,
   coachOwnStandingCapabilities,
@@ -24,7 +24,9 @@ import {
   legacyFallbackPerms,
   resolvePlayerAccess,
   roleCapabilitiesById,
+  sessionStaffAppliesOnDate,
   sessionStaffCapabilitiesForSession,
+  ukTodayIso,
   type CoachRoleCapabilities,
 } from "./player-access.ts";
 
@@ -85,13 +87,14 @@ const SESSION_STAFF_ROWS = [
   { id: "ssSamB", fields: { Session: [SESSION_B.id], Coach: [COACH_SAM.id], Role: [ROLE_COACH.id], Active: true } },
   { id: "ssMorganA", fields: { Session: [SESSION_A.id], Coach: [COACH_MORGAN.id], Role: [ROLE_LEARNING.id], Active: true } },
 ];
-const sessionStaffBySessionAndCoach = buildActiveSessionStaffByCoachAndSession(SESSION_STAFF_ROWS);
+const sessionStaffBySessionAndCoach = buildSessionStaffByCoachAndSession(SESSION_STAFF_ROWS);
+const TODAY_ISO = ukTodayIso(TODAY);
 
 const LINK_ARCHIE_A = { id: "link1", fields: { Player: [PLAYER_ARCHIE.id], Session: [SESSION_A.id], "Membership Lifecycle Status": "Active" } };
 const LINK_DYLAN_B_PAUSED = { id: "link2", fields: { Player: [PLAYER_DYLAN.id], Session: [SESSION_B.id], "Membership Lifecycle Status": "Paused" } };
 
 function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>()) {
-  const coachCoverCapabilities = coach ? coachOwnStandingCapabilities(coach.id, SESSION_STAFF_ROWS, roleCapsById) : null;
+  const coachCoverCapabilities = coach ? coachOwnStandingCapabilities(coach.id, SESSION_STAFF_ROWS, roleCapsById, TODAY) : null;
   return resolvePlayerAccess({
     role: "coach",
     coachRecordId: coach ? coach.id : null,
@@ -128,7 +131,7 @@ function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>(
   const row = rows.find((r) => r.player_record_id === PLAYER_ARCHIE.id);
   ck("Learning Coach never receives player access, even though this role's own Can View Players is true", !row, JSON.stringify(rows));
   // Direct check on the gating function itself, isolating the exact rule.
-  const staffCaps = sessionStaffCapabilitiesForSession(SESSION_A.id, COACH_MORGAN.id, sessionStaffBySessionAndCoach, roleCapsById);
+  const staffCaps = sessionStaffCapabilitiesForSession(SESSION_A.id, COACH_MORGAN.id, TODAY_ISO, sessionStaffBySessionAndCoach, roleCapsById);
   ck("sessionStaffCapabilitiesForSession() returns null for a Learning Coach role despite Can View Players=true on that role", staffCaps === null, JSON.stringify(staffCaps));
 }
 
@@ -224,27 +227,86 @@ function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>(
 // --- 11. An inactive Coach Role fails closed even with a matching Role Key ---
 {
   const ssInactiveRole = [{ id: "ssX", fields: { Session: [SESSION_A.id], Coach: [COACH_UNRELATED.id], Role: [ROLE_LEAD_INACTIVE.id], Active: true } }];
-  const byCoachSession = buildActiveSessionStaffByCoachAndSession(ssInactiveRole);
-  const caps = sessionStaffCapabilitiesForSession(SESSION_A.id, COACH_UNRELATED.id, byCoachSession, roleCapsById);
+  const byCoachSession = buildSessionStaffByCoachAndSession(ssInactiveRole);
+  const caps = sessionStaffCapabilitiesForSession(SESSION_A.id, COACH_UNRELATED.id, TODAY_ISO, byCoachSession, roleCapsById);
   ck("A Role Key matching the safelist but whose Coach Roles record is itself inactive grants nothing", caps === null, JSON.stringify(caps));
 }
 
-// --- 12. An inactive Session Staff row is never a candidate --------------
+// --- 12. An inactive (Active=false) Session Staff row is never a candidate, on any date ---
 {
   const ssInactiveRow = [{ id: "ssY", fields: { Session: [SESSION_A.id], Coach: [COACH_ALEX.id], Role: [ROLE_LEAD.id], Active: false } }];
-  const byCoachSession = buildActiveSessionStaffByCoachAndSession(ssInactiveRow);
-  ck("buildActiveSessionStaffByCoachAndSession() excludes Active=false rows entirely", Object.keys(byCoachSession).length === 0, JSON.stringify(byCoachSession));
+  // Coaches Slice 2: the row is still KEPT in the map (an Active=false row
+  // isn't erased, just never applicable) - the exclusion happens at lookup
+  // time via sessionStaffAppliesOnDate(), uniformly with the date checks.
+  const byCoachSession = buildSessionStaffByCoachAndSession(ssInactiveRow);
+  ck("buildSessionStaffByCoachAndSession() still indexes an Active=false row (filtering is sessionStaffAppliesOnDate()'s job, not the builder's)", (byCoachSession[SESSION_A.id]?.[COACH_ALEX.id] || []).length === 1, JSON.stringify(byCoachSession));
+  const caps = sessionStaffCapabilitiesForSession(SESSION_A.id, COACH_ALEX.id, TODAY_ISO, byCoachSession, roleCapsById);
+  ck("...but it never grants access on any date, Active is an absolute administrative off-switch", caps === null, JSON.stringify(caps));
 }
 
-// --- 13. coachOwnStandingCapabilities picks the highest-priority eligible role across sessions ---
+// --- 13. coachOwnStandingCapabilities picks the highest-priority eligible role across sessions, as of today ---
 {
   // A coach who is Coach on one session and Lead Coach on another - Lead Coach (priority 0) wins as their standing role.
   const mixedRows = [
     { id: "ssMixed1", fields: { Session: [SESSION_A.id], Coach: ["coachMixed"], Role: [ROLE_COACH.id], Active: true } },
     { id: "ssMixed2", fields: { Session: [SESSION_B.id], Coach: ["coachMixed"], Role: [ROLE_LEAD.id], Active: true } },
   ];
-  const standing = coachOwnStandingCapabilities("coachMixed", mixedRows, roleCapsById);
+  const standing = coachOwnStandingCapabilities("coachMixed", mixedRows, roleCapsById, TODAY);
   ck("A coach holding both Coach and Lead Coach roles gets Lead Coach as their standing (highest-priority) role", !!standing && standing.roleKey === "lead_coach", JSON.stringify(standing));
+}
+
+// --- Coaches Slice 2: sessionStaffAppliesOnDate() itself, the one shared date rule ---
+{
+  const base = { Active: true };
+  ck("1. Active=true, no date bounds at all -> applies", sessionStaffAppliesOnDate({ fields: { ...base } }, "2026-09-20") === true);
+  ck("2. Active=false -> never applies, even with no date bounds", sessionStaffAppliesOnDate({ fields: { Active: false } }, "2026-09-20") === false);
+  ck("3. Exactly on Effective From -> applies (inclusive)", sessionStaffAppliesOnDate({ fields: { ...base, "Effective From": "2026-09-07" } }, "2026-09-07") === true);
+  ck("4. Exactly on Effective Until -> applies (inclusive)", sessionStaffAppliesOnDate({ fields: { ...base, "Effective Until": "2026-09-20" } }, "2026-09-20") === true);
+  ck("5. One day before Effective From -> excluded", sessionStaffAppliesOnDate({ fields: { ...base, "Effective From": "2026-09-07" } }, "2026-09-06") === false);
+  ck("6. One day after Effective Until -> excluded", sessionStaffAppliesOnDate({ fields: { ...base, "Effective Until": "2026-09-20" } }, "2026-09-21") === false);
+  ck("7. Open-ended Effective From (blank Until) -> applies far in the future", sessionStaffAppliesOnDate({ fields: { ...base, "Effective From": "2026-09-07" } }, "2030-01-01") === true);
+  ck("8. Open-ended Effective Until (blank From) -> applies far in the past", sessionStaffAppliesOnDate({ fields: { ...base, "Effective Until": "2026-09-20" } }, "2000-01-01") === true);
+  ck("Both bounds set, a date inside the inclusive range -> applies", sessionStaffAppliesOnDate({ fields: { ...base, "Effective From": "2026-09-07", "Effective Until": "2026-09-20" } }, "2026-09-14") === true);
+  ck("13a. Malformed Effective From (not YYYY-MM-DD) -> fails closed, excluded rather than treated as open", sessionStaffAppliesOnDate({ fields: { ...base, "Effective From": "not-a-date" } }, "2026-09-20") === false);
+  ck("13b. Malformed Effective Until -> fails closed, excluded rather than treated as open", sessionStaffAppliesOnDate({ fields: { ...base, "Effective Until": "20/09/2026" } }, "2026-09-20") === false);
+  ck("13c. A non-string Effective From (e.g. a stray number) -> fails closed", sessionStaffAppliesOnDate({ fields: { ...base, "Effective From": 20260907 as any } }, "2026-09-20") === false);
+}
+
+// --- Coaches Slice 2: planned recurring handover through the real resolver (Danny -> Tom -> Joe) ---
+{
+  const COACH_DANNY = { id: "coachDanny", fields: { "Coach Name": "Danny Handover" } };
+  const COACH_TOM = { id: "coachTom", fields: { "Coach Name": "Tom Handover" } };
+  const COACH_JOE = { id: "coachJoe", fields: { "Coach Name": "Joe Handover" } };
+  const handoverRows = [
+    { id: "ssDanny", fields: { Session: [SESSION_A.id], Coach: [COACH_DANNY.id], Role: [ROLE_LEAD.id], Active: true, "Effective From": "2026-09-07", "Effective Until": "2026-09-20" } },
+    { id: "ssTom", fields: { Session: [SESSION_A.id], Coach: [COACH_TOM.id], Role: [ROLE_LEAD.id], Active: true, "Effective From": "2026-09-21", "Effective Until": "2026-10-04" } },
+    { id: "ssJoe", fields: { Session: [SESSION_A.id], Coach: [COACH_JOE.id], Role: [ROLE_LEAD.id], Active: true, "Effective From": "2026-10-05" } },
+  ];
+  const byCoachSession = buildSessionStaffByCoachAndSession(handoverRows);
+  const capsOn = (coachId: string, dateIso: string) => sessionStaffCapabilitiesForSession(SESSION_A.id, coachId, dateIso, byCoachSession, roleCapsById);
+
+  ck("9a. 14 Sep (inside Danny's window) -> Danny has access, Tom/Joe do not", !!capsOn(COACH_DANNY.id, "2026-09-14") && !capsOn(COACH_TOM.id, "2026-09-14") && !capsOn(COACH_JOE.id, "2026-09-14"));
+  ck("9b. 20 Sep (Danny's own Effective Until, inclusive) -> still Danny", !!capsOn(COACH_DANNY.id, "2026-09-20") && !capsOn(COACH_TOM.id, "2026-09-20"));
+  ck("9c. 21 Sep (Tom's own Effective From, inclusive) -> Tom, no longer Danny", !capsOn(COACH_DANNY.id, "2026-09-21") && !!capsOn(COACH_TOM.id, "2026-09-21"));
+  ck("9d. 28 Sep (inside Tom's window) -> Tom only", !!capsOn(COACH_TOM.id, "2026-09-28") && !capsOn(COACH_DANNY.id, "2026-09-28") && !capsOn(COACH_JOE.id, "2026-09-28"));
+  ck("9e. 5 Oct (Joe's open-ended start) -> Joe, no longer Tom", !!capsOn(COACH_JOE.id, "2026-10-05") && !capsOn(COACH_TOM.id, "2026-10-05"));
+  ck("9f. Far future (Joe open-ended) -> still Joe", !!capsOn(COACH_JOE.id, "2030-01-01"));
+
+  // --- 10. Deliberate overlap: Danny + Tom both valid for one shared date ---
+  const overlapRows = [
+    { id: "ssDannyOverlap", fields: { Session: [SESSION_B.id], Coach: [COACH_DANNY.id], Role: [ROLE_LEAD.id], Active: true, "Effective From": "2026-09-07", "Effective Until": "2026-09-21" } },
+    { id: "ssTomOverlap", fields: { Session: [SESSION_B.id], Coach: [COACH_TOM.id], Role: [ROLE_COACH.id], Active: true, "Effective From": "2026-09-15", "Effective Until": "2026-09-28" } },
+  ];
+  const byCoachSessionOverlap = buildSessionStaffByCoachAndSession(overlapRows);
+  const overlapCapsOn = (coachId: string, dateIso: string) => sessionStaffCapabilitiesForSession(SESSION_B.id, coachId, dateIso, byCoachSessionOverlap, roleCapsById);
+  ck("10. On the shared overlap date (20 Sep), BOTH Danny and Tom resolve - overlap is valid, not rejected", !!overlapCapsOn(COACH_DANNY.id, "2026-09-20") && !!overlapCapsOn(COACH_TOM.id, "2026-09-20"));
+
+  // --- 11 (reconfirmed in the handover/overlap context): Learning Coach still excluded regardless of dating ---
+  const learningHandoverRows = [
+    { id: "ssLearningDated", fields: { Session: [SESSION_A.id], Coach: [COACH_MORGAN.id], Role: [ROLE_LEARNING.id], Active: true, "Effective From": "2026-09-07", "Effective Until": "2026-09-20" } },
+  ];
+  const byCoachSessionLearning = buildSessionStaffByCoachAndSession(learningHandoverRows);
+  ck("11. A Learning Coach row that is perfectly date-valid still grants no player access", sessionStaffCapabilitiesForSession(SESSION_A.id, COACH_MORGAN.id, "2026-09-14", byCoachSessionLearning, roleCapsById) === null);
 }
 
 // --- 14. legacyFallbackPerms obeys the Coach Role capability model (legacy Assigned Coaches path, unchanged) ---
