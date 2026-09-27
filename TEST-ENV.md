@@ -5808,3 +5808,387 @@ Results:
 
 All seven throwaway records were deleted by exact id, and Coach
 Availability Exceptions lists 0 records afterwards.
+
+## Coaches Foundation — Slice 8 (compliance / qualifications + coach document submission) — 2026-09-27
+
+Makes coach compliance real in the TEST backend. For each coach it
+answers:
+
+- which document types this organisation requires;
+- whether each is present and verified/seen;
+- its derived status and expiry/review date;
+- whether an attachment exists;
+- whether Management attention is needed.
+
+It also provides the two write paths into the same Coach Documents
+model: coach submission and Management submission/verification (the
+mid-slice addendum). No Coach UI, Management screen, Needs Attention,
+Settings or cover suitability was built.
+
+### Schema: what was inspected, what was mirrored
+
+- **TEST Coach Documents** (`tblp8QGwHPG92ekzR`) was re-read live and used
+  unchanged:
+  - Document Type: Enhanced DBS / Safeguarding Certificate / First Aid /
+    School Induction / Other;
+  - Attachment, Issue Date, Expiry / Review Date;
+  - Status: Current / Review Soon / Needs Review / Expired / Missing;
+  - Notes, Active;
+  - Uploaded By User ID / Name Snapshot / At;
+  - Verified By User ID / Name Snapshot / At (TEST-only since Slice 1;
+    production Coach Documents has no Verified fields).
+- **Production Coach Document Requirements** (`tblEWsmhlpIL3QBVU`) schema
+  was inspected **read-only (schema only, no records read)**. Its fields
+  are Requirement ID, **Client / School** (link to Clients & Schools),
+  Document Type (the same five choices), Required, **Review Lead Days**
+  (number), Notes, Active and Created/Last Updated. The Review Lead Days
+  description reads: *"Optional number of days before expiry/review that
+  the Hub should treat the requirement as approaching review."*
+  - It does represent "Enhanced DBS / Safeguarding / First Aid required",
+    plus review lead days, **but it is scoped per Client / School**, with
+    no explicit organisation-wide marker.
+- **Mirrored into TEST (smallest necessary part):** a new TEST table,
+  `Coach Document Requirements` (`tblWoG5cd9BtGD2Q0`), with Requirement ID,
+  Document Type (same choices), Required, Review Lead Days (same
+  description), Notes and Active.
+  - The Client / School link was deliberately **not** mirrored: school-
+    specific compliance is out of scope, and linking would also have
+    auto-created an inverse field on another table.
+  - Created/Last Updated were not mirrored either (the create API cannot
+    make computed fields, and nothing reads them).
+  - Every TEST row is an **organisation-level** requirement. The resolver
+    is already promotion-safe: any row that *does* carry a Client /
+    School value (production shape) is skipped and counted as
+    `schoolScopedRequirementsNotEvaluated`, never widened into an
+    org-wide requirement.
+- **Needs Attention Settings** (production) has a per-organisation,
+  per-rule Warning Threshold. It is a possible *future* org-level default
+  but was not used; Review Lead Days is the documented per-document
+  source.
+- The table was left empty after verification.
+
+### Final compliance model
+
+- **Required** means an Active + Required (+ no Client / School)
+  requirement row exists for the Document Type.
+- **The current operational record** for a coach + type is the single
+  Active Coach Documents row linked to that coach. Inactive rows are
+  history: counted (`historicalRecordCount`), never current, never
+  deleted.
+- **Verified / Seen** is derived; there is no boolean field. A record is
+  verified iff **Verified By User ID** is present **and** **Verified At**
+  is a valid timestamp. Exactly one of the two is `incomplete` and is
+  never treated as verified.
+- **The attachment is optional and separate.** An attachment present
+  never means verified; an attachment absent never means non-compliant.
+  A verified DBS with no attachment and an in-date review date is
+  Current.
+- **Status is derived, not trusted from the stored Status text.** The
+  one exception is a manually stored `Needs Review`, which is honoured
+  because it can only make the answer more cautious. The backend never
+  writes the Status field.
+
+### Status rules (first match wins)
+
+1. No active record for a required type -> **Missing**.
+2. More than one active record for the type -> **Needs Review**
+   (`conflicting_active_records`, all ids surfaced, never an arbitrary
+   pick).
+3. The requirement config is unusable (negative/non-integer Review Lead
+   Days, or duplicate requirement rows disagreeing on it) -> **Needs
+   Review**.
+4. The expiry date has passed -> **Expired** (wins over not-verified).
+5. Malformed dates, or Issue Date after expiry -> **Needs Review**.
+6. Incomplete verification -> **Needs Review**.
+7. Not verified -> **Needs Review** (`not_verified`). This is how every
+   new or changed submission lands until Management checks it.
+8. Stored Status manually `Needs Review` -> **Needs Review**.
+9. No Expiry / Review Date -> **Needs Review** (`missing_expiry_date`);
+   an expiry is never invented. Open product question: which document
+   types (e.g. School Induction) legitimately have no expiry? Until that
+   is modelled, every type fails safe to Needs Review without a date.
+10. Days until expiry <= the requirement's Review Lead Days -> **Review
+    Soon**. With no Review Lead Days configured, there is no Review Soon
+    window at all (nothing hard-coded).
+11. Otherwise -> **Current**.
+
+### Expiry boundary (Europe/London)
+
+"Today" is the Europe/London calendar date. All comparisons are
+whole-day and host-timezone independent (tests pass under Los Angeles and
+Auckland host TZs). A document is **valid through its stated expiry date
+and Expired from the following day** (UK midnight):
+
+- on the expiry date: `daysUntilExpiry` 0, still Current / Review Soon;
+- the day after: -1, Expired.
+
+Tests also cover BST around midnight (23:30Z on 30 Sep is already 1 Oct
+in the UK).
+
+### Needs Attention signals
+
+Each required item carries `status`, `reason` and `needsAttention`
+(= required && status != Current). The summary also has `needsAttention`
+(any item needs attention, or any data problem such as an unclassified
+active document or bad requirement config) and `counts` per status.
+Non-required documents appear under `otherDocuments` and never raise
+attention. Needs Attention itself is not built.
+
+### Write paths (addendum: coach document submission)
+
+**`POST /submit`** is the single content write path for both roles.
+
+- **Coach:**
+  - may create/update **only their own** documents. Their Coaches record
+    id comes from `profiles.airtable_person_id` (the same mapping
+    hub-content uses), never from the request;
+  - a `coachId` for someone else -> 403 `not_own_coach`;
+  - `documentId` of another coach's record -> 403 `not_own_document`.
+- **Management:** may create for any coach (`coachId` required) or update
+  any record.
+- **Request body is an allowlist:** documentId, coachId, documentType,
+  issueDate, expiryDate, attachments. Anything else is rejected 400. Any
+  verification-like field (`Verified By User ID`, `verified`, ...) gets
+  the explicit error "only Management can verify, via /verify", so
+  **coach self-verification is impossible, not merely ignored**. Status
+  and Active cannot be set either.
+- **Every submission stamps Uploaded By User ID / Name Snapshot / At**
+  from the authenticated caller and server clock. A submission never
+  writes any Verified field, so a new submission is unverified and
+  resolves to **Needs Review** until Management checks it.
+- **Attachments are optional.** They are passed as `https` URLs that
+  Airtable fetches itself (its native attachment mechanism). A later
+  Coach UI would upload to storage and pass a signed URL.
+- **Guard rails:**
+  - creating a second active record of a type the coach already has ->
+    409 (update it instead);
+  - historical (inactive) records are immutable (409);
+  - Document Type cannot be changed (400);
+  - Issue Date after expiry -> 400.
+- **Re-review after a material coach change.** Issue Date, Expiry /
+  Review Date and a replacement attachment are material. If the record
+  is currently verified (or half-verified), the change is **versioned**:
+  - a new active, unverified record is created, carrying the new content
+    plus the existing attachment if none was supplied;
+  - the old verified record is set **inactive** with its Verified By /
+    At left intact as history;
+  - the item therefore needs Management review again, and no audit field
+    is ever cleared or overwritten.
+  - The steps run create first, then retire the old one. If the second
+    step fails, both stay active and the resolver reports Needs Review
+    (`conflicting_active_records`), never Current (unit-tested).
+- **Other update cases:**
+  - a coach editing their own **unverified** record -> updated in place;
+  - identical resubmission -> `unchanged` (a verified record stays
+    verified);
+  - **Management edits keep an existing verification**, since
+    Management is the reviewing party.
+
+**`POST /verify`** is Management only.
+
+- Writes **only** Verified By User ID / Name Snapshot / At, from the
+  authenticated Management caller (Supabase user id + profile
+  display_name) and the server clock.
+- Idempotent: re-verifying reports `already_verified` and never
+  overwrites the original verifier or time.
+- Inactive records and half-written verifications are refused (409).
+
+**`GET /summary`** is Management only.
+
+**Reset/revoke of verification is deliberately NOT built.** Clearing
+Verified By/At would destroy audit data, and the brief asked to stop and
+report before inventing audit behaviour. A coach's material change
+already forces re-review non-destructively (versioning). A
+Management-initiated "un-verify" needs a product decision on how the
+prior verification is preserved, e.g. versioning it the same way, or a
+Hub Audit Events style log.
+
+Known minor limitation: two Management users verifying the same
+unverified record at the same instant could both write, and the later
+one's identity would be recorded. Both are legitimate Management; no lock
+was added (none was requested).
+
+### Attachment privacy
+
+No route returns attachment URLs, filenames, ids or sizes. Summaries and
+write responses expose only `hasAttachment: true/false`. Tested with a
+fixture attachment carrying a secret URL, and confirmed live (no
+`url`/`filename` in any response). An attachment-download path, if
+ever needed, must be a separate Management-authorised route.
+
+### Security
+
+- `/summary` and `/verify` are Management only; Coach and Parent get 403.
+- `/submit` accepts Management, or an active coach with a valid Coaches
+  link (own records only). Parents, inactive profiles and unlinked
+  coaches get 403.
+- Hard backend security is kept separate from future organisation-
+  configurable visibility (below).
+- TEST DEPLOYMENT GUARD is present.
+- Single organisation per base, the same multi-org boundary note as
+  Slice 7.
+
+### Future organisation visibility (product rule, documentation only)
+
+Covaro should later let each organisation choose whether coaches can see:
+
+- their own qualification/compliance status;
+- expiry dates;
+- attachment availability.
+
+This is subject to platform security/data-protection boundaries. Covaro
+sets the default visibility, with organisation overrides in Settings &
+Configuration. Nothing Coach-facing was built for reading: coach read
+access to `/summary` remains 403 until that setting exists.
+
+### Focused tests
+
+`tests/support/coach-compliance.test.ts` (shim
+`tests/e2e/coachcompliancetest.js`): **87/87** passing, also under Los
+Angeles and Auckland host timezones.
+
+- **All 18 required items**, each asserted explicitly: verified-no-
+  attachment Current; attachment ≠ verified; verifier identity from the
+  authenticated caller; server-side Verified At; Missing; Current; Review
+  Soon at exactly the lead-days boundary; the expiry-day boundary; the
+  day after = Expired; incomplete -> Needs Review; inactive/historical
+  never current; duplicate active -> Needs Review; no cross-coach
+  leakage; Coach/Parent predicate denial; Management verify without
+  attachment; Needs Attention signals; no attachment metadata exposure.
+- **Requirement-model tests:** school-scoped rows skipped, Required /
+  Active unticked ignored, invalid or disagreeing Review Lead Days,
+  agreeing duplicates.
+- **Addendum tests:**
+  - coach-own create (C1);
+  - cross-coach create and edit denial (C2/C3);
+  - coach self-verification rejected (S3);
+  - Management verification (C4);
+  - re-review after a material coach edit, plus re-verify (C6);
+  - replacement attachment (C7);
+  - in-place edit when unverified (C8);
+  - Management edit keeps verification (C9);
+  - Management create (C10);
+  - duplicate / historical / type-change / date-order guard rails
+    (C11-C14);
+  - supersede partial-failure fails safe (C15);
+  - verify idempotency / inactive / half-verified refusals (V1-V3).
+
+### Deploy
+
+`coach-compliance` v2 (project `dkqubldmfyeuudecxmvh`; v1 was the
+pre-addendum version with a `/metadata` route, replaced by `/submit`),
+four files. The deployed content was downloaded via `get_edge_function`
+and compared **mechanically** (`jq` extraction from the saved download
++ `cmp`, no hand transcription): all four byte-identical.
+
+### Real TEST verification, real HTTP via `pg_net`
+
+Fresh JWTs for `manager@test.invalid` (Morgan Manager,
+`285f819e-e0d4-4257-8121-5f16781e97ba`), `coach.a@test.invalid` (Alex
+Test, own Coaches record `recYZyiLVud7yoNZS`, user
+`1bc04193-ee30-4fa3-a5fd-bf7cc0dac504`) and `parent.a@test.invalid`.
+Coach-own submission needs a real coach login, so the real TEST coach
+Alex Test was used; his documents were confirmed empty before and after.
+
+Throwaway fixtures, all deleted by exact id afterwards:
+
+- requirement rows:
+  - Enhanced DBS, lead 45 (`recbkCfwUseVRkXOx`);
+  - First Aid, lead 60 (`recNWOdETnLTgpuYJ`);
+  - Safeguarding, lead 30 (`recZELLfEnSaupVVS`);
+  - School Induction, no lead (`recFCpauEYrNWSIKA`);
+- a second coach `SLICE8-TEST Other Coach` (`recWo86Feyd5XX9sx`);
+- documents created through `/submit`:
+  - DBS `recWolbvkxz1vdOmE`;
+  - First Aid `recqOeHuYprTeFo3F`, created by the coach;
+  - Safeguarding `rec5S5PCESpWOUGD8`;
+  - the other coach's DBS `recgLS8D16EdcEfiP`;
+  - the superseding DBS version `recqtf9XWtxw9nOPJ`.
+
+UK today was 2026-09-27.
+
+- **Before verification:** the Management-created DBS and the
+  coach-created First Aid were both `Needs Review` / `not_verified`.
+- **Scenario A** (DBS without attachment): Management `/verify` recorded
+  Morgan Manager's user id + name + server timestamp. The summary showed
+  `Current`, verified true, `hasAttachment:false`, expiry 2027-06-30.
+- **Scenario B** (nearing expiry, configured Review Lead Days 60): First
+  Aid expiring 2026-11-10 (44 days) -> `Review Soon`
+  (`within_review_lead_days`).
+- **Scenario C:** Safeguarding expired 2026-09-26 -> `Expired`
+  (daysUntilExpiry -1).
+- **Scenario D:** School Induction required, no record -> `Missing`.
+  Summary counts: Current 1, Review Soon 1, Expired 1, Missing 1;
+  `needsAttention:true`.
+- **Scenario E** (permissions):
+  - Management verify: 200;
+  - Coach JWT `/verify`: 403;
+  - Parent JWT `/verify`: 403;
+  - Coach JWT `/summary`: 403.
+- **Addendum, live:**
+  - coach-own create: 201, unverified;
+  - coach self-verification attempt: 400;
+  - coach create for another coach: 403 `not_own_coach`;
+  - coach edit of another coach's record: 403 `not_own_document` (that
+    record was confirmed untouched);
+  - parent submit: 403.
+- **Re-review after a material coach edit:** the coach changed the
+  verified DBS expiry to 2028-06-30 -> `superseded`.
+  - New version `recqtf9XWtxw9nOPJ`: active, unverified, Uploaded By =
+    the coach.
+  - Summary: DBS `Needs Review` / `not_verified`, historicalRecordCount 1.
+  - Airtable read directly: the old `recWolbvkxz1vdOmE` is now inactive,
+    with Verified By `285f819e...` / Verified At
+    `2026-09-27T20:22:31.197Z` and expiry 2027-06-30 all preserved.
+  - A no-op resubmission of the verified First Aid -> `unchanged`, still
+    verified.
+
+Cleanup reconfirmed: Coach Documents 0, Coach Document Requirements 0,
+Coaches `contains "SLICE"` 0.
+
+### Slice 7 clarification (verified before Slice 8 was declared complete)
+
+See "Post-Slice-7 clarification — multiple Different Hours exceptions"
+above. It was committed separately (`7358752`) and verified live:
+
+- 09-12 + 16-20 on one date: 10:00 available, 14:00 unavailable, 18:00
+  available;
+- overlapping Different Hours, and whole-day Unavailable + Different
+  Hours, both still `ambiguous`.
+
+The suite below includes `coachavailabilitytest.js` 85/85.
+
+### Regression
+
+Full TEST suite (`node tests/run-all.js`): **54/54 test files passing**,
+exit 0, zero `FAIL` lines. Reconfirmed:
+
+- **Slice 7 availability:** `coachavailabilitytest.js` 85/85.
+- **Slice 6 financial outcomes + locking:**
+  `occurrencefinancialoutcomestest.js` 37/37.
+- **Slice 5 rates/allocations:** `coachallocationstest.js` 25/25.
+- **Slices 2-4:** `accessresolutiontest.js` 74/74.
+- **Parent Hub:** `parenthubtest.js` 44/44, `parenthubshelltest.js`
+  65/65, `sessioncoachestest.js` 22/22.
+- **Schedule foundation:** `sessiongeneratortest.js` 37/37,
+  `sessionrepositorytest.js` 19/19, `propagationtest.js` 43/43,
+  `nextoccurrencetest.js` 19/19, `dailytopuptest.js` 7/7.
+- **Slice 8:** `coachcompliancetest.js` 87/87.
+
+Slice 8 added one new isolated Edge Function, one new TEST table and
+their tests. No existing function, table, field or test was modified.
+
+### Production isolation
+
+- **Production Airtable:** schema read only (Coach Document
+  Requirements, Coach Documents, Needs Attention Settings/Rules). No
+  record read, nothing written.
+- **Production Supabase:** untouched.
+- **Frontend:** untouched.
+- **Google Sheets:** untouched.
+- **Finance:** untouched.
+
+All writes went to TEST base `appQktredAuGa1X7e` / TEST project
+`dkqubldmfyeuudecxmvh`.
+
+**Coaches Slice 8 compliance is ready for Slice 9 cover workflow.**
