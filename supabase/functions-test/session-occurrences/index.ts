@@ -19,6 +19,8 @@ import { generateForSession } from "./orchestrator.ts";
 import { fetchSession, type AirtableConfig } from "./repository.ts";
 import { createSupabaseLockClient } from "./lock-client.ts";
 import { propagateForSession, type PropagateChanges } from "./propagation-orchestrator.ts";
+import { triggerSessionSaved } from "./session-trigger.ts";
+import { runDailyTopUp } from "./daily-top-up.ts";
 import { parseHHMM, weekdayIndexFromName } from "./schedule-utils.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
@@ -265,6 +267,112 @@ async function handlePropagate(req: Request): Promise<Response> {
   }
 }
 
+/**
+ * The immediate-trigger HTTP route - Slice 8. `changes` is OPTIONAL here,
+ * unlike `/propagate` where it's required: omitting it means "Session
+ * created / activated, no recurring default changed" (generation only);
+ * providing it means "qualifying recurring edit" (propagate, then
+ * conditional backfill), reusing the exact same validation as
+ * `/propagate` when present. This is the one route documented in
+ * TEST-ENV.md as the integration point a future Management "save
+ * Session" backend flow should call once, synchronously, right after
+ * writing the Session record's own fields.
+ */
+async function handleTriggerSessionSaved(req: Request): Promise<Response> {
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!caller.active || caller.role !== "management") {
+    return jsonResponse({ error: "Management access required" }, 403);
+  }
+
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  const sessionRecordId = body?.sessionRecordId;
+  if (!isValidAirtableRecordId(sessionRecordId)) {
+    return jsonResponse({ error: "sessionRecordId is required and must be a valid Airtable record ID" }, 400);
+  }
+
+  if (body?.changes != null) {
+    const validationError = validatePropagateChanges(body.changes);
+    if (validationError) return jsonResponse({ error: validationError }, 400);
+  }
+
+  let exists: boolean;
+  try {
+    exists = await sessionExists(sessionRecordId);
+  } catch (error) {
+    console.error(error);
+    return jsonResponse({ error: `Failed to look up Session: ${error instanceof Error ? error.message : "Unknown error"}` }, 502);
+  }
+  if (!exists) {
+    return jsonResponse({ error: `No Session found for id ${sessionRecordId}` }, 404);
+  }
+
+  try {
+    const outcome = await triggerSessionSaved(
+      { airtable: airtableConfig, lock: lockClient },
+      sessionRecordId,
+      body?.changes as PropagateChanges | undefined
+    );
+    return jsonResponse(outcome, 200);
+  } catch (error) {
+    console.error(error);
+    return jsonResponse({ error: error instanceof Error ? error.message : "Unknown error" }, 500);
+  }
+}
+
+/**
+ * Validates a request as coming from the daily-top-up scheduler, not a
+ * human caller - there is no Management user behind a cron job. Deliberately
+ * NOT resolveCaller()/role-based: the platform's own verify_jwt (still
+ * required, never weakened - see deployment config) already rejects any
+ * request with no valid Supabase-signed JWT at all; this check is the
+ * REAL authorisation decision for this one route, via a secret that
+ * exists only in this TEST project's own Postgres (a small table no
+ * anon/authenticated role can read, checked through a boolean-only RPC
+ * so the secret itself is never returned by any response) and that only
+ * the pg_cron job configured in this same project ever sends. Coach and
+ * Parent JWTs - or any other caller who merely holds the public anon key -
+ * can pass the platform's verify_jwt check but will always fail this,
+ * so generator actions stay unreachable to them exactly as required.
+ */
+async function isValidCronRequest(cronSecret: string | null): Promise<boolean> {
+  if (!cronSecret) return false;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/validate_cron_secret`, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ p_name: "daily_top_up", p_secret: cronSecret }),
+  });
+  if (!res.ok) return false;
+  const result = await res.json();
+  return result === true;
+}
+
+async function handleDailyTopUp(req: Request): Promise<Response> {
+  const validRequest = await isValidCronRequest(req.headers.get("X-Cron-Secret"));
+  if (!validRequest) {
+    return jsonResponse({ error: "Missing or invalid X-Cron-Secret header" }, 401);
+  }
+
+  try {
+    const summary = await runDailyTopUp({ airtable: airtableConfig, lock: lockClient });
+    console.log("session-occurrences daily-top-up summary:", JSON.stringify(summary));
+    return jsonResponse(summary, 200);
+  } catch (error) {
+    console.error(error);
+    return jsonResponse({ error: error instanceof Error ? error.message : "Unknown error" }, 500);
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -281,6 +389,14 @@ Deno.serve(async (req) => {
     if (route === "propagate") {
       if (req.method !== "POST") return jsonResponse({ error: "Method not allowed - use POST" }, 405);
       return await handlePropagate(req);
+    }
+    if (route === "trigger-session-saved") {
+      if (req.method !== "POST") return jsonResponse({ error: "Method not allowed - use POST" }, 405);
+      return await handleTriggerSessionSaved(req);
+    }
+    if (route === "daily-top-up") {
+      if (req.method !== "POST") return jsonResponse({ error: "Method not allowed - use POST" }, 405);
+      return await handleDailyTopUp(req);
     }
     return jsonResponse({ error: `Unknown route: ${route}` }, 404);
   } catch (error) {

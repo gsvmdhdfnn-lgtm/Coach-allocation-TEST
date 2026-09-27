@@ -22,6 +22,7 @@
 import {
   computeOccurrenceKey,
   computeReplacementOccurrenceKey,
+  selectName,
 } from "./schedule-utils.ts";
 import type {
   ExistingOccurrenceRecord,
@@ -99,6 +100,26 @@ async function airtableBatchCreate(
 export async function fetchSession(config: AirtableConfig, sessionRecordId: string): Promise<SessionRecord> {
   const raw = await getAirtableRecordById(config, "Sessions", sessionRecordId);
   return { id: raw.id, fields: raw.fields || {} };
+}
+
+/**
+ * All Sessions whose Session Lifecycle Status is Active - Slice 8's
+ * daily top-up reads this to decide which Sessions to sweep. Fetches
+ * the whole Sessions table and filters client-side, the exact same
+ * style as fetchSessionDatesForSession/fetchExistingOccurrencesForSession
+ * above (both already fetch a whole table and filter in memory) -
+ * consistent with this repository's existing approach rather than a new
+ * one. planGeneration() itself already re-checks Session Lifecycle
+ * Status = Active per Session, so a Draft/Inactive Session slipping
+ * through here (e.g. a status change mid-sweep) still generates
+ * nothing - this filter is a sweep-scoping optimisation, not the only
+ * place that invariant is enforced.
+ */
+export async function fetchActiveSessions(config: AirtableConfig): Promise<SessionRecord[]> {
+  const all = await getAirtableRecords(config, "Sessions");
+  return all
+    .filter((r) => selectName(r.fields?.["Session Lifecycle Status"]) === "Active")
+    .map((r) => ({ id: r.id, fields: r.fields || {} }));
 }
 
 export async function fetchSessionDatesForSession(config: AirtableConfig, sessionRecordId: string): Promise<SessionDateRecord[]> {

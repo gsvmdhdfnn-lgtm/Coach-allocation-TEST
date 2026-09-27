@@ -2016,3 +2016,267 @@ changes") strictly separate, as instructed.
 
 Untouched. No Edge Function redeployed this slice (no code changed).
 No frontend file touched. No Google Sheets or finance file touched.
+
+## Slice 8 - automatic triggering / scheduled top-up
+
+Goal, per your instruction: move from "Management can manually call the
+generator" to "the Hub keeps occurrences up to date automatically",
+reusing the exact Slice 2 generator, Slice 3 repository/lock and Slice 6
+propagation logic unchanged - no second generator path, no duplicated
+logic.
+
+### Architecture
+
+Two new files, both deliberately free of any generation/propagation/date
+business logic of their own - the trigger layer only decides *when* and
+*in what order* the already-proven functions run:
+
+- **`session-trigger.ts`** - `triggerSessionSaved(deps, sessionRecordId,
+  changes?, now?)`. `changes` omitted means "Session created, or
+  Draft/Inactive -> Active, or any other save with no recurring default
+  changed" - calls `generateForSession()` alone. `changes` present means
+  a qualifying recurring edit - calls `propagateForSession()` first
+  (which already performs, under its own lock, the ratified order: plan
+  against OLD values -> apply the occurrence-level plan -> write the
+  Session's new defaults -> release), then, ONLY if it reports
+  `backfillNeeded`, calls `generateForSession()` as a second, separate,
+  lock-acquiring step. Exactly the required order: acquire lock ->
+  propagate/crystallise -> update Session defaults -> conditional
+  backfill -> release lock, with propagation's own lock covering steps
+  1-3 and the backfill call acquiring its own lock for step 4 - the
+  ordering bug found in Slice 6 (Session defaults written before the
+  occurrence-level plan was applied) is structurally impossible to
+  reintroduce here because this file never touches Session fields or
+  occurrence rows itself; it only sequences calls to functions that
+  already enforce that order internally.
+- **`daily-top-up.ts`** - `runDailyTopUp(deps, now?)`. Fetches all
+  Active Sessions (`repository.ts`'s new `fetchActiveSessions()`), then
+  calls `generateForSession()` for each one **strictly sequentially**
+  (not `Promise.all`), per your explicit "simple and safe rather than
+  aggressively parallel" instruction. Each Session's lock-acquire/
+  release is entirely `generateForSession()`'s own job; this loop adds
+  only a per-Session `try/catch`, so one Session's own thrown error can
+  never abort the sweep for any Session after it. Returns a summary
+  (`considered/generated/noChanges/skippedLocked/failed/
+  occurrencesCreated/failures[]`) - `failures[]` names the exact Session
+  record ID and error message for anything that actually threw. No
+  "Generation Runs" product table was built - not genuinely required,
+  the summary is returned/logged (`console.log`) at operational/debug
+  level only, per your instruction.
+
+Never calls `planGeneration()`, `planRecurringEdit()` or the repository
+layer directly from either new file - every actual decision still goes
+through `generateForSession()`/`propagateForSession()`, unchanged since
+Slice 3/6.
+
+### Immediate-trigger integration point
+
+No canonical Management Session-create/edit backend write path exists
+yet in this codebase (confirmed by inspection - `management.js` is
+frontend-only Sync/Prep tooling, not a Session-save API). Per your
+instruction, no fake permanent architecture was invented. Instead:
+`POST /session-occurrences/trigger-session-saved` - Management-
+authenticated exactly like `/generate` and `/propagate` (same
+`resolveCaller()` + role check), body `{ sessionRecordId, changes? }`
+where `changes` is the exact same shape `/propagate` already validates,
+now optional. **This is the documented contract**: a future Management
+"save Session" backend flow should call this route once, synchronously,
+immediately after writing the Session record's own fields - passing no
+`changes` for a create/Draft-to-Active save, or the changed fields for a
+qualifying recurring edit. Verified manually in TEST (below) since no
+real Management UI exists yet to drive it.
+
+### Daily top-up: schedule, cadence and cron auth
+
+`pg_cron` was not installed in the TEST project (`default_version`
+present, `installed_version: null`) - enabled via
+`create extension if not exists pg_cron;`. Registered as a named job
+`session-occurrences-daily-top-up`, cron expression `0 3 * * *` (03:00
+UTC daily, an off-peak hour), calling `POST /session-occurrences/daily-
+top-up` via `net.http_post` with a 60-second `timeout_milliseconds`
+(see "pg_net timeout" finding below for why that matters).
+
+**Security - no service-role key was available to give the cron job.**
+No MCP tool exposes the real Supabase service-role key's literal value,
+and Postgres itself has no built-in access to it either (checked:
+`current_setting('app.settings.service_role_key', true)` -> `null`;
+`select name from vault.secrets` -> empty). So the daily-top-up route
+cannot be authorised the same way `lock-client.ts` authorises its own
+RPC calls (using the Edge Function's own already-available
+`SUPABASE_SERVICE_ROLE_KEY` env var - that's still how the *route*
+authorises the *secret check*, just not how the *cron job* authorises
+itself to the *route*). Solution: a TEST-only secret generated inside
+this session (`gen_random_bytes(24)`), stored in a new table
+`cron_auth_secrets(name, secret)` with `anon`/`authenticated` revoked
+and `select`/`execute` scoped to `service_role` only, checked via a
+`security definer` RPC `validate_cron_secret(p_name, p_secret) returns
+boolean` (boolean-only, so the secret itself is never returned by any
+response). The `daily-top-up` route requires a custom `X-Cron-Secret`
+header validated against this RPC (called server-to-server with the
+Edge Function's own `SUPABASE_SERVICE_ROLE_KEY`, same pattern as the
+lock RPCs); the platform's `verify_jwt` gate (**still required, never
+weakened**) is satisfied separately by the pg_cron job sending the anon
+key. A Coach or Parent JWT - or the bare anon key alone - passes
+`verify_jwt` but always fails the `X-Cron-Secret` check, so generator
+actions stay unreachable to them exactly as required. Manual Management
+routes (`/generate`, `/propagate`, `/trigger-session-saved`) are
+unchanged - still Management-authenticated via `resolveCaller()`.
+
+**pg_net timeout finding**: `net.http_post`/`net.http_get` default to a
+5000ms client-side timeout. A full daily-top-up sweep (multiple Sessions
+processed sequentially, 3+ real Airtable calls each) routinely exceeds
+that, so the *first* cron registration (no explicit
+`timeout_milliseconds`) would have logged a timeout in
+`net._http_response` on every real run even though the Edge Function
+itself completed the sweep correctly server-side (Deno doesn't cancel an
+in-flight invocation just because the caller stopped waiting) - a
+misleading "failure" for anyone monitoring the job's own request log.
+Found during this slice's own verification (see below) and fixed before
+finishing: the job was unscheduled and re-registered with
+`timeout_milliseconds := 60000`, long enough for a full sweep of the
+current TEST base and with headroom to spare.
+
+### Real TEST verification - all real HTTP calls via `pg_net`, all 12 required items
+
+Ten throwaway Sessions covering every pattern/state
+(`SLICE8-IMM`/`-D2A`/`-EDIT`/`-REC`/`-SEL`/`-ONE`/`-DRAFT`/`-INACT`/
+`-LOCK`/`-BAD`, plus a short-lived eleventh, `SLICE8-BAD2`, for the
+failure-isolation attempt below) were created for this slice. Signed in
+for real as `manager@test.invalid` (password reset via SQL, same
+`crypt()`-on-`auth.users` technique as Slice 4) to get a genuine
+management JWT for every Management-authenticated call below.
+
+1. **Active Session immediate-trigger generates correctly**:
+   `POST /trigger-session-saved` on a fresh Active Recurring Session
+   (`SLICE8-IMM`, no `changes`) -> `{"kind":"generation_only",
+   "generation":{"status":"generated","created":13,...}}`.
+2. **Draft -> Active generates correctly**: same route on `SLICE8-D2A`
+   while still Draft -> `no_changes` (correctly does nothing); PATCHed
+   to Active via Airtable; same route again -> `generated, created: 13`.
+3. **Qualifying recurring edit runs propagation then backfill
+   correctly**: `SLICE8-EDIT` (Active, Wednesday) seeded with 13
+   occurrences, then `POST /trigger-session-saved` with
+   `changes.dayOfWeek.newDayName: "Friday"` ->
+   `{"kind":"propagation_then_backfill","propagation":{"status":
+   "applied","plan":{"cancelled":13,"backfillNeeded":true,...}},
+   "backfill":{"status":"generated","created":13,...}}` - all 13
+   Wednesday rows cancelled (`Status: Cancelled`, `Schedule Change
+   State: Changed`), 13 new Friday rows created, confirmed by re-reading
+   the Session's own `Session Occurrences` link (26 total, 13
+   cancelled + 13 new).
+4. **Daily job tops up missing occurrences (recovery)**: `SLICE8-REC`
+   created Active and deliberately never sent through the immediate
+   trigger; the daily-top-up sweep (see #9c below) generated its 13
+   Thursday occurrences on its own - confirmed by reading its `Session
+   Occurrences` link afterwards (exactly 13, no duplicates).
+5. **Daily rerun is idempotent**: two daily-top-up sweeps fired in the
+   same SQL statement (genuinely overlapping, see #9c) against a base
+   where every Session was already topped up bar one - the already-
+   topped-up Sessions returned `no_changes`/`skipped_locked` on both
+   calls, zero duplicate occurrences created for any of them (re-read
+   and counted per Session).
+6. **Selected Dates works under scheduled generation**: `SLICE8-SEL`
+   given two `Included` `Session Dates` rows (10 Nov, 1 Dec); the daily
+   sweep generated exactly those two occurrences and no others (re-read:
+   `"Slice8 Selected Dates - 10 Nov 2026"` and `"- 1 Dec 2026"` only).
+7. **One-off works under scheduled generation**: `SLICE8-ONE` (Start
+   Date 2026-11-20) generated exactly one occurrence, dated 20 Nov 2026,
+   via the daily sweep alone (never triggered manually).
+8. **Draft/Inactive ignored**: `SLICE8-DRAFT` (Draft) and `SLICE8-INACT`
+   (Inactive) existed throughout every daily-top-up call in this slice;
+   `fetchActiveSessions()`'s `considered` count never included them (10
+   Active Sessions considered out of 12 total Sessions in the base at
+   that point - the 2 excluded were exactly these two), and neither
+   ever gained an occurrence.
+9. **Overlap/locking scenarios**:
+   - **a. daily job + manual `/generate`, same Session**: manually held
+     `SLICE8-LOCK`'s lock via `acquire_generation_lock()` (simulating
+     another writer mid-generation), then called `/generate` for it ->
+     `{"status":"skipped_locked","created":0,"recordIds":[]}`.
+   - **b. daily job + immediate trigger, same Session**: same held lock,
+     called `/trigger-session-saved` for it -> `{"kind":
+     "generation_only","generation":{"status":"skipped_locked",...}}`.
+   - **c. two daily job attempts overlapping**: with the same lock still
+     held, a full daily-top-up sweep correctly reported `SLICE8-LOCK` in
+     `skippedLocked` while every other Active Session still processed
+     normally (`{"considered":10,...,"skippedLocked":1,"failed":0,...}`)
+     - confirming the daily job **skips a locked Session cleanly and
+     keeps going**, not just that manual calls do. Lock released
+     afterwards. Separately, two genuinely overlapping daily-top-up
+     invocations (fired in one SQL statement, real concurrent wall-clock
+     execution against the live Edge Function) were run against the
+     one Session that still had generation work outstanding
+     (`SLICE8-SEL`): one invocation generated it (`created: 2`), the
+     other saw `skipped_locked` or `no_changes` depending on timing -
+     `SLICE8-SEL` ended up with exactly 2 occurrences, never 4, proving
+     the lock correctly serialises two concurrent daily-top-up attempts
+     against the same Session.
+10. **One Session failure does not stop the rest**: genuinely forcing a
+    live Airtable-level throw turned out to be impractical rather than
+    unsafe - every Session-level input the generator touches (Default
+    Day, Default Start/End Time, dates) is designed to **fail closed**,
+    not throw (`parseHHMM`/`parseIsoDateUTC`/`weekdayIndexFromName` all
+    return `null`/`[]` on bad data, per `generator.ts`'s own header), so
+    the only realistic thrown error is the Session record itself
+    vanishing between the sweep's initial list call and its own
+    `fetchSession()` call a moment later. Two honest live attempts were
+    made to reproduce exactly that race (create a throwaway Session,
+    fire the daily-top-up sweep, delete the Session's Airtable record
+    immediately after) - both lost the race (the sweep reached and
+    generated for the Session before the delete call landed), because a
+    sweep over an already-topped-up TEST base is fast enough that
+    winning a real network race against it isn't practical. Rather than
+    keep spending real API calls chasing an unreliable race, the exact
+    same code path was proven deterministically instead: a new unit
+    test (`tests/support/daily-top-up.test.ts`, run via
+    `tests/e2e/dailytopuptest.js`) mocks `fetch` so one of two Active
+    Sessions' individual `fetchSession()` call 404s (reproducing
+    precisely that "vanished between list and fetch" failure) while the
+    other succeeds - confirms `failed: 1` naming the correct Session
+    record ID with a non-empty error message, `generated: 1` for the
+    later Session (the sweep keeps going), and both Sessions' locks
+    released regardless (their RPCs were called successfully in the
+    mock). 7/7 checks pass.
+11. **`generation_locks` empty after completion**: `select count(*)
+    from generation_locks` -> **0**, checked after every real call in
+    this slice, including the manually-held-then-released lock scenarios
+    and the genuinely overlapping concurrent sweeps.
+12. **All throwaway Airtable records removed by exact record ID**: all
+    11 throwaway Sessions, both `Session Dates` rows, and all 107
+    created occurrence records (13+13+26+13+2+1+13+13+13, tallied
+    against each real API response's own count) deleted by their exact
+    captured record IDs - re-confirmed via `search_records` for
+    "Slice8"/"SLICE8" across Sessions, Session Occurrences and Session
+    Dates: **zero results**.
+
+### Regression
+
+- **TEST-A** (`rec4cME6ncL4IAvlK`): still exactly 14 occurrences, same
+  set as every prior slice's baseline - untouched by any Slice 8 call
+  (it was never a throwaway target and every daily-top-up sweep only
+  ever returned `no_changes` for it).
+- **TEST-B** (`recklh0OeaAMakQCJ`): still exactly 13 occurrences, same
+  baseline - likewise untouched.
+- **Parent Hub** (`GET /parent-hub/me` as `parent.a`): identical to the
+  documented baseline - Dylan Davies paused on TEST-B (`paused_from`
+  2026-09-15/`returns_on` 2026-10-20), Archie Atkinson active on TEST-A
+  (next occurrence the 7 Oct replacement, `17:30 – 18:30`) and TEST-B
+  (next occurrence 1 Oct, `18:00 – 19:00`) with coaches Sam Sample/Alex
+  Test.
+- **hub-content/players** (`GET /hub-content/players` as `coach.a`):
+  identical to baseline - Archie + Bella, `permanent` tier, full
+  permissions.
+- **Slice 6 propagation tests / Slice 7 generation tests**: included in
+  and passing as part of the full suite below.
+- **Full TEST suite**: `node tests/run-all.js` -> **50/50 test files
+  passed** (49 previous + the new `dailytopuptest.js`).
+
+### Production / frontend / Sheets / finance
+
+Untouched. `session-occurrences` (TEST project `dkqubldmfyeuudecxmvh`)
+deployed as **v7** - the only Edge Function touched this slice, and
+only in the TEST project. No production Airtable/Supabase object
+created, read from with intent to write, or written to. No frontend
+file touched. No Google Sheets or finance file touched.
+
+**Slice 8 automatic triggering is ready for Slice 9 Session History.**
