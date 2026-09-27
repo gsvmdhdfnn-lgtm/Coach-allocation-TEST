@@ -1887,3 +1887,132 @@ edge cases this slice did surface (a frozen row with no old default to
 crystallise; a non-Standard row beyond a shortened End Date) are both
 handled by reporting via `manualReview` rather than guessing, per your
 own instruction for exactly this situation.
+
+## Slice 7 - Selected Dates + One-off end-to-end - TEST only - 2026-09-27
+
+Goal, per your instruction: prove/complete the Slice 2 pure generator's
+Selected Dates and One-off handling end-to-end through the real TEST
+repository/orchestrator/HTTP path (`/session-occurrences/generate`).
+
+### No code changes were needed
+
+Reviewed `generator.ts` against every ratified rule before touching
+anything:
+
+- **Selected Dates** (`planSelectedDates()`): already generates every
+  future `Included` `Session Dates` row with no 12-week/10-occurrence
+  windowing, already de-duplicates via `[...new Set(dates)]` (so
+  duplicate `Included` rows for the same date can never produce
+  duplicate candidates), already ignores `Excluded` rows entirely (that
+  branch is Recurring-only), already skips past dates.
+- **One-off** (`planOneOffDate()`): already uses the Session's own
+  `Start Date` as the single candidate date, already skips a past/
+  missing/unparseable `Start Date` by returning `[]` rather than
+  guessing, and reruns are idempotent for free - `computeOccurrenceKey()`
+  is deterministic on `{session.id}:{date}`, so a second `/generate`
+  call always resolves to the same key, already present in
+  `existingOccurrences`, and creates nothing.
+- **Excluded Dates on Recurring** (`planRecurringDates()`): already
+  skips any candidate date present in the Excluded set, sourced from
+  `Session Dates` rows with `Date Type = Excluded`, independently of
+  Selected Dates/One-off.
+- **Idempotency, Occurrence Keys, freeze-safety**: all inherited from
+  the same `existingOccurrenceKeys()` / `computeOccurrenceKey()`
+  machinery already proven in Slices 2-3, applied uniformly across all
+  three patterns.
+
+Per your instruction not to rewrite working code unnecessarily, Slice 7
+made **zero changes** to `generator.ts`, `repository.ts`,
+`orchestrator.ts`, or `index.ts`. This slice is verification only.
+
+### Real TEST verification (real Airtable + real `/generate` HTTP,
+via `pg_net`, six throwaway Sessions, all deleted after)
+
+**1-3. Selected Dates, duplicate Included row, far-future Included date**
+(`SLICE7-SELECTED`, one Session, `Session Dates` rows: `Included` 10 Oct
+2026, `Included` 17 Oct 2026, a **duplicate** `Included` row also dated
+17 Oct 2026, `Included` 15 Jun 2027 - 9 months out, `Included` 1 Jan
+2026 - past):
+
+- First `/generate` call -> `{"status":"generated","created":3,...}`.
+  Exactly 3 rows, not 4 - the duplicate 17 Oct row collapsed to one
+  occurrence, and the past 1 Jan row never generated.
+- Exact fields verified for all 3: `Date`/`Start Date & Time`/`End Date
+  & Time`/`Occurrence Key` all correct (`10:00`/`11:00` local, BST-
+  correct `09:00Z` for all three dates including the far-future one),
+  keys `{sessionId}:{date}` and unique.
+- The far-future 15 Jun 2027 row generated despite being ~37 weeks
+  past the 12-week/10-occurrence rolling horizon - confirms Selected
+  Dates correctly ignores that ceiling entirely, per the ratified
+  "finite explicit Management choice" design.
+- Rerun -> `no_changes`.
+
+**4. Excluded Dates on a Recurring Session** (`SLICE7-RECURRING-EXCL`,
+Default Day Wednesday, one `Session Dates` row: `Excluded` 14 Oct 2026 -
+confirmed a real Wednesday):
+
+- `/generate` -> `{"status":"generated","created":12,...}`. Dates:
+  30 Sep, 7 Oct, **(14 Oct correctly absent)**, 21 Oct, 28 Oct, 4/11/18/
+  25 Nov, 2/9/16/23 Dec - the excluded Wednesday is the only gap in an
+  otherwise-unbroken weekly sequence; every surrounding Wednesday
+  generated normally. 12 (not 10) created because the count floor and
+  the 12-week window floor are both satisfied only once 12 real dates
+  are reached, with one candidate skipped - exactly the documented
+  "reach whichever boundary is later" behaviour.
+  Times correctly BST/GMT-split exactly at the 25 Oct transition:
+  `09:00Z` for the three pre-transition dates, `10:00Z` from 28 Oct
+  onward.
+- Rerun -> `no_changes`.
+
+**5-7. One-off: Active, Draft, Inactive, bad date** (four throwaway
+Sessions):
+
+- `SLICE7-ONEOFF-ACTIVE` (valid future Start Date) -> `{"status":
+  "generated","created":1,...}`, exactly one occurrence, fields exact
+  (`Date`/`Start`/`End`/`Occurrence Key` all correct). Rerun ->
+  `no_changes` - never a second one-off occurrence.
+- `SLICE7-ONEOFF-DRAFT` (valid future Start Date, but `Session
+  Lifecycle Status: Draft`) -> `no_changes`, 0 created.
+- `SLICE7-ONEOFF-INACTIVE` (valid future Start Date, `Inactive`) ->
+  `no_changes`, 0 created.
+- `SLICE7-ONEOFF-BADDATE` (`Active`, `Start Date` left entirely blank)
+  -> `no_changes`, 0 created, **no error, no invented date** - fails
+  safely exactly as `planOneOffDate()`'s `parseIsoDateUTC() -> null ->
+  []` path is designed to.
+
+**Cleanup**: all 6 throwaway Sessions, their 6 `Session Dates` rows,
+and all 16 created occurrence records (3 + 12 + 1) deleted by exact
+record ID after verification. `generation_locks`: 0 rows after every
+single call (12 real HTTP calls in total across first-run + rerun).
+
+### No ambiguity found
+
+No Selected Dates or One-off Session edit in this slice raised a new
+propagation question outside the ratified Slice 6 design - this slice
+never touched `propagation.ts`/`propagation-orchestrator.ts` at all,
+consistent with keeping generation ("which shells should exist") and
+propagation ("what happens to existing shells when the Session
+changes") strictly separate, as instructed.
+
+### Regression - real HTTP + full suite
+
+- **TEST-A** (`rec4cME6ncL4IAvlK`): all 14 real occurrences re-read and
+  confirmed byte-for-byte identical to the Slice 6 snapshot (cancelled
+  28 Sep, postponed 5 Oct, the 7 Oct replacement at its own time/venue,
+  and all 11 standard rows at their original `17:00-18:00`/`16:00-
+  17:00Z` times) - Slice 7's throwaway Sessions never touched TEST-A.
+- **Parent Hub** (`GET /parent-hub/me` as `parent.a`): Archie's TEST-A
+  `next_occurrence` still resolves to the 7 Oct replacement at
+  `"17:30 – 18:30"`; TEST-B's still resolves at `"18:00 – 19:00"` -
+  both exactly matching the post-Slice-5-fix baseline.
+- **hub-content** (`GET /hub-content/players` as `coach.a`): identical
+  to baseline - Archie + Bella, `permanent` tier.
+- **Slice 6 propagation tests**: included in and passing as part of the
+  full suite below (`propagationtest.js`).
+- **Full TEST suite**: `node tests/run-all.js` -> **49/49 test files
+  passed**, unchanged.
+
+### Production / frontend / Sheets / finance
+
+Untouched. No Edge Function redeployed this slice (no code changed).
+No frontend file touched. No Google Sheets or finance file touched.
