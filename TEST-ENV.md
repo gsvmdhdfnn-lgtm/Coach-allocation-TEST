@@ -3304,3 +3304,215 @@ promotion manifest (Section K) now accounts for explicitly instead of
 leaving to be rediscovered later.
 
 Do not start the Coaches foundation automatically.
+
+## Coaches Foundation — Slice 1 (TEST schema foundation + deprecation baseline)
+
+The Coaches Foundation Audit (conducted before this slice, not itself
+recorded in this file) found that production Airtable (`apprptFotQuVL1mhs`)
+already carries an extensive, pre-built Coach-related schema - rates,
+allocations, availability, documents, cover, work summaries - almost none
+of it mirrored into TEST (`appQktredAuGa1X7e`) and none of it wired into
+any code anywhere. This slice is the first step of building the Coaches
+foundation on top of that existing schema: bring TEST up to the parity the
+next slices need, add the two new Session staffing-requirement fields, add
+compliance-without-attachment support, and mark (never delete) three
+ambiguous/dead legacy Coach schema items as deprecated. No resolver
+behaviour changed - schema, dependency verification and documentation only,
+exactly as scoped.
+
+### Schema mirrored from production
+
+Read-only reference: `apprptFotQuVL1mhs`. Four tables mirrored into TEST
+field-for-field (names, types, singleSelect choices identical to
+production):
+
+- **Coach Rate Profiles** (`tblNWi46U7igzvRHx`): Rate Profile ID, Coach,
+  Rate Type (Day / Evening / Camp / Additional / Plus), Pay Unit (Per Hour
+  / Per Session / Per Day), Amount, Effective From, Effective Until,
+  Active, Notes, Created, Last Updated. A coach's rate is its own dated
+  row - a later rate change never overwrites an earlier one's history.
+- **Coach Allocations** (`tbl6iWEd6Asj0dFMe`): Allocation ID, Session
+  Occurrence, Coach, Assignment Type (Scheduled / Cover / Additional),
+  Rate Profile, Rate Type Snapshot, Pay Unit Snapshot, Paid Units, Rate
+  Amount Snapshot, Cost Override, Override Reason, Final Coach Cost, Cost
+  Status (Draft / Confirmed / Exported), Finance Reference, Notes, Created,
+  Last Updated. The historical-cost boundary: everything about what a rate
+  WAS at allocation time is snapshotted onto the allocation itself, so a
+  later Coach Rate Profiles change can never rewrite an already-created
+  allocation's cost; Cost Override/Override Reason is the "agree a
+  different rate for this particular piece of work" path.
+- **Coach Availability** (`tblFU568fUAtDFuM0`): Availability ID, Coach, Day
+  of Week, Available, Start Time, End Time, Active, Notes, Created, Last
+  Updated. Recurring weekly pattern.
+- **Coach Availability Exceptions** (`tbl1TTBfX0kVeitxj`): Exception ID,
+  Coach, Start Date, End Date, Availability Type (Unavailable / Available
+  All Day / Different Hours), Start Time, End Time, Note, Active, Created,
+  Last Updated. Specific-date overrides on top of the recurring pattern.
+
+None of the four is read or written by any code this slice - schema only,
+same discipline as every other foundation's own Slice 1.
+
+### Fields intentionally deferred (target table not ready this slice)
+
+Two production `Coach Allocations` linked fields were deliberately NOT
+mirrored, for two different reasons:
+
+- **`Occurrence Staff`** - the target table already exists in TEST, but
+  Occurrence Staff is one of the tables this slice was explicitly told to
+  leave untouched (alongside Coaches/Coach Roles/Session Staff). Linking a
+  new field to it would auto-create an inverse link field ON Occurrence
+  Staff as an Airtable side effect, which this slice's own "leave
+  untouched... do not change any fields on those tables otherwise"
+  instruction reads as covering even an auto-created inverse. Deferred to
+  whichever later slice actually integrates Occurrence Staff/cover, where
+  its shape is expected to change anyway.
+- **`Work Summary Lines`** - the target table does not exist in TEST at
+  all yet. Deferred to the work-summary slice.
+
+**Judgment call flagged for review, not silently decided**: mirroring the
+required `Coach`/`Session Occurrence` links on the four new tables (per
+this slice's own explicit instruction) unavoidably auto-created Airtable
+inverse link fields on `Coaches` (five new reverse-link fields: Coach
+Documents, Coach Rate Profiles, Coach Allocations, Coach Availability,
+Coach Availability Exceptions) and on `Session Occurrences` (one new
+reverse-link field: Coach Allocations). These are empty, additive,
+Airtable-generated side effects of fields this slice was explicitly told
+to create - not a manual edit to either table's own design, and nothing
+in existing generator/propagation/History/access-resolution code reads or
+is affected by an unrelated new field being present. Flagged here rather
+than assumed acceptable without saying so, since Session Occurrences in
+particular is Schedule-foundation schema.
+
+### Sessions - new staffing-requirement fields
+
+- **`Required Staff Count`** (number, no decimals, blank allowed - blank
+  means "not yet specified," never treated as zero required).
+- **`Requires Lead Coach`** (checkbox, default unchecked).
+
+Confirmed before creation that no existing Sessions field served either
+purpose. Deliberately simple, per instruction - no ratios, no role
+matrices. Feeds future Needs Attention signals ("requires 2 staff,
+currently has 1," "requires a Lead Coach, none assigned").
+
+### Coach Documents - verification without upload
+
+New table (`tblp8QGwHPG92ekzR`), mirrored from production's `Coach
+Documents` (Document ID, Coach, Document Type [Enhanced DBS / Safeguarding
+Certificate / First Aid / School Induction / Other], Attachment, Issue
+Date, Expiry / Review Date, Status [Current / Review Soon / Needs Review /
+Expired / Missing], Notes, Uploaded By User ID, Uploaded By Name Snapshot,
+Uploaded At, Active, Created, Last Updated), plus three new TEST-only
+fields not present in production: **Verified By User ID**, **Verified By
+Name Snapshot**, **Verified At**. `Attachment` is deliberately optional -
+the locked product decision this slice implements: Management can record
+a compliance item as seen/verified (Status + Verified By + Verified At)
+without ever storing the actual sensitive document. `Coach Document
+Requirements` was deliberately not mirrored this slice (belongs to the
+later Compliance slice).
+
+### Session Staff - Active + Effective dating rule (recorded for Slice 2)
+
+No schema change - `Effective From`/`Effective Until` already exist,
+identically, on TEST's `Session Staff`. The locked rule Slice 2 must
+implement:
+
+A Session Staff assignment applies to occurrence date **D** iff:
+- `Active = true`, AND
+- `Effective From` is blank OR `D >= Effective From`, AND
+- `Effective Until` is blank OR `D <= Effective Until`.
+
+`Active` answers "is this assignment record enabled/not retracted" -
+independent of the date range, which answers "does it apply on this
+date." Neither `hub-content/player-access.ts`'s
+`buildActiveSessionStaffByCoachAndSession()` nor `parent-hub/index.ts`'s
+`buildSessionStaffBySessionId()` consumer currently reads `Effective
+From`/`Until` at all (both filter on `Active` alone) - this is exactly the
+gap Slice 2 closes.
+
+### Dependency check + deprecation marking
+
+All three candidates re-confirmed independently this slice (not just
+inherited from the prior audit):
+
+1. **`Coaches.Role`** (singleSelect) - zero references anywhere in the
+   repository (full-repo grep). Marked deprecated (description-only).
+2. **`Coaches.LEGACY — Coach Role`** (link) - a LIVE call exists:
+   `hub-content/index.ts:458` calls `capabilitiesForCoach()`
+   unconditionally, which reads `coachRecord.fields["Coach Role"]`. But
+   the real Airtable field is named `LEGACY — Coach Role`, not `Coach
+   Role` - the lookup key never matches, so `coachCapabilities` is always
+   `null` in practice, and the one thing that consumes it
+   (`legacyFallbackPerms()`, reached only when the `legacy_assigned_coaches`
+   Feature Control flag is on) always short-circuits to `null` too. Traced
+   through the real code path, not assumed: this is a call that exists but
+   produces no effect, not a genuine live dependency on the field's value.
+   Marked deprecated (description-only) - not deleted, since the dead code
+   still references it by name and deleting could produce a confusing
+   "field not found" surprise later rather than the current silent no-op.
+3. **`Staff Role Overrides`** (whole table) - zero references in any
+   `.ts`/`.js` file. The only repository match is
+   `tests/support/test-base-spec.json`, a captured production-schema
+   reference document (`source_base: apprptFotQuVL1mhs`, dated
+   2026-09-26) that no code loads (confirmed: nothing greps/requires/
+   imports that file). Marked deprecated (whole-table description).
+
+No stop condition was hit - none of the three is actively required by a
+genuinely working TEST path. Nothing was deleted; only descriptions
+changed. Field/table types, choices, links and existing data are
+untouched (confirmed: `Coaches.Role` still holds real values - Management/
+Lead Coach/Coach - on the three real TEST coach records; this slice did
+not touch that data).
+
+### Real TEST verification
+
+- **Compliance without attachment**: created a throwaway `Coach Documents`
+  row (`DOC-SLICE1-CHECK`, linked to the real `coach.a` TEST Coach) with
+  `Attachment` left entirely blank, `Status = Current`, `Verified By User
+  ID`/`Verified By Name Snapshot`/`Verified At` all populated - saved and
+  read back correctly. Proves Management can verify a compliance item
+  without the document ever being uploaded. Deleted afterward
+  (`recrfVK91TFl7E9WU`).
+- **Staffing requirement fields**: created a throwaway Session
+  (`SLICE1-STAFFCHECK`) with `Required Staff Count = 2` and `Requires Lead
+  Coach = true` - saved and read back correctly. Deleted afterward
+  (`rec46uwjkmz2esdkK`). TEST-A/TEST-B were not touched for this check.
+
+### Regression
+
+Full TEST suite (`node tests/run-all.js`) re-run after all schema changes:
+**50/50 test files passed**, unchanged from the Slice 10 baseline - no
+backend code changed this slice, so this confirms the schema additions
+didn't disturb any existing mock/fixture behaviour.
+
+### Production isolation
+
+Confirmed by direct re-read of production Airtable (`apprptFotQuVL1mhs`):
+table count unchanged (66 before and after), full table name list
+identical, `Coaches` table's own field list identical - no write reached
+production. No Supabase changes of any kind this slice (no migration, no
+function deploy, both production and TEST Supabase untouched). No
+frontend, Google Sheets, or finance file touched.
+
+### Future design rule recorded (not implemented this slice)
+
+**Cancellation / reschedule financial outcome** (for the later Coach
+Allocations / Finance work, not Slice 1): when an occurrence is cancelled
+or rescheduled, Management should eventually be able to confirm the
+financial outcome of the ORIGINAL occurrence - coach cost, venue cost, and
+any other applicable cost, each independently resolvable to Paid / Unpaid
+/ Partial, with a final amount and an optional reason/note. For a
+reschedule specifically: the original occurrence keeps its own financial
+outcome; the replacement occurrence carries its own normal costs
+separately - the two are never merged into one record. No fields or logic
+for this exist yet; recorded here so the requirement isn't lost before the
+relevant later slice.
+
+### Cancellation/weather pay rules - confirmed still out of scope
+
+Not touched this slice, per instruction - the 5-hour cancellation rule and
+10-minute weather rule remain unbuilt, pending product clarification on
+exact boundary conditions, same finding as the Coaches Foundation Audit.
+
+**Coaches Slice 1 is ready for Slice 2 Session Staff effective dating.**
+
+Do not start Slice 2 automatically.
