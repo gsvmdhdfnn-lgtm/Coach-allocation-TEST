@@ -9,11 +9,16 @@
 // Rewritten for the Session Staff-based repair: current-session access
 // no longer comes from the Sessions Google Sheet's free-text `coaches`
 // column, it comes from the caller's own Active Session Staff row on
-// that specific session. Cover access is unchanged (still Changes-sheet
-// based). Membership status now reads Membership Lifecycle Status
-// (canonical) with LEGACY-name fallbacks, matching parent-hub's own
-// membershipStatus(). Former-access snapshot/end-date fields now read
-// their current (LEGACY-prefixed) names.
+// that specific session. Coaches Slice 4 retired the separate
+// Changes-sheet "cover" tier entirely - resolvePlayerAccess() no longer
+// accepts any cover-related input at all (no coverSessionIds/
+// coachCoverCapabilities fields on ResolveInput), so a Sheet row or a
+// free-text/alias name match can no longer grant access, structurally,
+// not just by convention (see items 6/7 below). Membership status now
+// reads Membership Lifecycle Status (canonical) with LEGACY-name
+// fallbacks, matching parent-hub's own membershipStatus(). Former-access
+// snapshot/end-date fields now read their current (LEGACY-prefixed)
+// names.
 import {
   buildOccurrenceStaffByOccurrenceId,
   buildScheduledCoachNameKeysBySessionId,
@@ -22,7 +27,6 @@ import {
   buildSessionStaffBySessionId,
   capabilitiesForCoach,
   coachIdentityKeys,
-  coachOwnStandingCapabilities,
   eligibleCoachIdsForSessionSnapshot,
   legacyFallbackPerms,
   resolveOccurrenceStaffing,
@@ -98,18 +102,15 @@ const TODAY_ISO = ukTodayIso(TODAY);
 const LINK_ARCHIE_A = { id: "link1", fields: { Player: [PLAYER_ARCHIE.id], Session: [SESSION_A.id], "Membership Lifecycle Status": "Active" } };
 const LINK_DYLAN_B_PAUSED = { id: "link2", fields: { Player: [PLAYER_DYLAN.id], Session: [SESSION_B.id], "Membership Lifecycle Status": "Paused" } };
 
-function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>()) {
-  const coachCoverCapabilities = coach ? coachOwnStandingCapabilities(coach.id, SESSION_STAFF_ROWS, roleCapsById, TODAY) : null;
+function resolveFor(coach: any, links: any[]) {
   return resolvePlayerAccess({
     role: "coach",
     coachRecordId: coach ? coach.id : null,
-    coachCoverCapabilities,
     players,
     sessions,
     links,
     sessionStaffBySessionAndCoach,
     roleCapsById,
-    coverSessionIds,
     today: TODAY,
   });
 }
@@ -158,13 +159,11 @@ function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>(
   const rows = resolvePlayerAccess({
     role: "management",
     coachRecordId: null,
-    coachCoverCapabilities: null,
     players,
     sessions,
     links: [LINK_ARCHIE_A, LINK_DYLAN_B_PAUSED],
     sessionStaffBySessionAndCoach,
     roleCapsById,
-    coverSessionIds: new Set(),
     today: TODAY,
   });
   const row1 = rows.find((r) => r.player_record_id === PLAYER_ARCHIE.id);
@@ -173,22 +172,35 @@ function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>(
   ck("Management admin tier keeps full edit permissions", !!row1 && row1.can_edit_feedback && row1.can_edit_idp && row1.can_edit_attendance);
 }
 
-// --- 7. Cover: an eligible coach's own standing role grants cover-tier access ---
+// --- 6 (Slice 4): a legacy Sheet Changes cover entry, by itself, grants zero access ---
 {
-  // Sam (Coach on Session B) covers Session A today, where they hold no Session Staff row.
-  const coverSessionIds = new Set([SESSION_A.id]);
-  const rows = resolveFor(COACH_SAM, [LINK_ARCHIE_A], coverSessionIds);
-  const row = rows.find((r) => r.player_record_id === PLAYER_ARCHIE.id);
-  ck("Covering a session with no Session Staff row there uses the coach's own standing role -> cover tier", !!row && row.tier === "cover", JSON.stringify(row));
-  ck("Cover-tier permissions mirror the covering coach's own standing role (Coach: feedback/attendance, not dev plans)", !!row && row.can_edit_feedback === true && row.can_edit_idp === false, JSON.stringify(row));
+  // The shape a "Changes" tab row used to arrive in, before Slice 4 -
+  // kept here purely as inert fixture data to prove the point: even a
+  // perfectly plausible cover row for Sam covering Session A today has
+  // NOWHERE to plug into resolvePlayerAccess() any more. ResolveInput
+  // (see player-access.ts) has no coverSessionIds/coachCoverCapabilities
+  // field at all after Slice 4 - resolveFor() below (this file's own
+  // helper) cannot even be called with cover data, structurally, not
+  // just by choosing not to pass it.
+  const legacySheetCoverRow = { type: "cover", coach_in: "Sam Sample", week_commencing: "2026-09-14", day: "sunday", session_id: "TEST-A" };
+  // Sam holds no Session Staff row on Session A (only on Session B) and there is no Occurrence Staff for it either - the Sheet row above is the ONLY thing that could have granted cover before Slice 4.
+  const rows = resolveFor(COACH_SAM, [LINK_ARCHIE_A]);
+  const row = rows.find((r) => r.player_record_id === PLAYER_ARCHIE.id && r.session_record_id === SESSION_A.id);
+  ck(`6. A legacy Sheet Changes cover entry (type=${legacySheetCoverRow.type}, coach_in=${legacySheetCoverRow.coach_in}), by itself, grants zero access - Sam sees nothing on Session A`, !row, JSON.stringify(rows));
 }
 
-// --- 8. Cover: a coach with no eligible standing role anywhere -> no cover access ---
+// --- 7 (Slice 4): an alias/free-text schedule-name match, by itself, grants zero cover access ---
 {
-  // Morgan (Learning Coach only, everywhere) covers Session B today.
-  const coverSessionIds = new Set([SESSION_B.id]);
-  const rows = resolveFor(COACH_MORGAN, [LINK_DYLAN_B_PAUSED], coverSessionIds);
-  ck("A coach whose only standing role is Learning Coach gets nothing from covering, even though they're marked as covering today", rows.length === 0, JSON.stringify(rows));
+  // STATIC_COACH_ALIASES still resolves "jack" -> a coach named "Jacko" -
+  // the utility itself is retained (still used by
+  // eligibleCoachIdsForSessionSnapshot()'s dormant former-player-snapshot
+  // path, see file header) and still matches correctly.
+  const COACH_JACKO = { id: "coachJacko", fields: { "Coach Name": "Jacko", Active: true } };
+  const keys = coachIdentityKeys(COACH_JACKO);
+  ck("STATIC_COACH_ALIASES/coachIdentityKeys still resolves the 'jack' alias to Jacko's own Coach Name key", keys.has("jack") && keys.has("jacko"), JSON.stringify([...keys]));
+  // Jacko holds no Session Staff row anywhere and there is no Occurrence Staff either - a free-text "jack" match on a Sheet, even though it would have resolved via coachIdentityKeys(), has nothing to plug into.
+  const rows = resolveFor(COACH_JACKO, [LINK_ARCHIE_A, LINK_DYLAN_B_PAUSED]);
+  ck("7. An alias/free-text name match, by itself, grants zero cover access - Jacko sees nothing despite a resolvable identity match", rows.length === 0, JSON.stringify(rows));
 }
 
 // --- 9. Former access: LEGACY - Coaches At End / LEGACY - End Date, 28-day expiry ---
@@ -249,16 +261,10 @@ function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>(
   ck("...but it never grants access on any date, Active is an absolute administrative off-switch", caps === null, JSON.stringify(caps));
 }
 
-// --- 13. coachOwnStandingCapabilities picks the highest-priority eligible role across sessions, as of today ---
-{
-  // A coach who is Coach on one session and Lead Coach on another - Lead Coach (priority 0) wins as their standing role.
-  const mixedRows = [
-    { id: "ssMixed1", fields: { Session: [SESSION_A.id], Coach: ["coachMixed"], Role: [ROLE_COACH.id], Active: true } },
-    { id: "ssMixed2", fields: { Session: [SESSION_B.id], Coach: ["coachMixed"], Role: [ROLE_LEAD.id], Active: true } },
-  ];
-  const standing = coachOwnStandingCapabilities("coachMixed", mixedRows, roleCapsById, TODAY);
-  ck("A coach holding both Coach and Lead Coach roles gets Lead Coach as their standing (highest-priority) role", !!standing && standing.roleKey === "lead_coach", JSON.stringify(standing));
-}
+// --- 13. RETIRED (Coaches Slice 4): coachOwnStandingCapabilities() itself was removed from
+// player-access.ts along with the Changes-sheet cover tier it only ever served - see
+// TEST-ENV.md ("Coaches Foundation - Slice 4"). Nothing replaces this test slot; item 13 is
+// simply retired, not renumbered, so this file's history stays legible against prior slices.
 
 // --- Coaches Slice 2: sessionStaffAppliesOnDate() itself, the one shared date rule ---
 {
@@ -338,10 +344,13 @@ function resolveFor(coach: any, links: any[], coverSessionIds = new Set<string>(
   ck("(documented gap, not fixed here) the untouched snapshot helper does not apply the role-key safelist, unlike resolvePlayerAccess()", eligible.includes(COACH_MORGAN.id), JSON.stringify(eligible));
 }
 
-// --- 16. coachIdentityKeys still resolves cover-tier identity (unchanged mechanism) ---
+// --- 16. coachIdentityKeys still resolves identity for its one remaining caller (Coaches Slice 4) ---
 {
+  // Retained purely for eligibleCoachIdsForSessionSnapshot()'s dormant
+  // former-player-snapshot path (item 15 below) - the Changes-sheet
+  // cover tier that used to be this function's OTHER caller is gone.
   const keys = coachIdentityKeys(COACH_SAM, "Sam2");
-  ck("coachIdentityKeys still includes both Coach Name and a supplied display_name (cover-tier matching unchanged)", keys.has("sam sample") && keys.has("sam2"), JSON.stringify([...keys]));
+  ck("coachIdentityKeys still includes both Coach Name and a supplied display_name", keys.has("sam sample") && keys.has("sam2"), JSON.stringify([...keys]));
 }
 
 // --- Coaches Slice 3: Occurrence Staff date-specific resolution ---

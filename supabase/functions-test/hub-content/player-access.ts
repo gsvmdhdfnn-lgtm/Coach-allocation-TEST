@@ -57,35 +57,46 @@
  * every single day - this tier falls back to plain Session-Staff-only
  * resolution, byte-identical to Slice 2.
  *
- * THE EXISTING "cover" TIER BELOW IS A DIFFERENT THING AND IS DELIBERATELY
- * STILL SEPARATE. That tier (AccessTier "cover") is resolved from the
- * published Changes Google Sheet, matched by coach identity (see
- * coachIdentityKeys() below) - for a coach covering a session they hold
- * NO Session Staff row on at all, anywhere. Occurrence Staff, by
- * contrast, always resolves into the "permanent" tier (it is scoped to a
- * specific Session's specific occurrence, exactly like Session Staff),
- * even when it represents a cover assignment in the everyday sense
- * (Assignment Type = "Cover"). Migrating the Changes-sheet cover tier
- * itself onto Occurrence Staff is Slice 4's job, not this one - see
- * TEST-ENV.md. A coach covering via the Changes-sheet mechanism is given
- * their own STANDING capabilities (their highest-priority role across any
- * of their own current Session Staff rows - see coachOwnStandingCapabilities())
- * rather than nothing, since the old single "Coach Role" field on the
- * Coach record this used to read is itself retired (LEGACY - Coach Role).
+ * COACHES SLICE 4 - LEGACY "cover" TIER RETIRED. Before this slice, a
+ * separate AccessTier "cover" existed for a coach covering a session they
+ * held NO Session Staff row on at all, resolved from the published
+ * Changes Google Sheet and matched by free-text coach identity (see
+ * coachIdentityKeys() below). Slice 3 proved Occurrence Staff as the real
+ * per-occurrence staffing/cover source; Slice 4 removed the Changes-sheet
+ * mechanism from this function's access decision ENTIRELY - it is no
+ * longer fetched, matched, or consulted here, and a Sheet row or a
+ * free-text name/alias match can no longer grant or remove player-data
+ * access on its own. Occurrence Staff always resolves into the
+ * "permanent" tier (it is scoped to a specific Session's specific
+ * occurrence, exactly like Session Staff), even when it represents a
+ * cover assignment in the everyday sense (Assignment Type = "Cover") -
+ * see Slice 3's own comment on resolveOccurrenceStaffing() below. This
+ * fails CLOSED: if a session has no occurrence dated today, or that
+ * occurrence has no usable Occurrence Staff row for a coach, that coach
+ * simply gets no access to it - never a fallback inference from anything
+ * Sheet-derived. The `AccessTier` type still includes `"cover"` (the
+ * frontend - coach.js, feedback.js - still has display code that reads
+ * `tier === "cover"`, out of scope to touch this slice) but nothing in
+ * this TEST backend produces it any more; see TEST-ENV.md ("Coaches
+ * Foundation - Slice 4") for the full cutover record.
  *
- * COACH IDENTITY (schedule name matching, cover-tier only): the Changes
- * Google Sheet names coaches in free text (e.g. "David"), which does not
- * have to equal an Airtable Coach's own "Coach Name" field. Rather than
- * hardcoding per-person name pairs in code, coachIdentityKeys() below
- * draws on two already-existing, reusable identity sources, configured
- * once per coach (never per session):
+ * COACH IDENTITY (schedule name matching) - RETAINED, but its only
+ * remaining live caller in this file is now
+ * eligibleCoachIdsForSessionSnapshot() below, a separate, already-dormant
+ * former-player-snapshot path (used by player-sessions' handleEndLink,
+ * which has no TEST copy yet - see that function's own comment) that
+ * this slice deliberately does NOT touch or rewrite, per its own
+ * out-of-scope note. coachIdentityKeys() draws on two reusable identity
+ * sources, configured once per coach (never per session):
  *   1. The coach's own Supabase profiles.display_name, set once when
  *      their account is approved.
  *   2. STATIC_COACH_ALIASES, a small hand-maintained fallback for a
  *      schedule name that doesn't match either the Coach Name or any
  *      known display_name (mirrors config.js's own `coachAliases`).
  * A coach found through neither simply doesn't match any session - this
- * resolver fails closed, it never guesses.
+ * resolver fails closed, it never guesses. Left in place rather than
+ * removed because it is still referenced (see "Cleanup discipline" in
+ * TEST-ENV.md's Slice 4 write-up for the full reasoning).
  */
 
 export type AccessTier = "admin" | "permanent" | "cover" | "former";
@@ -254,24 +265,28 @@ export function splitCoachNames(coachesColumnValue: string): string[] {
  * Coach Name over adding entries here where possible - this exists for
  * the cases neither covers.
  *
- * Cover-tier identity matching only (see file header) - no longer used
- * for current-session access, which Session Staff now resolves directly
- * by linked Coach record, needing no name matching at all.
+ * RETAINED after Coaches Slice 4 (see file header): its only remaining
+ * live caller is eligibleCoachIdsForSessionSnapshot() below, the dormant
+ * former-player-snapshot path - no longer used for current-session
+ * access (Session Staff resolves that directly by linked Coach record)
+ * or for the retired Changes-sheet cover tier.
  */
 export const STATIC_COACH_ALIASES: Record<string, string> = {
   jack: "Jacko",
 };
 
 /**
- * Every name a specific coach could plausibly appear under on the
- * published Changes sheet (cover-tier identity matching only - see file
- * header): their Airtable Coach Name, their Supabase account's
- * display_name (set once at approval), and any STATIC_COACH_ALIASES entry
- * whose canonical target is their own Coach Name. `displayName` is
- * optional - pass it when known (always available for the authenticated
- * caller via their own profile; for other coaches, e.g. building a
- * Coaches-At-End snapshot, pass it when resolved, omit otherwise - falls
- * back to Coach Name + static aliases only).
+ * Every name a specific coach could plausibly appear under on a schedule
+ * published in free text: their Airtable Coach Name, their Supabase
+ * account's display_name (set once at approval), and any
+ * STATIC_COACH_ALIASES entry whose canonical target is their own Coach
+ * Name. RETAINED after Coaches Slice 4 (see file header) purely for
+ * eligibleCoachIdsForSessionSnapshot() below's former-player-snapshot
+ * matching - no longer called for current-session or cover-tier access.
+ * `displayName` is optional - pass it when known (always available for
+ * the authenticated caller via their own profile; for other coaches,
+ * e.g. building a Coaches-At-End snapshot, pass it when resolved, omit
+ * otherwise - falls back to Coach Name + static aliases only).
  */
 export function coachIdentityKeys(coachRecord: any, displayName?: string | null): Set<string> {
   const set = new Set<string>();
@@ -357,9 +372,13 @@ export function roleCapabilitiesById(coachRoleRows: any[]): Record<string, Coach
  * value alone. Keyed by Role Key (stable), not Role Name (display text,
  * renameable) - renaming "Lead Coach" to "Head Coach" in Airtable must
  * never silently strip everyone with that role of player access. The
- * order (0, 1) is also this file's role-priority order, used by
- * coachOwnStandingCapabilities() below to pick a coach's single best
- * "standing" role when they hold more than one across sessions.
+ * order (0, 1) is also this file's role-priority order - RETIRED
+ * (Coaches Slice 4) `coachOwnStandingCapabilities()` used to consult it
+ * for a coach's single best "standing" role across sessions; nothing
+ * else in this file currently reads the ordering, only membership in the
+ * map itself (isPlayerAccessRole() below), but it is kept as an ordered
+ * map rather than simplified to a plain allowlist in case a future
+ * caller needs it again.
  */
 const PLAYER_ACCESS_ROLE_PRIORITY: Record<string, number> = { lead_coach: 0, coach: 1 };
 
@@ -688,44 +707,19 @@ export function sessionStaffCapabilitiesForSession(
 }
 
 /**
- * A coach's own STANDING capabilities RIGHT NOW - their highest-priority
- * player-access-eligible role across ANY of their own Session Staff rows
- * that apply TODAY (sessionStaffAppliesOnDate(), Coaches Slice 2 -
- * Active + Effective From/Until, never `Active` alone any more),
- * regardless of session. Used only for the cover tier: a coach covering a
- * session they hold no Session Staff row on still needs some capability
- * floor, and their normal standing role is the closest replacement for
- * what the old single "Coach Role" field on the Coach record used to
- * provide (that field is now retired - LEGACY - Coach Role - and was
- * never a per-session concept anyway). Null means the coach holds no
- * player-access-eligible role anywhere as of today. `today` is the same
- * instant every other "as of now" decision in this request uses - passed
- * in, never independently re-read, so nothing in one request can disagree
- * with itself about what day it is.
+ * RETIRED (Coaches Slice 4) - `coachOwnStandingCapabilities()` used to
+ * give a coach covering a session they held no Session Staff row on
+ * (matched via the Changes-sheet cover tier) some capability floor,
+ * derived from their highest-priority role on any OTHER session. Its
+ * only caller was the `coverSessionIds`/`coachCoverCapabilities` branch
+ * of resolvePlayerAccess() below, which Slice 4 removed entirely - a
+ * coach's capabilities are now only ever resolved for the specific
+ * session (and, for a dated occurrence, the specific date) they're
+ * actually being asked about, via sessionStaffCapabilitiesForSession()
+ * (Session Staff, optionally overlaid by Occurrence Staff - Slice 3).
+ * See TEST-ENV.md ("Coaches Foundation - Slice 4") for the full cutover
+ * record.
  */
-export function coachOwnStandingCapabilities(
-  coachId: string,
-  sessionStaffRows: any[],
-  roleCapsById: Record<string, CoachRoleCapabilities>,
-  today: Date
-): CoachRoleCapabilities | null {
-  const todayIso = ukTodayIso(today);
-  let best: CoachRoleCapabilities | null = null;
-  let bestPriority = Infinity;
-  for (const row of sessionStaffRows) {
-    if (firstLink(row.fields, "Coach") !== coachId) continue;
-    if (!sessionStaffAppliesOnDate(row, todayIso)) continue;
-    const roleId = firstLink(row.fields, "Role");
-    const caps = roleId ? roleCapsById[roleId] : null;
-    if (!isPlayerAccessRole(caps)) continue;
-    const priority = PLAYER_ACCESS_ROLE_PRIORITY[(caps as CoachRoleCapabilities).roleKey];
-    if (priority < bestPriority) {
-      bestPriority = priority;
-      best = caps;
-    }
-  }
-  return best;
-}
 
 /**
  * A coach's own current capabilities from the single legacy "Coach Role"
@@ -734,11 +728,11 @@ export function coachOwnStandingCapabilities(
  * hub-content/index.ts and eligibleCoachIdsForSessionSnapshot() below -
  * both already-broken, out-of-scope paths this repair deliberately does
  * not touch (see TEST-ENV.md). NOT used by resolvePlayerAccess() any
- * more; sessionStaffCapabilitiesForSession()/coachOwnStandingCapabilities()
- * above replace it there. "Coach Role" was itself renamed to "LEGACY -
- * Coach Role" in the same schema migration that broke the fields this
- * repair fixes, so this function currently always returns null too - left
- * exactly as-is because fixing it is a different task (see report).
+ * more; sessionStaffCapabilitiesForSession() above replaces it there.
+ * "Coach Role" was itself renamed to "LEGACY - Coach Role" in the same
+ * schema migration that broke the fields this repair fixes, so this
+ * function currently always returns null too - left exactly as-is
+ * because fixing it is a different task (see report).
  */
 export function capabilitiesForCoach(
   coachRecord: any,
@@ -773,8 +767,6 @@ export function legacyFallbackPerms(
 export interface ResolveInput {
   role: string;
   coachRecordId: string | null;
-  /** The caller's own standing capabilities (coachOwnStandingCapabilities()) - used only for the cover tier. Null means no player-access-eligible role anywhere right now. */
-  coachCoverCapabilities: CoachRoleCapabilities | null;
   players: any[];
   sessions: any[];
   links: any[];
@@ -782,8 +774,6 @@ export interface ResolveInput {
   sessionStaffBySessionAndCoach: Record<string, Record<string, any[]>>;
   /** Coach Roles record id -> capabilities, from roleCapabilitiesById(). */
   roleCapsById: Record<string, CoachRoleCapabilities>;
-  /** Airtable Session RECORD ids the caller is covering today (date-specific, from the Changes sheet) - unchanged mechanism, deliberately still separate from Session Staff (see file header). */
-  coverSessionIds: Set<string>;
   today: Date;
   /**
    * Coaches Slice 3, all optional - omitted (or leave any one undefined)
@@ -814,16 +804,22 @@ export interface ResolveInput {
  * the caller's own Session Staff rows on THAT session actually applies
  * TODAY (Coaches Slice 2 - Active + Effective From/Until, via
  * sessionStaffAppliesOnDate() inside sessionStaffCapabilitiesForSession(),
- * checked fresh via `input.today` on every call) - Lead Coach and Coach
- * roles only, Learning Coach never. A coach whose assignment has ended (or
- * not yet started) gets no access here even if the row is still Active,
- * exactly the "an ended assignment must not retain current access merely
- * because the row is still Active" rule this slice exists to enforce.
- * Cover access (tier "cover") stays on the pre-existing Changes-sheet
- * mechanism (see file header) and uses the caller's own standing
- * capabilities instead (also now date-aware - see
- * coachOwnStandingCapabilities()), since they hold no Session Staff row
- * on the session they're covering.
+ * checked fresh via `input.today` on every call), optionally overlaid by
+ * that session's own Occurrence Staff for a Session Occurrence dated
+ * exactly today (Coaches Slice 3 - resolveOccurrenceStaffing(), a
+ * one-date addition or replacement) - Lead Coach and Coach roles only,
+ * Learning Coach never. A coach whose assignment has ended (or not yet
+ * started) gets no access here even if the row is still Active, exactly
+ * the "an ended assignment must not retain current access merely because
+ * the row is still Active" rule Slice 2 exists to enforce. Coaches Slice
+ * 4 RETIRED the separate Changes-sheet "cover" tier that used to exist
+ * here (a coach covering a session they held no Session Staff row on,
+ * matched by free-text schedule name) - that Sheet-derived mechanism no
+ * longer grants or removes access at all; Occurrence Staff (Slice 3) is
+ * now the only route to a one-date addition or replacement, and this
+ * function fails closed (no access) whenever it's missing or
+ * unresolvable rather than falling back to anything Sheet-derived. See
+ * TEST-ENV.md ("Coaches Foundation - Slice 4") for the cutover record.
  *
  * A Player Session Link with any status other than "Ended" counts as
  * current for this purpose (Active, Paused, Cancellation Pending, Ending
@@ -847,13 +843,11 @@ export function resolvePlayerAccess(input: ResolveInput): PlayerAccessRow[] {
   const {
     role,
     coachRecordId,
-    coachCoverCapabilities,
     players,
     sessions,
     links,
     sessionStaffBySessionAndCoach,
     roleCapsById,
-    coverSessionIds,
     today,
     occurrenceIdForSessionToday,
     occurrenceStaffByOccurrenceId,
@@ -962,16 +956,19 @@ export function resolvePlayerAccess(input: ResolveInput): PlayerAccessRow[] {
       if (!session) continue;
 
       if (status !== "Ended") {
-        // A coach merely being staffed/covering must NEVER grant access
-        // if their role/capabilities prohibit it - checked before
-        // anything else, every call, every session.
-        const staffCaps = sessionStaffCapabilitiesForSession(sid, coachRecordId, todayIso, sessionStaffBySessionAndCoach, roleCapsById, occurrenceContextForSession(sid));
-        const isStaffed = !!staffCaps;
-        const isCovering = !isStaffed && coverSessionIds.has(sid);
-        const caps = isStaffed ? staffCaps : isCovering ? coachCoverCapabilities : null;
+        // A coach merely being staffed must NEVER grant access if their
+        // role/capabilities prohibit it - checked before anything else,
+        // every call, every session. Coaches Slice 4: this is now the
+        // ONLY route to access - Session Staff, optionally overlaid by
+        // that session's Occurrence Staff for an occurrence dated exactly
+        // today (Slice 3). No Changes-sheet fallback exists any more; a
+        // coach with no staffCaps here simply gets no access to this
+        // session, full stop - fail closed, never inferred from anything
+        // Sheet-derived.
+        const caps = sessionStaffCapabilitiesForSession(sid, coachRecordId, todayIso, sessionStaffBySessionAndCoach, roleCapsById, occurrenceContextForSession(sid));
         if (!caps) continue;
 
-        const tier: AccessTier = isStaffed ? "permanent" : "cover";
+        const tier: AccessTier = "permanent";
         const perms = { can_edit_feedback: caps.canAddFeedback, can_edit_idp: caps.canEditDevelopmentPlans, can_edit_attendance: caps.canRecordAttendance };
         for (const pid of playerIds) pushRow(pid, sid, link.id, tier, null, perms);
       } else {

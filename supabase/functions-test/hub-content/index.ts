@@ -5,11 +5,8 @@ import {
   buildSessionStaffById,
   buildSessionStaffBySessionId,
   capabilitiesForCoach,
-  coachIdentityKeys,
-  coachOwnStandingCapabilities,
   firstLink,
   legacyFallbackPerms,
-  nameKey,
   resolvePlayerAccess,
   roleCapabilitiesById,
   roleCapsByRoleName,
@@ -46,8 +43,8 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 // Same public "publish to web" CSV this project's config.js already points
-// the client at (Sessions and Changes tabs) - kept in sync by hand if that
-// URL is ever republished.
+// the client at (Sessions tab) - kept in sync by hand if that URL is ever
+// republished.
 //
 // SESSIONS_CSV_URL is currently unused in this file: handlePlayers() now
 // reads Session Staff instead (see player-access.ts), and the Sessions-
@@ -55,12 +52,17 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 // TEST-ENV.md), not fixed. Left in place, not deleted - it's the exact
 // "Coach Hub Sessions CSV" flagged separately for the upcoming Schedule
 // cleanup, which decides what (if anything) still needs it here.
-// CHANGES_CSV_URL below is unrelated to any of that and stays live -
-// resolveCoverSessionIds() still reads it for date-specific cover.
+//
+// RETIRED (Coaches Slice 4): a CHANGES_CSV_URL constant used to point at
+// the same published sheet's "Changes" tab, read by resolveCoverSessionIds()
+// to compute date-specific cover access from free-text coach_in names.
+// That whole mechanism (fetching, matching, and the access it granted)
+// was removed from this function this slice - see TEST-ENV.md. This
+// file no longer fetches the Changes tab at all; the Sheet itself is
+// untouched, only this backend's dependency on it for player access is
+// gone.
 const SESSIONS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vQj4giL7oEoZLLfC74Sq97bnUGIdMqnG_ECOkNyRis-Drz4yH1OUssQ-YBRbCR6ajiJBvV05JjzOi8I/pub?gid=349419235&single=true&output=csv";
-const CHANGES_CSV_URL =
-  "https://docs.google.com/spreadsheets/d/e/2PACX-1vQj4giL7oEoZLLfC74Sq97bnUGIdMqnG_ECOkNyRis-Drz4yH1OUssQ-YBRbCR6ajiJBvV05JjzOi8I/pub?gid=1549675202&single=true&output=csv";
 
 /**
  * The SAME published Financials "publish to web" CSV the management-only
@@ -295,73 +297,32 @@ async function fetchCsvObjects(url: string): Promise<Record<string, string>[]> {
   if (!res.ok) return [];
   return csvObjects(await res.text());
 }
-function mondayOf(d: Date): Date {
-  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-  const day = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() - day + 1);
-  return date;
-}
-function parseDateOnly(s: string): Date | null {
-  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!m) return null;
-  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
-}
-function isoDateUTC(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-const DAY_OFFSET: Record<string, number> = {
-  monday: 0, tuesday: 1, wednesday: 2, thursday: 3, friday: 4, saturday: 5, sunday: 6,
-};
-
 /**
- * Which Session records (by Airtable record id) the named coach is
- * covering TODAY, exactly - not "this week". A cover row in the Changes
- * sheet is week_commencing + day, which together pin one exact date
- * (Monday of that week, plus the day's offset); only when today equals
- * that exact date does the cover grant apply. A cover row with no `day`
- * filled in is skipped rather than defaulting to the whole week - that
- * default was the bug this replaces.
- *
- * `coachNameKeys` is every name the caller is known to appear under (see
- * coachIdentityKeys() in player-access.ts) - a Changes row's coach_in is
- * matched against the whole set, so a schedule name that resolves to this
- * coach via their Supabase display_name or a static alias still matches,
- * without hardcoding that pairing here.
+ * RETIRED (Coaches Slice 4) - `resolveCoverSessionIds()` and its private
+ * date helpers (`mondayOf`/`parseDateOnly`/`isoDateUTC`/`DAY_OFFSET`)
+ * used to compute, from the published Changes Google Sheet, which
+ * Session records a coach was covering on the exact current date. Slice
+ * 3 made Occurrence Staff the real per-occurrence staffing/cover source,
+ * and Slice 4 removed this Sheet-driven fallback from player access
+ * entirely - see TEST-ENV.md ("Coaches Foundation - Slice 4") for the
+ * full cutover record. `nameKey()` is still exported from
+ * player-access.ts and still used there (coachIdentityKeys(),
+ * splitCoachNames()) for the separate former-player-snapshot path (see
+ * that file's own header) - only this file's own use of it, and the
+ * `CHANGES_CSV_URL` constant that fed it, were removed as dead.
  */
-async function resolveCoverSessionIds(
-  coachNameKeys: Set<string>,
-  sessionRecordBySessionId: Record<string, string>,
-  today: Date
-): Promise<Set<string>> {
-  const result = new Set<string>();
-  if (!coachNameKeys.size) return result;
-  const rows = await fetchCsvObjects(CHANGES_CSV_URL);
-  const todayIso = isoDateUTC(today);
-  for (const r of rows) {
-    if (nameKey(r.type) !== "cover") continue;
-    if (!coachNameKeys.has(nameKey(r.coach_in))) continue;
-    const wc = parseDateOnly(r.week_commencing);
-    if (!wc) continue;
-    const dayOffset = DAY_OFFSET[nameKey(r.day)];
-    if (dayOffset == null) continue;
-    const coveredDate = mondayOf(wc);
-    coveredDate.setUTCDate(coveredDate.getUTCDate() + dayOffset);
-    if (isoDateUTC(coveredDate) !== todayIso) continue;
-    const sessionRecordId = sessionRecordBySessionId[r.session_id];
-    if (sessionRecordId) result.add(sessionRecordId);
-  }
-  return result;
-}
 
 /**
- * `active`, `userId` and `displayName` were added alongside role/
- * airtable_person_id for handleSessionParticipants()'s auth gate,
- * player-feedback-style write attribution (Coach User ID) and coach
- * schedule-identity matching (see coachIdentityKeys() in
- * player-access.ts) respectively - every existing caller only ever
- * destructured role/airtablePersonId, so this stays purely additive and
- * changes no existing behaviour. RLS on profiles only allows a user to
- * read their own row, so this is always the CALLER's own display_name.
+ * `active` and `userId` were added alongside role/airtable_person_id for
+ * handleSessionParticipants()'s auth gate and player-feedback-style
+ * write attribution (Coach User ID) respectively. `displayName` was
+ * originally added for the Changes-sheet cover tier's coach-identity
+ * matching (coachIdentityKeys()) - Coaches Slice 4 retired that tier
+ * from this file entirely, so `displayName` is currently unused here,
+ * but left in place (it costs nothing extra - already part of the same
+ * `profiles` row) as generic caller profile info any future consumer can
+ * read without a new query. RLS on profiles only allows a user to read
+ * their own row, so this is always the CALLER's own display_name.
  */
 async function resolveCaller(
   authHeader: string | null
@@ -418,12 +379,19 @@ const LEGACY_ADMIN_PERMS = { can_edit_feedback: true, can_edit_idp: true, can_ed
  * with none/invalid, returns nothing.
  *
  * Access is resolved once, centrally, by resolvePlayerAccess() (see
- * player-access.ts): a coach's current-session access now comes from
- * their own Active Session Staff row on that session (Lead Coach/Coach
- * only, Learning Coach never - see player-access.ts), never the
- * published Sessions Google Sheet. Cover access is unchanged and still
- * comes from the Changes sheet, matched by coach identity - see
- * player-access.ts's file header for why that stays separate for now.
+ * player-access.ts): a coach's current-session access comes from their
+ * own Active, effective-dated Session Staff row on that session (Lead
+ * Coach/Coach only, Learning Coach never - see player-access.ts), plus
+ * any Occurrence Staff one-date exception for a session occurrence dated
+ * exactly today (Slice 3). Coaches Slice 4 retired the separate Changes-
+ * sheet "cover" tier entirely - the Google Sheets Changes tab is no
+ * longer fetched or consulted anywhere in this function, and a coach can
+ * no longer gain player-data access purely from a Sheet row or a
+ * free-text schedule-name match. Occurrence Staff (Slice 3) is now the
+ * ONLY mechanism for a one-date addition/replacement; if it's missing or
+ * unresolvable, access fails closed rather than falling back to the
+ * Sheet. See TEST-ENV.md ("Coaches Foundation - Slice 4") for the full
+ * cutover record.
  *
  * A player who isn't in the new system yet (no Player Session Links at
  * all) still falls back to the legacy Assigned Coaches link on their own
@@ -462,26 +430,17 @@ async function handlePlayers(authHeader: string | null) {
   const coachRecordById: Record<string, any> = {};
   for (const c of coachRows) coachRecordById[c.id] = c;
 
-  const sessionRecordBySessionId: Record<string, string> = {};
-  for (const s of sessionRows) {
-    const sid = s.fields["Session ID"];
-    if (sid) sessionRecordBySessionId[sid] = s.id;
-  }
-
   const roleCapsById = roleCapabilitiesById(coachRoleRows);
   const roleCapsByNameMap = roleCapsByRoleName(coachRoleRows);
   const callerCoachRecord = caller.airtablePersonId ? coachRecordById[caller.airtablePersonId] : null;
-  // Cover-tier identity matching only (still Changes-sheet based - see player-access.ts).
-  const coachNameKeys = coachIdentityKeys(callerCoachRecord, caller.displayName);
   // Legacy Assigned Coaches fallback only (see this function's own docstring) - deliberately untouched.
   const coachCapabilities = capabilitiesForCoach(callerCoachRecord, roleCapsById);
   const sessionStaffBySessionAndCoach = buildSessionStaffByCoachAndSession(sessionStaffRows);
   const sessionStaffBySessionId = buildSessionStaffBySessionId(sessionStaffRows);
   const sessionStaffById = buildSessionStaffById(sessionStaffRows);
   const occurrenceStaffByOccurrenceId = buildOccurrenceStaffByOccurrenceId(occurrenceStaffRows);
-  // Computed here (not after) so coachOwnStandingCapabilities' Coaches
-  // Slice 2 date check uses the exact same instant as resolvePlayerAccess()
-  // below and resolveCoverSessionIds() further down - one "now" per request.
+  // Coaches Slice 2's date check uses the exact same instant as
+  // resolvePlayerAccess() below - one "now" per request.
   const today = new Date();
   const todayIso = ukTodayIso(today);
   // Session RECORD id -> the Session Occurrence RECORD id dated exactly
@@ -498,25 +457,15 @@ async function handlePlayers(authHeader: string | null) {
     const sid = firstLink(occ.fields, "Session");
     if (sid) occurrenceIdForSessionToday[sid] = occ.id;
   }
-  const coachCoverCapabilities = caller.airtablePersonId
-    ? coachOwnStandingCapabilities(caller.airtablePersonId, sessionStaffRows, roleCapsById, today)
-    : null;
-
-  const coverSessionIds =
-    caller.role === "management"
-      ? new Set<string>()
-      : await resolveCoverSessionIds(coachNameKeys, sessionRecordBySessionId, today);
 
   const rows = resolvePlayerAccess({
     role: caller.role,
     coachRecordId: caller.airtablePersonId,
-    coachCoverCapabilities,
     players: playerRows,
     sessions: sessionRows,
     links: linkRows,
     sessionStaffBySessionAndCoach,
     roleCapsById,
-    coverSessionIds,
     today,
     occurrenceIdForSessionToday,
     occurrenceStaffByOccurrenceId,

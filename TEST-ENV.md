@@ -4128,3 +4128,326 @@ Edge Functions retain their unchanged TEST DEPLOYMENT GUARD.
 cover access path.**
 
 Do not start Slice 4 automatically.
+
+## Coaches Foundation — Slice 4 (retire legacy Sheets-based cover access) — 2026-09-27
+
+TEST-only. Production Airtable/Supabase, frontend, Google Sheets and
+finance untouched throughout. This slice is a controlled retirement/
+cutover, not a rebuild - no new cover-request functionality was built.
+Google Sheets themselves were never touched; only this TEST backend's
+dependency on the published Changes tab for player-data access was
+removed.
+
+### Inspection before changing
+
+Every live path involved in the legacy cover mechanism was re-read
+before any code changed:
+- `coverSessionIds` / `coachCoverCapabilities` - the two `ResolveInput`
+  fields feeding the "cover" tier branch inside `resolvePlayerAccess()`
+  (hub-content/player-access.ts).
+- `resolveCoverSessionIds()` (hub-content/index.ts) - fetched the
+  published Changes Google Sheet CSV and matched `type=cover` rows to
+  the caller by name, pinned to the exact current date (week_commencing
+  + day).
+- `coachOwnStandingCapabilities()` (player-access.ts) - gave a covering
+  coach some capability floor (their highest-priority role on any OTHER
+  session), since the old single "Coach Role" field this used to read
+  is itself retired.
+- `coachIdentityKeys()` / `STATIC_COACH_ALIASES` (player-access.ts) -
+  free-text schedule-name matching.
+- `CHANGES_CSV_URL` and its date-parsing helpers
+  (`mondayOf`/`parseDateOnly`/`isoDateUTC`/`DAY_OFFSET`, hub-content/
+  index.ts) - the Sheet-fetching plumbing.
+
+This inspection also surfaced a **second, distinct** legacy mechanism
+that must NOT be touched this slice: the "LEGACY - Assigned Coaches"
+fallback (`capabilitiesForCoach()`, `legacyFallbackPerms()`, the
+`legacy_assigned_coaches` Feature Control-gated block in
+`handlePlayers()`). That path is for players not yet migrated onto
+Player Session Links, reads a direct Airtable link (`Assigned Coaches`)
+matched against the caller's own `airtablePersonId` - no free-text
+matching, no Google Sheet, nothing in the brief's retirement list. It is
+untouched, exactly as it was before this slice.
+
+Also confirmed: `coachIdentityKeys()`/`STATIC_COACH_ALIASES`/
+`buildScheduledCoachNameKeysBySessionId()` have a SECOND caller besides
+the now-removed cover tier -
+`eligibleCoachIdsForSessionSnapshot()` (player-sessions' former-player-
+snapshot helper, dormant - no TEST copy of player-sessions exists yet).
+That is the deciding fact for what got deleted vs retained below.
+
+### What was retired
+
+- **hub-content/player-access.ts**: `coverSessionIds`/
+  `coachCoverCapabilities` removed from `ResolveInput`. The access
+  decision inside `resolvePlayerAccess()` is now exactly:
+  `sessionStaffCapabilitiesForSession()` (Session Staff, optionally
+  overlaid by Occurrence Staff - Slice 3) or nothing - no
+  `isCovering`/fallback branch exists any more. `tier` is now always
+  `"permanent"` on that path (the only other tiers a coach can ever see
+  are `"former"`, from the unrelated end-of-membership snapshot). Dead
+  function `coachOwnStandingCapabilities()` deleted (its only caller was
+  the removed branch).
+- **hub-content/index.ts**: `resolveCoverSessionIds()` and its private
+  date helpers (`mondayOf`/`parseDateOnly`/`isoDateUTC`/`DAY_OFFSET`)
+  deleted. `CHANGES_CSV_URL` constant deleted - this file no longer
+  fetches the Changes tab at all (`fetchCsvObjects()`/`csvObjects()`
+  themselves are retained; `FINANCIALS_CSV_URL`'s handler still uses
+  them). The `coachNameKeys = coachIdentityKeys(...)` call site and the
+  `sessionRecordBySessionId` map that only ever fed the cover lookup
+  were removed from `handlePlayers()`. Import list trimmed
+  (`coachIdentityKeys`, `coachOwnStandingCapabilities`, `nameKey` no
+  longer imported here - each is either deleted or has no remaining
+  caller in this file).
+
+### What was deliberately retained (and why)
+
+- **`coachIdentityKeys()`, `STATIC_COACH_ALIASES`,
+  `buildScheduledCoachNameKeysBySessionId()`, `splitCoachNames()`,
+  `nameKey()`** (all in player-access.ts) - still exported, still used,
+  but their only remaining live caller in this codebase is now
+  `eligibleCoachIdsForSessionSnapshot()`, the former-player-snapshot
+  helper documented as its own out-of-scope legacy debt below. Not
+  deleted, per the brief's own instruction: "if still used elsewhere,
+  leave them, document the remaining caller."
+- **`fetchCsvObjects()`/`csvObjects()`/`csvHeaderKey()`/
+  `parseCsvRows()`** (hub-content/index.ts) - still used by
+  `handleSessionParticipants()` for the unrelated Financials CSV. Only
+  `CHANGES_CSV_URL` (the one constant that fed the retired cover lookup)
+  was removed; the generic CSV machinery stays.
+- **`AccessTier` type's `"cover"` literal** (player-access.ts) - kept in
+  the type union even though nothing in this TEST backend produces it
+  any more. The frontend (`coach.js`'s `player.tier==='cover'` badge,
+  `feedback.js`'s equivalent check) still has display code that reads
+  it - out of scope to touch this slice ("do not modify frontend"). A
+  value the type permits but no code emits is harmless; removing it
+  would be a type-surface change with no behavioural benefit.
+- **The LEGACY - Assigned Coaches fallback** (`capabilitiesForCoach()`,
+  `legacyFallbackPerms()`) - a different legacy mechanism entirely (see
+  "Inspection" above), not part of this slice's retirement list, fully
+  untouched.
+- **`displayName` on `resolveCaller()`'s return value** (hub-content/
+  index.ts) - originally added for the cover tier's identity matching,
+  now unused in this file, but left in place since it costs nothing
+  extra (already part of the same `profiles` row fetch) and may serve a
+  future caller. Its own comment updated to say so.
+
+### Former-player snapshot - remaining Coaches-foundation debt (documented, not touched)
+
+`eligibleCoachIdsForSessionSnapshot()` (player-access.ts) is a SEPARATE
+legacy name-matching path around former-player snapshots - it decides,
+at the moment a Player Session Link ends, which coaches get captured
+into that link's frozen "Coaches At End" list (later read by the
+`"former"` tier in `resolvePlayerAccess()`, itself unaffected by this
+slice). It still matches coaches against the published Sessions Sheet's
+free-text `coaches` column via `coachIdentityKeys()`/
+`buildScheduledCoachNameKeysBySessionId()`, not Session Staff. Its own
+existing comment already states why: it is only called from
+player-sessions' `handleEndLink()`, which has **no TEST copy yet**, so
+this function is currently dormant in TEST (never invoked by any
+deployed TEST Edge Function) - the Coaches Foundation Audit and Slice 2
+both already flagged this as separate, deferred debt. Per this slice's
+explicit instruction ("do not silently rewrite that ... unless directly
+coupled to the cover-tier removal"), it was NOT touched: it is not
+coupled to player access itself (a different link-ending snapshot
+concern), and rewriting it to use Session Staff is real design work
+(deciding a Session-Staff-based equivalent of "scheduled on this session
+per the Sheet") that belongs to whoever ports player-sessions into TEST.
+Remains exactly as before, unit-tested, unreferenced by any live route.
+
+### Required backend behaviour after cutover - proven
+
+All via the Slice 3 resolver (`resolveOccurrenceStaffing()`/
+`sessionStaffCapabilitiesForSession()`), unchanged this slice, now the
+sole staffing source:
+- Coach assigned through valid Occurrence Staff (Lead Coach or Coach)
+  gets appropriate date-specific access - unit tests items 6/7, real
+  TEST Scenario B below.
+- Learning Coach via Occurrence Staff gets no player-profile/data access
+  - unit test item 8 (re-run, unaffected by this slice's removal).
+- A replaced recurring coach does not retain access on the replaced date
+  - unit test item 4, real TEST Scenario C below.
+- Surrounding dates still resolve from effective-dated Session Staff -
+  unit test item 5 (re-run); structurally guaranteed by
+  `occurrenceIdForSessionToday`/`buildOccurrenceStaffByOccurrenceId()`
+  only ever supplying the ONE occurrence's own rows for a given date, a
+  guarantee this slice did not touch.
+- A Sheet Changes row by itself grants zero access - new unit test item
+  6, real TEST Scenario A below.
+- A free-text name/alias match by itself grants zero cover access - new
+  unit test item 7.
+
+### Fail-closed confirmation
+
+No fallback path exists any more for a missing/invalid Occurrence Staff
+fact. `sessionStaffCapabilitiesForSession()` returns `null` whenever the
+coach has no applying Session Staff row AND (no occurrence today, or no
+usable/resolvable Occurrence Staff entry for them) - `resolvePlayerAccess()`
+then simply `continue`s past that session for that coach, exactly as it
+already did for "no access" before this slice; there is no longer a
+second branch that could have inferred access from anything else. A
+legacy Sheet entry can never become a security fallback because the
+function that used to read the Sheet for this purpose no longer exists.
+
+### Parent Hub - confirmed unchanged, no retirement needed
+
+Parent Hub (parent-hub/index.ts) was inspected fresh this slice and
+confirmed to have never had a Changes-sheet/free-text cover mechanism of
+its own - Slices 2/3 already made it exclusively Session Staff +
+Occurrence Staff based (`resolveSessionCoachNames()`/
+`resolveOccurrenceRoster()`). Its only fetches are to the Airtable REST
+API; no Google Sheets CSV is fetched anywhere in this file (confirmed by
+grepping every `fetch(` call site). The only "Cover" strings in this
+file are Occurrence Staff's own `Assignment Type = "Cover"` value
+(Slice 3's mechanism, unrelated to the retired Sheet tier). **No file in
+parent-hub changed this slice; it was not redeployed.** Its
+`next_occurrence` resolution and coach display were re-verified live
+(see Regression below) and remain correct.
+
+### Focused tests
+
+All ten required items, in `tests/support/access-resolution.test.ts`
+(regenerated mirror in `tests/support/player-access.ts`):
+1. Occurrence Staff Coach gives date-specific player access - item 7
+   (Slice 3 section).
+2. Occurrence Staff Lead Coach gives access - item 6.
+3. Occurrence Staff Learning Coach does not - item 8.
+4. Replacement removes replaced coach access for that occurrence - item
+   4.
+5. Surrounding occurrence uses Session Staff normally - item 5/5b.
+6. Legacy Sheet Changes entry alone gives zero access - **new**, item 6
+   (top-level numbering): a plausible `type=cover`/`coach_in`/
+   `week_commencing`/`day`/`session_id` row exists as inert fixture data;
+   `resolveFor()`'s `ResolveInput` has no field to consume it at all
+   (`coverSessionIds`/`coachCoverCapabilities` no longer exist on the
+   type), and the coach it names (Sam, on Session A where she holds no
+   Session Staff row) resolves zero access.
+7. Alias/free-text match alone gives zero cover access - **new**: a
+   coach named "Jacko" resolves via `coachIdentityKeys()`/
+   `STATIC_COACH_ALIASES`'s `jack -> Jacko` entry (proving the utility
+   still works correctly, retained for item 15's dormant path) but,
+   holding no Session Staff or Occurrence Staff row anywhere, gets zero
+   access via `resolvePlayerAccess()`.
+8. Invalid/incomplete Occurrence Staff fails closed - item 12a/12b.
+9. Additive Occurrence Staff still works - item 2.
+10. Slice 2 effective-dating still works - the Danny/Tom/Joe handover
+    section (unchanged, re-run).
+
+Superseded/removed: the two old cover-tier tests ("Covering a session
+with no Session Staff row... -> cover tier" and "coach whose only
+standing role is Learning Coach gets nothing from covering") could no
+longer compile against the new `ResolveInput`/`resolveFor()` shape (no
+`coverSessionIds` parameter exists) - replaced by items 6/7 above, which
+prove the same "no fallback access" property the retirement itself is
+about, rather than the removed mechanism's old behaviour. The
+`coachOwnStandingCapabilities()` unit test was retired outright (the
+function no longer exists); its numbered slot is marked retired, not
+reused, so the file's history against prior slices stays legible.
+`access-resolution.test.ts`: **74/74** individual assertions (net -1
+after removing two obsolete assertions and one now-dead standing-role
+test, adding two new ones). `session-coaches.test.ts` (parent-hub,
+untouched): **22/22**, unaffected as expected.
+
+### Deploy
+
+`hub-content` v9 (project `dkqubldmfyeuudecxmvh`) - `index.ts` +
+`player-access.ts`. Deployed content downloaded and `diff`'d
+byte-for-byte against the local repo files after deployment; confirmed
+identical for both files. `parent-hub` was NOT redeployed this slice
+(no source change - see "Parent Hub" above); still the same version and
+digest as the end of Slice 3.
+
+### Real TEST verification - all three required scenarios, real HTTP via `pg_net`
+
+One throwaway Session, `SLICE4-ACCESS` (`recIBhTYumvbkpVPL`, deleted),
+with one Session Staff row (Alex Test/`coach.a`, Lead Coach, Active, no
+date bounds), one throwaway Player (`SLICE4-PLAYER`, `recEXCVHQJIHA459K`,
+deleted) with an Active Player Session Link, and one Session Occurrence
+dated exactly the real test date (2026-09-27, confirmed via a live
+`select now()` immediately before creating it). One Occurrence Staff row
+was created once and mutated through each scenario's state via real
+Airtable writes between real `GET /hub-content/players` calls, same
+minimal-footprint convention as Slice 3. `coach.a`/`coach.b`/`parent.a`
+signed in fresh for real JWTs via `pg_net` (this sandbox cannot reach
+`supabase.co` directly; the Slice 3 JWTs had already expired, so all
+three re-authenticated with the same TEST-only password set in Slice 3).
+
+- **A. Old-path-only case**: called `GET /hub-content/players` as
+  `coach.b` (Sam Sample) against `SLICE4-ACCESS` BEFORE any Occurrence
+  Staff row existed - the functional situation the old Changes-sheet
+  mechanism would have represented as a "cover" entry for Sam on this
+  session. Real result: Sam's response contained no `SLICE4-ACCESS` row
+  at all - **zero cover player access**, exactly as required; there is
+  no mechanism left that could have granted it.
+- **B. New-path case**: created one Occurrence Staff row (`Coach` = Sam
+  Sample, `Assignment Type = "Additional"`, `Attendance = "Planned"`,
+  `Planned Role Snapshot = "Coach"`) linked to the occurrence. Real
+  result: Sam's next call showed `SLICE4-ACCESS`'s player with
+  `tier: "permanent"` and Coach-level permissions (`can_edit_idp:
+  false`, `can_edit_feedback`/`can_edit_attendance: true`) -
+  **correct date-specific access** via Occurrence Staff alone.
+- **C. Replacement case**: same row switched to `Assignment Type =
+  "Cover"` with `Session Staff Source` pointing at Alex's own Session
+  Staff row. Real result, same call pair: Sam's response still showed
+  the player (`tier: "permanent"`); Alex's own real
+  `GET /hub-content/players` response no longer contained
+  `SLICE4-ACCESS`'s player at all - **replacement has correct access,
+  replaced coach does not, for that occurrence**. The Occurrence Staff
+  row was then deleted outright (not just reverted) and Alex's real
+  `/hub-content/players` response was called a third time: full access
+  returned immediately (`can_edit_idp: true`, Lead Coach), proving
+  Alex's underlying Session Staff record was never mutated by any step
+  of this scenario - **surrounding-date/state isolation holds**, on the
+  same live occurrence the replacement had just used.
+
+All exact throwaway record ids were captured at creation and deleted by
+those exact ids afterward (Session, Session Staff, Player, Player
+Session Link, Session Occurrence, Occurrence Staff) - re-confirmed via
+`contains "SLICE4"` searches across all six tables touched: zero
+results. TEST-A/TEST-B were never write targets this slice.
+
+### Regression
+
+- Real `GET /hub-content/players` as `coach.a`: TEST-A unchanged (2
+  rows, Archie + Bella, as every prior slice's baseline).
+- Real `GET /hub-content/players` as `coach.b`: TEST-B unchanged (4
+  rows - Archie former, Dylan, Archie permanent, Charlie - identical to
+  the Slice 3 baseline).
+- Real `GET /parent-hub/me` as `parent.a`: TEST-B's coach display still
+  `["Sam Sample","Alex Test"]`; TEST-A's `next_occurrence` still the
+  same rescheduled Wednesday 7 Oct entry - identical to the Slice 3
+  baseline, confirming Parent Hub (never redeployed this slice) is
+  unaffected.
+- Slice 2 effective-dating (Danny -> Tom -> Joe handover) and the Lead
+  Coach/Coach/Learning Coach security rule re-ran as part of the full
+  suite below and remain green - both are code paths this slice did not
+  touch.
+- Slice 3 Occurrence Staff resolution (additive/cover/precedence/
+  fail-closed) re-ran as part of the full suite and remains green - the
+  resolver functions themselves (`resolveOccurrenceStaffing()`,
+  `sessionStaffCapabilitiesForSession()`'s occurrence-context branch)
+  were not modified this slice, only the fallback branch AROUND them was
+  removed.
+- Full TEST suite (`node tests/run-all.js`), run both before deploying
+  (to confirm the rewritten test file was internally consistent) and
+  again after deployment: **50/50 test files passed** both times,
+  including `access-resolution.test.ts` (74/74) and
+  `session-coaches.test.ts` (22/22). Schedule-foundation tests (Slice
+  6-10) remain green in the same runs, untouched this slice.
+
+### Production isolation
+
+No production Airtable, production Supabase, frontend, Google Sheets or
+finance code/data was read or written at any point in this slice - every
+Airtable call targeted the TEST base `appQktredAuGa1X7e`, every Supabase
+call targeted the TEST project `dkqubldmfyeuudecxmvh`, `hub-content`
+retains its unchanged TEST DEPLOYMENT GUARD, and `parent-hub` was not
+touched or redeployed at all. The published Google Sheets themselves
+(Sessions and Changes tabs) were never read, written, or otherwise
+modified this slice - only this backend's own dependency on fetching the
+Changes tab for player access was removed from the code.
+
+**Coaches Slice 4 is ready for Slice 5 rates and historical coach-cost
+foundation.**
+
+Do not start Slice 5 automatically.
