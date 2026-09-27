@@ -4451,3 +4451,398 @@ Changes tab for player access was removed from the code.
 foundation.**
 
 Do not start Slice 5 automatically.
+
+## Coaches Foundation — Slice 5 (rates + historical coach-cost foundation) — 2026-09-27
+
+TEST-only. Production Airtable, production Supabase, frontend and Google
+Sheets untouched throughout. Backend/data-layer foundation only - no
+invoicing, payroll, payments, work-summary finalisation, cancellation/
+weather rules, or UI were built this slice, per the brief.
+
+### Schema re-read first, nothing invented
+
+Coach Rate Profiles (`tblNWi46U7igzvRHx`) and Coach Allocations
+(`tbl6iWEd6Asj0dFMe`), both mirrored schema-only in Slice 1, were
+re-read fresh via `get_table_schema`/`list_tables_for_base` before any
+code was written. Two facts from that re-read directly shaped the
+design below and are the reason several boundaries in this slice are
+deliberately narrow rather than "helpful":
+- **No precedence/priority field exists** anywhere on Coach Rate
+  Profiles - nothing like a "Preferred"/"Priority" flag a resolver
+  could use to break a tie between two overlapping Active rows of the
+  same Rate Type. This is the reason ambiguity is reported rather than
+  silently resolved (see "Ambiguity" below).
+- **Allocation ID is a plain `singleLineText`**, not a formula-derived
+  key the way Session Occurrences' `Occurrence Key` is (Slice 2). There
+  is no schema-level uniqueness constraint Coach Allocations could lean
+  on. This is the reason idempotency is an application-level check
+  against real Coach+Session Occurrence links, not a hidden convention
+  (see "Idempotency" below).
+
+### New Edge Function: `coach-allocations`
+
+A brand-new, isolated TEST Edge Function (project `dkqubldmfyeuudecxmvh`)
+- no existing file was modified this slice. Four files, following the
+same layering that worked well for Schedule/`session-occurrences`:
+- **`coach-rates.ts`** - pure resolution/calculation logic, no
+  Airtable/Supabase/network calls anywhere in the file. Directly
+  unit-testable against plain fixture data.
+- **`repository.ts`** - Airtable I/O only, portable (no `Deno.*`
+  anywhere, plain `fetch()` with an explicit `AirtableConfig`), so the
+  same file runs unchanged under Node (unit tests, mocked `fetch`) and
+  Deno (the real deployed function) - same convention as
+  `session-occurrences/repository.ts`.
+- **`orchestrator.ts`** - composition layer exposing
+  `createCoachAllocationForOccurrence(deps, input)`, the exact function
+  name the brief asked for. Sequences validation -> Coach/Occurrence
+  existence -> idempotency check -> rate resolution -> cost calculation
+  -> create, and turns the outcome into one discriminated union a
+  caller can switch on.
+- **`index.ts`** - thin Deno HTTP wrapper. Same TEST DEPLOYMENT GUARD
+  boilerplate as every other TEST function (refuses to boot against
+  either known production Airtable base id). Same
+  `resolveCaller()`/`requireManagement()` pattern as `hub-content`/
+  `parent-hub`/`session-occurrences` - every route below is
+  Management-only.
+
+Routes: `POST /resolve-rate` (resolve only, no write - lets rate
+resolution be exercised/verified independent of creating an
+allocation), `POST /allocate` (create, snapshotting the resolved
+profile), `GET /allocation?id=` (pure read-through, never re-reads
+Coach Rate Profiles).
+
+### Rate Profile resolution rule
+
+`rateProfileAppliesOnDate(row, dateIso)` - deliberately the SAME
+inclusive-date-range principle as Session Staff's
+`sessionStaffAppliesOnDate()` (Slice 2), not re-invented: `Active` is
+checked first and is absolute (`Active !== true` excludes the row
+regardless of dates); then `Effective From`/`Effective Until` decide
+whether an enabled row applies on THIS work date - **both inclusive**,
+both independently optional (blank `Effective From` = applies from the
+start of time; blank `Effective Until` = applies indefinitely; both
+blank = applies whenever Active). Fails closed on malformed data: a
+non-blank date string that isn't a valid `"YYYY-MM-DD"` excludes the
+row rather than being treated as absent.
+
+`resolveCoachRateProfile(coachId, dateIso, rateType, rateProfileRows)`
+filters a Coach's Rate Profile rows by exact Coach match, exact Rate
+Type match, and `rateProfileAppliesOnDate`, returning a discriminated
+union:
+- `{status:"resolved", profile}` - exactly one match.
+- `{status:"missing"}` - zero matches. Never a fallback guess.
+- `{status:"ambiguous", candidates}` - two or more matches. See
+  "Ambiguity" below.
+
+### Rate selection boundary (why Rate Type is a caller-supplied parameter)
+
+The brief explicitly asked whether Rate Type (Day/Evening/Camp/
+Additional-Plus) could be inferred automatically from the Session/
+Occurrence itself. Sessions' own `Category` field was checked and
+confirmed to be free `singleLineText`, not a controlled vocabulary -
+its real values (things like "Evening"/"Trials") are used for
+public-facing marketing categorisation, with no guarantee of aligning
+with Coach Rate Profiles' own Rate Type choice set. Treating it as a
+reliable source would be inventing an accounting rule the schema
+doesn't actually back, so this slice keeps Rate Type an **explicit
+caller-supplied parameter**: "Given Coach + work date + intended Rate
+Type, resolve the correct Rate Profile" is exactly what `/resolve-rate`
+and `/allocate` do, no more. No hidden time-of-day rule (e.g. "after
+5pm = evening") was built.
+
+### Ambiguity - fail-safe, never silently resolved
+
+Because no precedence field exists on the real schema (confirmed
+above), two or more Active, date-applicable Rate Profiles of the SAME
+Rate Type for the same Coach on the same date resolve to
+`{status:"ambiguous", candidates:[...]}` - both/all candidates
+returned, neither silently preferred. `/resolve-rate` reports this as
+HTTP 409; `/allocate` refuses to create anything and reports the same
+candidate list as HTTP 422. Unit test item 14.
+
+### Coach Allocation snapshot rule (the non-negotiable core principle)
+
+`buildAllocationCreatePayload()` (`repository.ts`) is the ONE place the
+snapshot is written: `Rate Profile` (link), `Rate Type Snapshot`, `Pay
+Unit Snapshot`, and `Rate Amount Snapshot` are copied from the
+RESOLVED Rate Profile's fields as **plain values, not live
+references**, at the exact moment the allocation is created. A later
+edit to that same Rate Profile row can never reach back and change an
+already-created allocation - nothing in this Edge Function ever
+re-reads a Rate Profile's live `Amount` to answer a question about an
+existing allocation (`fetchAllocationById()` reads only the Coach
+Allocations table itself). Proven in a unit test (item 10, by mutating
+the in-memory profile object AFTER the payload is built) and in real
+TEST HTTP verification below (the October Rate Profile's `Amount` was
+edited live, after allocation creation, and the allocation's own
+snapshot did not move).
+
+### Effective dating
+
+Rate resolution always uses the caller-supplied `workDateIso` (the
+occurrence/work date), never "today" - `resolveCoachRateProfile()` has
+no other notion of "now" anywhere in it. Verified live: a 28 Sep
+occurrence resolved the £25 profile, a 3 Oct occurrence resolved the
+£30 profile, from the same two-row Rate Profile set, both boundaries
+inclusive (unit test items 3-9; real TEST verification below).
+
+### Pay Unit interpretation
+
+Documented, not enforced as a hard rule (per the brief: "do not
+overcomplicate the model" / "stop and report rather than invent
+accounting rules"). `PAY_UNIT_INTERPRETATION` in `coach-rates.ts`:
+- **Per Hour** - Paid Units represents the number of hours worked.
+- **Per Session** - Paid Units is normally 1 (one session's worth of
+  work).
+- **Per Day** - Paid Units is normally 1 (one day's worth of work).
+
+`calculateStandardCost(rateAmount, paidUnits)` is always
+`roundCurrency(rateAmount * paidUnits)` regardless of Pay Unit - Pay
+Unit changes what a human is expected to enter for Paid Units, not the
+arithmetic. This slice does NOT hard-enforce "Paid Units must be 1" for
+Per Session/Per Day, since Management may legitimately need e.g. two
+sessions covered in one allocation; enforcing that would itself be
+inventing an accounting policy the brief said to avoid. Unit test item
+11.
+
+### Override behaviour
+
+`resolveFinalCost({rateAmount, paidUnits, costOverride})` returns
+`{standardCost, finalCoachCost, overridden}`. `standardCost` is always
+the normal calculation, kept visible even when an override applies
+(there is no dedicated schema field for it, so it is surfaced in the
+API response, not persisted separately). When `costOverride` is
+non-null, `finalCoachCost` is the override (rounded); otherwise it
+equals `standardCost`. Critically, an override **never touches** the
+Rate Profile snapshot fields - `Rate Profile`/`Rate Type Snapshot`/
+`Pay Unit Snapshot`/`Rate Amount Snapshot` stay exactly what the
+resolved profile gave; only `Final Coach Cost` changes, and `Cost
+Override`/`Override Reason` are written alongside it. The Coach's
+underlying Rate Profile row is never edited because of a one-off deal.
+`validateCreateAllocationInput()` enforces that a non-null
+`costOverride` REQUIRES a non-blank `overrideReason`, failing closed
+(a validation-error string, HTTP 400) rather than silently accepting an
+unexplained override. Unit test items 12-13; real TEST verification
+below.
+
+### Idempotency / uniqueness approach
+
+Because no schema-level uniqueness key exists on Coach Allocations
+(confirmed above - `Allocation ID` is plain text, not
+formula-derived), the model adopted is **application-level**: at most
+one Coach Allocation per (Coach, Session Occurrence) pair.
+`fetchAllocationsForCoachAndOccurrence()` queries the real `Coach`/
+`Session Occurrence` links already on the table before any create; if
+one is found, `createCoachAllocationForOccurrence()` returns
+`{status:"existing", recordId}` instead of creating a duplicate - no
+write happens at all on the second call. This is an application-level
+check against data the schema genuinely provides, not a hidden
+convention written into some other field, and is documented here as
+exactly that per the brief's "stop and report rather than invent"
+instruction. A genuine future need for more than one allocation per
+(Coach, Occurrence) pair (e.g. split cost across two Rate Types for one
+occurrence) is new product design, not something this function silently
+allows. Unit test item 16 (mocked-fetch orchestration test, confirming
+only one real Airtable create call happens across two identical calls);
+reconfirmed live below against the real deployed function.
+
+### Staffing-vs-financial-allocation boundary
+
+`createCoachAllocationForOccurrence()` is never called automatically
+from any Session Staff/Occurrence Staff write path anywhere in this
+codebase - creating a paid allocation for a piece of work is always an
+explicit, separate call. "Who is operationally assigned" (staffing,
+Slices 2-3) and "the financial record for that work" (allocation, this
+slice) are related but distinct facts; Slice 5 exposes
+`createCoachAllocationForOccurrence(...)` as a clean function but does
+not wire it to any staffing write path. If an automatic trigger (e.g.
+"creating an Occurrence Staff row of a certain Assignment Type also
+creates a Coach Allocation") turns out to be needed, that is a future
+integration point requiring its own product decision, not something
+this slice inferred.
+
+### Future cancellation/reschedule financial outcome - documented, not implemented
+
+Recorded here as the already-agreed future rule, per the brief, with no
+code built against it this slice: when an occurrence is cancelled or
+rescheduled, Management should eventually confirm - is the coach being
+paid, is the venue being paid, is credit being added to the parent?
+Coach/venue outcomes may ultimately be Paid/Unpaid/Partial with a final
+amount and optional reason. For a reschedule specifically: the original
+occurrence retains its own financial outcome; the replacement occurrence
+has its own costs entirely separately (no cost/outcome is ever
+transferred or merged between the two). This belongs to later
+Coach/Finance logic, not this slice.
+
+### Unresolved - deferred to Slice 6
+
+Explicitly NOT implemented this slice, per the brief: the 5-hour
+cancellation rule and the 10-minute weather rule. Both remain unresolved
+product rules. This slice only covers the normal allocation cost case
+(an occurrence that happened, staffed, and is being paid for as
+planned).
+
+### Security
+
+Every `coach-allocations` route is Management-only, using the identical
+`resolveCaller()`/role-check convention as every other TEST function's
+Management routes - resolves the Supabase Auth JWT to a `profiles` row
+and requires `role === "management" && active === true`, else 401/403.
+No separate auth path was invented; the platform's own `verify_jwt` stays
+required. Verified live below with both a Management JWT (succeeds) and
+a Coach JWT (403 "Management access required").
+
+### Focused tests
+
+All 16 required items, in `tests/support/coach-allocations.test.ts`
+(mirrors of `coach-rates.ts`/`repository.ts`/`orchestrator.ts` kept by
+hand in `tests/support/` under domain-prefixed names, same convention
+as `session-repository.ts`/`session-orchestrator.ts`):
+1. One Active, applicable, matching-type Rate Profile resolves.
+2. `Active = false` is ignored (fails closed to missing).
+3. A date one day before `Effective From` is excluded.
+4. A date one day after `Effective Until` is excluded.
+5. Exactly on `Effective From` resolves (inclusive).
+6. Exactly on `Effective Until` resolves (inclusive).
+7. Blank `Effective From` applies far in the past (open-ended).
+8. Blank `Effective Until` applies far in the future (open-ended).
+9. Rate transition: 28 Sep resolves £25, 3 Oct resolves £30, from the
+   same two-row set (9a/9b).
+10. A later edit to the same Rate Profile object does not alter an
+    already-built allocation payload's snapshot/cost.
+11. Normal Final Coach Cost = Rate Amount Snapshot x Paid Units.
+12. Cost Override changes Final Coach Cost but preserves the rate
+    snapshot (12a-d: override applied, standard cost still visible,
+    Rate Profile/Rate Amount Snapshot unchanged, Final Coach Cost is
+    the override).
+13. Override Reason is written through (13a) and required - a blank
+    reason with a Cost Override fails validation (13b).
+14. Two overlapping Active, same-Rate-Type profiles -> ambiguous,
+    neither silently chosen.
+15. No applicable Rate Profile for the Coach (15), or none of the
+    requested Rate Type (15b) -> fails safely as missing.
+16. Duplicate allocation attempt: first call creates (16a), a second
+    identical call returns the existing record instead (16b), and only
+    ONE real Airtable create call is ever made across both calls
+    (16c) - proven via a mocked-`fetch` orchestration test matching
+    `daily-top-up.test.ts`'s established convention.
+
+Plus one sanity check that `KNOWN_RATE_TYPES` matches the real TEST
+schema's Rate Type choices exactly (Day/Evening/Camp/Additional Plus).
+`coach-allocations.test.ts`: **25/25** assertions passing.
+
+### Deploy
+
+`coach-allocations` v1 (project `dkqubldmfyeuudecxmvh`) - all four files
+(`index.ts`, `coach-rates.ts`, `orchestrator.ts`, `repository.ts`), a
+brand-new function, first deploy. Deployed content downloaded via
+`get_edge_function` and `diff`'d byte-for-byte against the local repo
+files after deployment; confirmed **identical** for all four files
+before any real TEST HTTP verification was trusted, per the discipline
+established after Slice 3's "PLACEHOLDER" incident.
+
+### Real TEST verification - all required scenarios, real HTTP via `pg_net`
+
+One throwaway Coach (`SLICE5-TEST Coach X`, `recRuxD2LJchLHMGo`,
+deleted), one throwaway Session (`SLICE5-TEST-SESSION`,
+`recHhIVw85UEK4MU5`, deleted), two throwaway Coach Rate Profiles
+(Evening/Per Hour, exactly the brief's own worked example: £25 through
+30 Sep - `recaAnB3UMfaweYS6`, deleted - and £30 from 1 Oct -
+`recC1RffzMfyRWAFy`, deleted), and three throwaway Session Occurrences
+under that Session (28 Sep `rec57wnWQZngCEAWP`, 3 Oct
+`recb1HsDM9jO95BnC`, 5 Oct `recZCZVd7T4iYj1cX`, all deleted). `manager@
+test.invalid` re-authenticated for a fresh Management JWT via `pg_net`
+(this sandbox cannot reach `supabase.co` directly; the established
+password-reset-via-`crypt()` pattern from Slices 3/4 was reused).
+
+- **Rate resolution**: `POST /resolve-rate` for the Coach on 28 Sep,
+  Rate Type Evening -> real result `{"status":"resolved",
+  "rateProfileRecordId":"recaAnB3UMfaweYS6","amount":25,"payUnit":"Per
+  Hour"}` - correctly resolved the September profile, not the October
+  one.
+- **September allocation**: `POST /allocate` (28 Sep occurrence, Paid
+  Units 2) -> real result `{"status":"created",
+  "recordId":"recB0m2uwhuEHwCiK","rateProfileRecordId":
+  "recaAnB3UMfaweYS6","rateAmountSnapshot":25,"standardCost":50,
+  "finalCoachCost":50,"overridden":false}` - **snapshots £25**, exactly
+  the brief's required proof.
+- **October allocation**: `POST /allocate` (3 Oct occurrence, Paid
+  Units 2) -> real result `{"status":"created",
+  "recordId":"recjalpeV7IaFRwMk","rateProfileRecordId":
+  "recC1RffzMfyRWAFy","rateAmountSnapshot":30,"standardCost":60,
+  "finalCoachCost":60,"overridden":false}` - **snapshots £30**, the
+  other half of the required proof, correctly chosen by occurrence date
+  from the same two-row Rate Profile set used above.
+- **Historical snapshot immutability, proven live**: the October Rate
+  Profile's `Amount` was then edited directly in Airtable, £30 -> £35
+  (`recC1RffzMfyRWAFy`). `GET /allocation?id=recjalpeV7IaFRwMk` was
+  called again immediately after: real result still showed `"Rate
+  Amount Snapshot":30` and `"Final Coach Cost":60` - **unchanged**,
+  proving the allocation never re-derives from the Coach's current Rate
+  Profile, exactly the brief's non-negotiable core principle, proven
+  against the real deployed function and real Airtable data, not just
+  the unit test.
+- **Override scenario**: `POST /allocate` for the 5 Oct occurrence
+  (Paid Units 1, `costOverride: 40`, `overrideReason: "Covering as a
+  favour - agreed flat fee"`) against the now-£35 October profile ->
+  real result `{"status":"created","recordId":"recUHoSvFk0BhJ1AJ",
+  "rateProfileRecordId":"recC1RffzMfyRWAFy","rateAmountSnapshot":35,
+  "standardCost":35,"finalCoachCost":40,"overridden":true}`. A
+  follow-up `GET /allocation?id=recUHoSvFk0BhJ1AJ` confirmed the full
+  stored record: `Rate Profile` still linked to the October profile,
+  `Rate Type Snapshot: "Evening"`, `Pay Unit Snapshot: "Per Hour"`,
+  `Rate Amount Snapshot: 35` (the resolved profile's value, untouched by
+  the override), `Cost Override: 40`, `Override Reason: "Covering as a
+  favour - agreed flat fee"` (persisted), `Final Coach Cost: 40` -
+  **normal calculated cost preserved, override applied to Final Coach
+  Cost only, rate snapshot and reason both correct**.
+- **Idempotency, proven live**: `POST /allocate` was called a second
+  time with the exact same September Coach+Occurrence pair. Real result:
+  `{"status":"existing","recordId":"recB0m2uwhuEHwCiK"}` - the SAME
+  record id as the first call, confirming no duplicate payable work was
+  created by a repeated call against the real deployed function.
+- **Security, proven live**: the same `/allocate` call that succeeded as
+  Management was repeated with a fresh `coach.a@test.invalid` JWT (same
+  password-reset-via-`crypt()` pattern). Real result: HTTP 403
+  `{"error":"Management access required"}` - a Coach cannot create or
+  alter a Coach Allocation.
+
+All exact throwaway record ids were captured at creation and deleted by
+those exact ids afterward (Coach Allocations first, then Session
+Occurrences, then Coach Rate Profiles, then the Session, then the
+Coach) - reconfirmed via a `contains "SLICE5"` search across the Coaches
+and Sessions tables: zero results. TEST-A/TEST-B were never write
+targets this slice; no Session Occurrence or Coach Allocation outside
+the throwaway set above was touched.
+
+### Regression
+
+Full TEST suite (`node tests/run-all.js`), run after deploying and
+completing real TEST verification, includes `coach-allocations.test.ts`
+(25/25, new this slice) alongside every prior slice's tests -
+`access-resolution.test.ts` (Slices 2-4 effective dating/Occurrence
+Staff/cover-tier retirement), `session-coaches.test.ts` (Parent Hub),
+and the full Schedule-foundation suite (Slices 6-10). Slice 5 added one
+brand-new, entirely isolated Edge Function and its own test mirrors -
+no existing file (`hub-content`, `parent-hub`, `session-occurrences`,
+or any of their test copies) was modified, so no other slice's staffing
+or access behaviour could have changed as a side effect. Existing
+staffing/access behaviour is unaffected by the introduction of
+Finance/cost data, exactly as the brief required.
+
+### Production isolation
+
+No production Airtable, production Supabase, frontend, Google Sheets or
+payment/invoice integration was read, written, or otherwise touched at
+any point in this slice - every Airtable call targeted the TEST base
+`appQktredAuGa1X7e`, every Supabase call targeted the TEST project
+`dkqubldmfyeuudecxmvh`, and `coach-allocations` carries the same TEST
+DEPLOYMENT GUARD as every other TEST function (refuses to boot against
+either known production Airtable base id). This is only the TEST
+coach-cost foundation - no invoicing, payroll, or payment system was
+integrated.
+
+**Coaches Slice 5 is ready for Slice 6 cancellation/weather pay-rule
+decisions and implementation.**
+
+Do not start Slice 6 automatically.
