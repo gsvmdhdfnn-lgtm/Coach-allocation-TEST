@@ -6935,3 +6935,494 @@ denied`** (anon 401, Coach 403, Parent 403):
 - **Notifications:** no emails or notifications sent.
 
 **Post-Slice-9 Supabase security hardening is complete and ready for Coaches Slice 10.**
+
+## Coaches Foundation — Slice 10 (coach work summaries) — 2026-09-27
+
+A Work Summary tells a self-employed coach: "this is the work the Hub
+believes you completed in this period, and the amount attached to each
+item". **It is not an invoice, a payslip or a payment.** Nothing in this
+slice pays anyone, creates an invoice, talks to Stripe or Xero, exports
+to banking, or sends email/notifications. Every serialised receipt
+carries that disclaimer.
+
+New TEST Edge Function: `supabase/functions-test/coach-work-summaries/`
+(v1, byte-verified), with these layers:
+- `work-summaries.ts`: pure rules.
+- `repository.ts`: Airtable I/O with 429 retry.
+- `lock-client.ts`: the per-coach lock.
+- `orchestrator.ts`: composition.
+- `index.ts`: auth, routing and the TEST deployment guard.
+
+### Schema: production re-read first, mirrored into TEST
+
+Production (`apprptFotQuVL1mhs`) was read schema-only. It already has all
+three tables, and none existed in TEST. They were created in TEST
+(`appQktredAuGa1X7e`) field-for-field, with names, types, order, formats
+and singleSelect choices identical to production. This was verified
+programmatically: the production and TEST field lists compare
+**IDENTICAL** for all three tables.
+
+- **Coach Work Summaries** (`tbltizyDmpwsRWd27`):
+  - Work Summary ID, Coach, Period Start, Period End, Summary Date;
+  - **Status** (Not ready / Needs review / Finalised / Queried);
+  - Grand Total (£);
+  - Query / Reopen Note, Queried At;
+  - Finalised By User ID / Name Snapshot / At;
+  - Reopened By User ID / Name Snapshot / At;
+  - Active, Created, Last Updated;
+  - links to Work Summary Lines and Work Summary History.
+- **Work Summary Lines** (`tblf2LMu5FwK8mSs8`): Work Summary Line ID,
+  Work Summary, Coach Allocation, Group Label Snapshot, Work Date
+  Snapshot, Session Name Snapshot, Rate Type Snapshot, Paid Units
+  Snapshot, **Rate Amount Snapshot**, **Final Cost Snapshot**, Group Sort
+  Order, Line Sort Order, Created.
+- **Work Summary History** (`tblMzGIZCaxjnbsM7`): Work Summary History
+  ID, Work Summary, **Event Type** (Needs Review / Finalised / Queried /
+  Reopened / Re-finalised), Reason / Note, Changed By User ID, Changed By
+  Name Snapshot, Changed At, Created.
+
+Inverse links were renamed to their production names:
+- Coaches → `Coach Work Summaries`;
+- Coach Allocations → `Work Summary Lines`.
+
+No existing TEST field was changed. There is no parallel system: only
+the production structure is used, with the production Status and Event
+Type choices exactly.
+
+### Ownership model
+
+| Record | Role |
+|---|---|
+| Coach Allocation | The **financial truth** (Final Coach Cost, Slices 5/6). This function never writes to it. |
+| Coach Work Summary | A period grouping of one Coach's allocations. |
+| Work Summary Line | A **frozen copy** of one allocation, written at finalisation. |
+| Work Summary History | The append-only workflow audit trail. |
+
+### Period rule
+
+- Period Start/End are explicit, inclusive `YYYY-MM-DD` dates. Any range
+  up to 366 days is allowed; calendar months are never assumed. A 3-day
+  period is unit-tested.
+- The **work date is the Session Occurrence `Date`**, never the
+  allocation's Created timestamp (unit test E7).
+- Both boundaries are inclusive.
+
+### Eligibility (derived from the real schema, not guessed)
+
+Cost Status choices are Draft / Confirmed / Exported. The production
+description reads: "Draft can change. Confirmed snapshots the applicable
+rate/cost." Occurrence Status choices are Scheduled / Completed /
+Cancelled / Postponed. Slice 6's Coach Outcome choices are Paid /
+Partial / Unpaid.
+
+An allocation is **eligible** when all of these hold:
+- it links this Coach, and only this Coach;
+- its occurrence Date is inside the period;
+- Cost Status is Confirmed or Exported;
+- Final Coach Cost is a finite number ≥ 0;
+- if the occurrence is Cancelled or Postponed, a Slice 6 Coach Outcome
+  has been decided;
+- otherwise, the work date has passed (or the occurrence is Completed).
+
+Anything else **in the period** is **pending**. It is listed with a
+reason, never silently dropped. Pending items set the summary to
+`Not ready` and block finalisation. The reasons are:
+- `cost_not_confirmed`
+- `invalid_final_cost`
+- `coach_outcome_undecided`
+- `not_yet_worked`
+- `multiple_coaches`
+
+An allocation for this coach with no dated occurrence cannot be placed
+in any period. It is surfaced to Management as `undatedAllocations` and
+does not block.
+
+A period that has not ended (`Period End >= today`, Europe/London) is
+`Not ready` and cannot be finalised.
+
+### Cancellation compatibility (Slice 6)
+
+The line uses the allocation's Final Coach Cost, which Slice 6 already
+sets.
+
+| Outcome | Line |
+|---|---|
+| Paid | £30 (full cost). |
+| Partial | The agreed amount, e.g. £15. The rate snapshot stays £30. |
+| **Unpaid** | **Included as a visible £0 line.** This is the documented representation: the coach can see the cancelled session was accounted for. |
+
+The frozen description says why. For example: `U10 Tuesday - Cancelled
+(Coach outcome: Unpaid)`.
+
+A cancelled or postponed occurrence with **no** Coach Outcome is never
+paid by default. It is `coach_outcome_undecided` (pending), which was
+proven live.
+
+### Override compatibility (Slice 5)
+
+A line copies the allocation's own `Rate Amount Snapshot` and
+`Final Coach Cost`. For a standard £30 rate with a £40 override, the line
+shows `Rate Amount Snapshot = 30` and `Final Cost Snapshot = 40`. This
+was proven live, with the allocation created through the real Slice 5
+`/allocate` route.
+
+### Snapshot and finalisation
+
+- An **open** summary (Not ready / Needs review, or Queried before ever
+  being finalised) has **no line records**. Reads return a computed
+  `preview` of lines. `Grand Total` on an open summary is that preview
+  total, refreshed by prepare/refresh.
+- **Finalise (Management only)**, inside the coach's lock, re-reads
+  everything and then:
+  1. validates the summary is active, the coach exists, the period is
+     valid and has ended, and nothing is pending;
+  2. gathers the eligible allocations;
+  3. writes one line per allocation using the exact production field
+     names;
+  4. sets `Grand Total` to the sum, in whole pence, of the **stored
+     lines'** Final Cost Snapshots;
+  5. sets Status `Finalised`, `Finalised By User ID / Name Snapshot /
+     At` and `Summary Date`;
+  6. appends a `Finalised` History event (or `Re-finalised` if it was
+     finalised before).
+- A **finalised** summary is a historical snapshot:
+  - reads return the stored lines verbatim;
+  - a later Rate Profile or allocation change does not alter it (proven
+    live: Rate Profile £30→£50 and allocation £30→£35 left the frozen
+    line at £30 and the Grand Total at £175);
+  - Management's read shows the difference as `management.drift`, so it
+    is never *silently* stale;
+  - refresh returns 409 `summary_finalised`;
+  - a repeated finalise returns `already_finalised` with zero writes.
+
+### Grand Total
+
+`Grand Total` = Σ `Final Cost Snapshot` over the summary's lines,
+added in whole pence. It is recomputed only at (re-)finalisation.
+
+### Query flow (coach)
+
+- A coach may query **their own** summary when it is `Needs review` or
+  `Finalised`, with a required note (≤ 2000 chars).
+- A query writes only `Status = Queried`, `Query / Reopen Note` and
+  `Queried At`, plus a `Queried` History event with the coach as the
+  changer. No value, rate or line changes.
+- A queried *finalised* summary stays frozen.
+- A second open query returns 409. Another coach's summary returns 404.
+  Management cannot raise a coach query (403).
+
+Management resolves a query by either:
+- **re-finalising**, which records `Resolves query: ...` in the event
+  note; or
+- **reopening**.
+
+### Reopen and re-finalise (Management)
+
+**Reopen** is allowed only on a frozen summary. It:
+- records `Reopened By User ID / Name Snapshot / At`;
+- puts the reason in `Query / Reopen Note`;
+- sets Status back to `Needs review` (or `Not ready` if anything is now
+  pending);
+- appends a `Reopened` event whose note preserves the previous
+  finalisation, e.g. "Previous finalisation: Grand Total £175.00 across
+  7 line(s), finalised … by …".
+
+`Finalised By/At` and the frozen line records are **not erased**.
+
+**Re-finalise** reconciles lines per allocation. It is the smallest
+auditable interpretation, because the schema has no line versioning
+field:
+- an unchanged line is left alone;
+- a changed line is **the same record, updated in place**;
+- a new eligible allocation gets a new line;
+- a line whose allocation is no longer eligible is **unlinked from the
+  summary, never deleted** (the record keeps its allocation link and a
+  Line ID naming the summary).
+
+The `Re-finalised` event note lists every change with before and after
+values (e.g. `final £30.00 -> £35.00`), so History holds the full audit
+trail even though lines are updated in place.
+
+### History behaviour
+
+History is append-only; no History row is ever updated or deleted.
+Events are written as follows:
+
+| Event | When |
+|---|---|
+| `Needs Review` | The first time a summary reaches Needs review (prepare or refresh). A summary created as `Not ready` has no event, because production has no Event Type for it. |
+| `Finalised` | Finalisation. |
+| `Queried` | Coach query. |
+| `Reopened` | Management reopen. |
+| `Re-finalised` | Finalisation after an earlier finalisation. |
+
+`Work Summary History ID` is deterministic (`WSH-<Work Summary
+ID>-<Event>-<Changed At>`). A retried write finds the row it already made
+instead of appending a duplicate. A finalise retried after a crash
+between the summary write and the History write repairs the missing row
+once.
+
+### Idempotency and duplicates
+
+There is no schema-level uniqueness key; `Work Summary ID` is plain
+text. The smallest robust approach is:
+- **One active summary per coach and exact period.** Prepare for the
+  same coach and period returns the existing summary (`reused`, and
+  refreshes it if open).
+- **Overlap guard.** An active summary with an *overlapping* but
+  different period is refused (409 `overlapping_summary`), so the same
+  work can never be summarised twice.
+- **One line per allocation per summary**, enforced by `reconcileLines`.
+  A retried or partial finalisation reuses existing lines.
+- **Per-coach lock.** All writes run under a new per-coach lock, re-read
+  after acquiring it. The lock is the `work_summary_locks` table plus the
+  `acquire_work_summary_lock` / `release_work_summary_lock` RPCs
+  (migration `slice10_work_summary_locks`). It uses the same
+  token-ownership and 5-minute self-heal pattern as
+  `cover_date_locks`, with 150 × 100ms retry.
+
+Unit tests prove:
+- 3 concurrent prepares → 1 summary;
+- negative control: with no lock → 2 summaries;
+- 2 concurrent finalisations → 1 set of lines and 1 Finalised event;
+- finalise retried after failures at two different points → no
+  duplicate lines.
+
+### Security model
+
+| Caller | Access |
+|---|---|
+| Coach (active, linked profile) | Own summaries only: list, read, query. Lines without allocation or record ids; no Management block. Another coach's summary returns **404** (existence is not leaked). |
+| Management | Everything: list all, read (with drift, stored lines, undated allocations and user ids), prepare, refresh, finalise, reopen. |
+| Parent / inactive / unlinked | **403** on every route. |
+| anon | No JWT, so the gateway rejects it (`verify_jwt = true`). |
+
+Identity always comes from `profiles`, never from the request body.
+
+The new lock table and RPCs have privileges **explicitly verified**, not
+left to Supabase defaults:
+- RLS is on, with no policies;
+- all rights are revoked from public/anon/authenticated;
+- service_role only.
+
+Over real HTTP, anon and a coach JWT calling
+`rpc/acquire_work_summary_lock` or `rpc/release_work_summary_lock`, or
+selecting from or inserting into `work_summary_locks`, all got
+`42501 permission denied` (401/403).
+
+The post-Slice-9 hardening was re-verified: all 9 lock/cron RPCs and 5
+lock/secret tables are service_role-only with RLS on.
+
+### Receipt format (serialised only, no PDF or UI)
+
+`summary.receipt` contains:
+- `documentType: "Coach Work Summary"`;
+- the not-an-invoice/payslip/payment `disclaimer`;
+- `coachName`, `period`, `status`, `frozen`;
+- `groups[]` (by Group Label), each with `items[]` of `{date,
+  description, rateType, paidUnits, rateAmount, finalAmount}` and a
+  `subtotal`;
+- `grandTotal`.
+
+### Routes (`/functions/v1/coach-work-summaries/...`)
+
+| Route | Who | Purpose |
+|---|---|---|
+| `GET summaries[?coachId=]` | Coach (own) / Management | List summaries. |
+| `GET summary?summaryId=` | Coach (own) / Management | Summary, lines (frozen or preview), pending, history, receipt. |
+| `POST prepare {coachId, periodStart, periodEnd}` | Management | Create (201) or reuse (200). |
+| `POST refresh {summaryId}` | Management | Recompute an open summary. |
+| `POST query {summaryId, note}` | Coach | Query own summary. |
+| `POST finalise {summaryId}` | Management | Freeze lines and Grand Total. |
+| `POST reopen {summaryId, reason}` | Management | Reopen a finalised summary. |
+
+### Focused tests
+
+`tests/support/coach-work-summaries.test.ts` (shim
+`tests/e2e/coachworksummariestest.js`) has **62/62** checks. They run the
+real orchestrator against an in-memory Airtable plus an in-memory lock.
+The brief's 27 required items are numbered 1-27:
+
+1. create for coach + period
+2. only that coach
+3. out-of-period excluded
+4. Start inclusive
+5. End inclusive
+6. correct lines
+7. Grand Total = lines
+8. Rate Profile change doesn't alter the finalised summary
+9. allocation change doesn't silently alter it (drift)
+10. £40 override
+11. Paid £30
+12. Partial £15
+13. Unpaid £0 line
+14. coach reads own
+15. coach can't read another's
+16. parent denied
+17. coach queries own
+18. coach can't finalise
+19. Management finalises
+20. Finalised By/At
+21. Queried event
+22. Finalised event
+23. Reopened audit
+24. re-finalise preserves history
+25. duplicate summary reused / overlap refused / concurrency
+26. duplicate lines prevented (retry, crash, concurrency, pure
+    reconcile)
+27. stable under repeated reads and retries
+
+The remaining checks cover:
+- Draft pending;
+- undecided cancellation pending;
+- period not ended;
+- non-month periods;
+- period validation;
+- work date vs created time;
+- undated allocations;
+- receipt shape;
+- refresh of a finalised summary refused;
+- query on Needs review resolved by finalise;
+- query preconditions;
+- exact production choices;
+- 429 retry;
+- no deletes and no allocation writes;
+- drift checks (mirrors byte-equal the canonical files, lock RPC names,
+  production guard, no payment/invoice/Stripe/Xero/email code).
+
+A strict `tsc` typecheck of the modules is clean. It caught a real bug
+(reopen read `.reason` instead of `.note`) before deploy.
+
+### Deploy
+
+`coach-work-summaries` v1 on TEST project `dkqubldmfyeuudecxmvh`, with
+`verify_jwt = true`. All 5 deployed files are byte-identical to the
+repo (checked with `get_edge_function`).
+
+### Real TEST verification (real HTTP via `pg_net`, throwaway data)
+
+**Throwaway data**, created and then deleted by exact record ID:
+- 1 Draft Session with Programme `S10 Throwaway Programme`;
+- 9 June-2026 occurrences: 31 May, 1 / 10 / 12 / 13 / 14 / 20 / 30
+  June, and 1 July;
+- 2 Rate Profiles (coach A £30, coach B £25);
+- 10 allocations created through the **real Slice 5 `/allocate`**, with
+  Cost Status Confirmed and one £40 override;
+- 3 occurrences set to Cancelled, with outcomes recorded through the
+  **real Slice 6 `/coach-outcome`** (Paid, Partial £15, Unpaid).
+
+Accounts: Management `manager@test.invalid`, coach A
+`coach.a@test.invalid` (Alex Test), coach B `coach.b@test.invalid`,
+parent `parent.a@test.invalid`. No profile was repointed.
+
+- **A - ordinary month.**
+  - Before the outcomes, prepare for coach A (June) returned 201 `Not
+    ready`, with 3 × `coach_outcome_undecided` and 4 eligible lines
+    (preview £130).
+  - After the outcomes, refresh returned `Needs review` with 7 lines:
+    1 Jun £30, 10 Jun £30, 12 Jun Paid £30, 13 Jun Partial £15, 14 Jun
+    Unpaid £0, 20 Jun override £40, 30 Jun £30. Total **£175**.
+  - 31 May, 1 July and coach B's 10 June allocation were excluded, and
+    both boundaries were included.
+  - Finalise returned 200 `finalised`. Airtable holds exactly 7 line
+    rows with the production snapshot fields, Grand Total 175, Finalised
+    By `Morgan Manager` / user id / At, and History `[Needs Review,
+    Finalised]`.
+- **B - historical stability.**
+  - After finalising, the Rate Profile was changed £30→£50 and the 10
+    June allocation £30→£35.
+  - Two Management reads returned **byte-identical** responses, with the
+    frozen 10 June line still £30, Grand Total £175 and receipt total
+    £175.
+  - `drift` = `[{changed, 10 Jun, frozen 30, current 35}]`.
+- **C - Paid / Partial / Unpaid.** Shown in A: £30 / £15 / a visible £0
+  line, each described as `- Cancelled (Coach outcome: …)`.
+- **D - £40 override.** The 20 June line has Rate Amount Snapshot 30
+  and Final Cost Snapshot 40.
+- **E - coach query.**
+  - Coach A's query returned 200: Status `Queried`, note and Queried At
+    set, still frozen, Grand Total unchanged, and a `Queried` History row
+    by `Alex Test`.
+  - Coach B querying A's summary returned 404. Management's query
+    returned 403.
+- **F - reopen / re-finalise.**
+  - A coach reopen returned 403.
+  - Management reopen returned 200 `Needs review`. Reopened By/At were
+    set; Finalised At (the original) and the 7 stored lines were kept.
+    The preview shows 10 June at £35. The Reopened note preserved
+    "Previous finalisation: Grand Total £175.00 across 7 line(s)…".
+  - Re-finalise returned 200 `Re-finalised` with `lineChanges {created
+    0, updated 1, unchanged 6, detached 0}`. The **same** line record
+    (`rectTEyNyN3YlWpkc`) was updated to £35, there are still 7 lines,
+    and Grand Total is **£180**.
+  - History has 5 rows: `[Needs Review, Finalised, Queried, Reopened,
+    Re-finalised]`. The note records `final £30.00 -> £35.00`.
+- **Idempotency and concurrency (live).**
+  - Two concurrent duplicate prepares both returned `reused` (same
+    summary id); an overlapping period (15 Jun–14 Jul) returned 409
+    `overlapping_summary`.
+  - Two concurrent Management finalisations produced one `finalised`
+    (7 lines created) and one `already_finalised`, and exactly 7 line
+    rows.
+  - The lock table was empty afterwards.
+- **G - permissions.**
+
+  | Request | Result |
+  |---|---|
+  | Coach A reads own | 200, no allocation ids, no Management block |
+  | Coach B reads A's | 404 |
+  | Coach B list | 0 rows |
+  | Coach A list | 1 row |
+  | Parent read / list / finalise | 403 |
+  | Coach finalise | 403 |
+  | anon / coach → lock RPCs and table | 42501 |
+
+**Cleanup.** Every throwaway record was deleted by exact ID:
+- 5 History rows, 7 Lines and 1 Summary;
+- 10 Allocations, 9 Occurrences, 2 Rate Profiles and 1 Session.
+
+Coach Allocations and Rate Profiles are back to empty, as they were
+before. No Occurrence Financial Outcomes row was created.
+
+### Regression
+
+`node tests/run-all.js`: **56/56 test files passed.**
+
+- **Slice 10:** `coachworksummariestest.js` 62/62 (new).
+- **Slice 9:** `coachcovertest.js` 88/88.
+- **Slice 8:** `coachcompliancetest.js` 87/87.
+- **Slice 7:** `coachavailabilitytest.js` 85/85.
+- **Slice 6:** `occurrencefinancialoutcomestest.js` 37/37.
+- **Slice 5:** `coachallocationstest.js` 25/25.
+- **Slices 2-4:** `accessresolutiontest.js` 74/74,
+  `sessionaccesstest.js` 28/28.
+- **Post-Slice-9 hardening:** re-verified live (above).
+- **Parent Hub:** `parenthubtest.js` 44/44, `parenthubshelltest.js`
+  65/65, `sessioncoachestest.js` 22/22.
+- **Schedule:** `sessiongeneratortest.js` 37/37,
+  `sessionrepositorytest.js` 19/19, `propagationtest.js` 43/43,
+  `nextoccurrencetest.js` 19/19, `dailytopuptest.js` 7/7.
+
+Slice 10 added:
+- one new isolated Edge Function;
+- three TEST Airtable tables (plus two renamed inverse link fields);
+- one Supabase lock table/RPC pair;
+- tests.
+
+No existing function, field or test was modified. No existing function
+was redeployed.
+
+### Production isolation
+
+- **Production Airtable:** schema read only. No record read, nothing
+  written.
+- **Production Supabase:** untouched.
+- **Frontend:** untouched.
+- **Google Sheets:** untouched.
+- **Stripe / Xero / banking:** untouched. No invoices and no payments.
+- **Notifications:** no emails or notifications sent.
+
+All writes went to TEST base `appQktredAuGa1X7e` / TEST project
+`dkqubldmfyeuudecxmvh`.
+
+**Coaches Slice 10 work summaries are ready for the final Coaches foundation regression and handoff.**
