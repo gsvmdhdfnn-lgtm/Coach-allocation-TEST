@@ -200,10 +200,47 @@ ck("Fixture dates fall on the intended weekdays", dayOfWeekForDate(MON_A) === "M
   ck("15a. Unavailable + Available All Day on the same date -> ambiguous, never a silent pick", c1.status === "ambiguous" && c1.reason === "conflicting_exceptions", `${c1.status}/${c1.reason}`);
   ck("15b. ...and both conflicting exception ids are surfaced for diagnosis", JSON.stringify(ids) === JSON.stringify(["recExcConflictOff", "recExcConflictOn1"].sort()), JSON.stringify(ids));
 
+  // Post-Slice-7 clarification: non-overlapping Different Hours rows are separate valid windows.
   const h1 = ex("recExcDiffHoursA1", "Different Hours", MON_A, MON_A, "09:00", "12:00");
-  const h2 = ex("recExcDiffHoursB1", "Different Hours", MON_A, MON_A, "16:00", "21:00");
-  const c2 = resolveAvailability(q(MON_A, "10:00", "11:00"), [MON_1720], [h1, h2]);
-  ck("15c. Two differing Different Hours exceptions on the same date -> ambiguous (no 'latest wins')", c2.status === "ambiguous" && c2.reason === "conflicting_exceptions", `${c2.status}/${c2.reason}`);
+  const h2 = ex("recExcDiffHoursB1", "Different Hours", MON_A, MON_A, "16:00", "20:00");
+  const w10 = resolveAvailability(q(MON_A, "10:00", "11:00"), [MON_1720], [h1, h2]);
+  const w14 = resolveAvailability(q(MON_A, "14:00", "15:00"), [MON_1720], [h1, h2]);
+  const w18 = resolveAvailability(q(MON_A, "18:00", "19:00"), [MON_1720], [h1, h2]);
+  const wSpan = resolveAvailability(q(MON_A, "11:00", "17:00"), [MON_1720], [h1, h2]);
+  ck("15c. Two non-overlapping Different Hours (09-12, 16-20): 10:00 available from the first window", w10.status === "available" && w10.reason === "within_exception_hours" && w10.matchedRecordId === "recExcDiffHoursA1", `${w10.status}/${w10.matchedRecordId}`);
+  ck("15c2. ...14:00 (the gap) unavailable", w14.status === "unavailable" && w14.reason === "outside_exception_hours" && w14.problems.length === 0, `${w14.status}/${w14.reason}`);
+  ck("15c3. ...18:00 available from the second window", w18.status === "available" && w18.matchedRecordId === "recExcDiffHoursB1", `${w18.status}/${w18.matchedRecordId}`);
+  ck("15c4. ...and the two windows are never merged: 11:00-17:00 spanning the gap is unavailable", wSpan.status === "unavailable", wSpan.status);
+
+  const touchA = ex("recExcTouchA00001", "Different Hours", MON_A, MON_A, "09:00", "12:00");
+  const touchB = ex("recExcTouchB00001", "Different Hours", MON_A, MON_A, "12:00", "15:00");
+  const touch = resolveAvailability(q(MON_A, "11:00", "13:00"), [], [touchA, touchB]);
+  ck("15c5. Exactly-touching Different Hours windows are not a conflict, but are not merged either (11:00-13:00 unavailable)", touch.status === "unavailable" && touch.reason === "outside_exception_hours", `${touch.status}/${touch.reason}`);
+
+  const ovA = ex("recExcOverlapA001", "Different Hours", MON_A, MON_A, "09:00", "12:00");
+  const ovB = ex("recExcOverlapB001", "Different Hours", MON_A, MON_A, "11:00", "14:00");
+  const ov = resolveAvailability(q(MON_A, "09:30", "10:30"), [], [ovA, ovB]);
+  ck("15c6. Overlapping but different Different Hours windows (09-12 vs 11-14) genuinely contradict -> ambiguous", ov.status === "ambiguous" && ov.reason === "conflicting_exceptions" && ov.problems.length === 2, `${ov.status}/${ov.problems.length}`);
+
+  const dupA = ex("recExcDupHoursA01", "Different Hours", MON_A, MON_A, "09:00", "12:00");
+  const dupB = ex("recExcDupHoursB01", "Different Hours", MON_A, MON_A, "09:00", "12:00");
+  const dup = resolveAvailability(q(MON_A, "10:00", "11:00"), [], [dupA, dupB]);
+  ck("15c7. Identical duplicate Different Hours rows are not a conflict -> available", dup.status === "available", dup.status);
+
+  const allDayPlusHours = resolveAvailability(q(MON_A, "10:00", "11:00"), [], [ex("recExcAllDayMix01", "Available All Day", MON_A, MON_A), h1]);
+  ck("15c8. Available All Day + Different Hours on the same date still contradict -> ambiguous", allDayPlusHours.status === "ambiguous", allDayPlusHours.status);
+
+  const timedOffInside = resolveAvailability(q(MON_A, "10:00", "11:00"), [], [h1, h2, ex("recExcTimedOffIn1", "Unavailable", MON_A, MON_A, "10:30", "11:30")]);
+  ck("15c9. A timed Unavailable overlapping a Different Hours window genuinely contradicts it -> ambiguous", timedOffInside.status === "ambiguous", timedOffInside.status);
+
+  const timedOffGap = ex("recExcTimedOffGap", "Unavailable", MON_A, MON_A, "13:00", "14:00");
+  const gapOk = resolveAvailability(q(MON_A, "18:00", "19:00"), [], [h1, h2, timedOffGap]);
+  const gapBlocked = resolveAvailability(q(MON_A, "13:00", "14:00"), [], [h1, h2, timedOffGap]);
+  ck("15c10. A timed Unavailable sitting in the gap between Different Hours windows is consistent, not a conflict (18:00 available)", gapOk.status === "available" && gapOk.problems.length === 0, gapOk.status);
+  ck("15c11. ...and the gap itself stays unavailable", gapBlocked.status === "unavailable", gapBlocked.status);
+
+  const wholeDayOffPlusHours = resolveAvailability(q(MON_A, "18:00", "19:00"), [], [h2, ex("recExcWholeDayOff", "Unavailable", MON_A, MON_A)]);
+  ck("15c12. A whole-day Unavailable + any Different Hours on the same date -> ambiguous", wholeDayOffPlusHours.status === "ambiguous", wholeDayOffPlusHours.status);
 
   const dup1 = ex("recExcDupHolA0001", "Unavailable", MON_A, MON_A);
   const dup2 = ex("recExcDupHolB0001", "Unavailable", MON_A, MON_A);

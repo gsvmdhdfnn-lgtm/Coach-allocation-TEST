@@ -5504,20 +5504,32 @@ are always consulted first:
 ### Overlapping / conflicting exceptions
 
 There is no precedence field in the schema, so no "latest wins" or other
-invented tiebreak is applied:
+invented tiebreak is applied. Updated by the post-Slice-7 clarification
+(see below): `ambiguous` is returned only when exception rows covering the
+same date **genuinely contradict each other in time**.
 
-- A positive exception and an `Unavailable` exception covering the same
-  date -> `ambiguous` (`conflicting_exceptions`).
-- Two *different* positive exceptions on the same date (e.g. two Different
-  Hours rows with different windows) -> `ambiguous`.
-- Identical duplicates, or several `Unavailable` exceptions (all pointing
-  the same way), are **not** a conflict.
+- **Several non-overlapping Different Hours rows are separate valid
+  windows.** For example, 09:00-12:00 + 16:00-20:00 means available in
+  either window, and the gap is unavailable. The windows are never merged,
+  so exactly-touching windows (09-12 + 12-15) are not a conflict but also
+  don't cover 11:00-13:00.
+- An `Unavailable` exception whose window **overlaps** a positive window
+  -> `ambiguous` (`conflicting_exceptions`). A whole-day `Unavailable`
+  overlaps every positive window.
+- Two positive windows that **overlap without being identical** ->
+  `ambiguous`. Examples: Different Hours 09-12 vs 11-14, or Available All
+  Day + any Different Hours. These most likely mean a correction was left
+  in place, and neither reading is safe to assume.
+- **Not a conflict:**
+  - identical duplicates;
+  - several `Unavailable` exceptions (they all point the same way);
+  - a timed `Unavailable` that sits entirely outside every positive window
+    (consistent and redundant, since outside the positive windows is
+    already unavailable).
 - Conflicts are per date. Where a range overlaps a single-day exception,
   only the shared date is ambiguous.
 
-Every conflicting exception id is listed in `problems`. Whether two
-Different Hours rows on one date should mean "two windows" instead of a
-conflict is left as a product decision.
+Every conflicting exception id is listed in `problems`.
 
 ### Malformed / incomplete rows fail closed
 
@@ -5630,8 +5642,9 @@ range.
 14. Inactive recurring rows, inactive exceptions and an absent `Active`
 field are all ignored.
 15. Unavailable + Available All Day -> ambiguous (both ids surfaced).
-Differing Different Hours -> ambiguous. Agreeing Unavailables -> not a
-conflict. An overlapping range is ambiguous only on the shared date.
+Agreeing Unavailables -> not a conflict. An overlapping range is
+ambiguous only on the shared date. (Post-Slice-7 clarification items
+15c-15c12 are listed in that section below.)
 16. Garbled/blank/reversed times, blank Day of Week, a malformed exception
 (missing End Time / Start Date / Type, All Day with times) all fail
 closed. A malformed row outside its own day or range does not poison
@@ -5733,3 +5746,65 @@ have changed as a side effect.
 TEST function.
 
 **Coaches Slice 7 is ready for Slice 8 compliance.**
+
+## Post-Slice-7 clarification — multiple Different Hours exceptions — 2026-09-27
+
+Narrow, TEST-only change to `coach-availability`, per product direction.
+Two or more **non-conflicting** Different Hours exceptions on the same
+date are now separate valid windows, not automatically `ambiguous`.
+`ambiguous` is returned only when exception rows covering the same date
+genuinely contradict each other in time (full rule under "Overlapping /
+conflicting exceptions" in the Slice 7 section above).
+
+All other Slice 7 decisions are unchanged:
+
+- weekly `Available` unticked with no times = unavailable all day;
+- weekly `Available` ticked with no times = incomplete, `ambiguous`;
+- blank exception `End Date` = single day;
+- Available All Day with times = contradictory, `ambiguous`;
+- multi-org scoping remains documented future work.
+
+**Code**: one function changed, in `coach-availability.ts`. The blanket
+"any positive + any Unavailable" and "more than one distinct positive"
+conflict checks were replaced with time-overlap checks, and positive
+exceptions now resolve like recurring windows (the work must fit inside
+one window, never merged). No other file changed. `coach-availability`
+v2 was deployed, downloaded and `diff`'d byte-for-byte: all four files
+**identical** to the repo.
+
+**Tests**: `coach-availability.test.ts` is now **85/85**. The old 15c (two
+Different Hours -> ambiguous) is replaced by 15c-15c12:
+
+- 09-12 + 16-20: 10:00 available (first window), 14:00 unavailable, 18:00
+  available (second window), 11:00-17:00 across the gap unavailable;
+- touching windows are not a conflict and not merged;
+- overlapping-but-different Different Hours -> ambiguous;
+- identical duplicates -> fine;
+- Available All Day + Different Hours -> ambiguous;
+- a timed Unavailable overlapping a Different Hours window -> ambiguous;
+- a timed Unavailable in the gap -> consistent (window still available,
+  gap still unavailable);
+- whole-day Unavailable + Different Hours -> ambiguous.
+
+**Real TEST verification** (`pg_net`, Management JWT) used throwaway coach
+`SLICE7B-TEST Coach DiffHours` (`recYzTxg0pnEyIWJq`) with these exceptions:
+
+- 12 Oct Different Hours 09-12 (`recnoaEkrMPwLOXQB`) and 16-20
+  (`rec5gxuSK3fBP4dZA`);
+- 19 Oct Different Hours 09-12 (`rec38YB2DnzbshRrx`) and 11-14
+  (`rec1xrr5jciPclFUc`);
+- 26 Oct Different Hours 16-20 (`recHeAKBwfdkL1oZr`) and whole-day
+  Unavailable (`recxAaydodgITPAYv`).
+
+Results:
+
+- 12 Oct 10:00-11:00 -> `available` (`within_exception_hours`, matched
+  `recnoaEkrMPwLOXQB`).
+- 12 Oct 14:00-15:00 -> `unavailable` (`outside_exception_hours`).
+- 12 Oct 18:00-19:00 -> `available` (matched `rec5gxuSK3fBP4dZA`).
+- 19 Oct -> `ambiguous` (`conflicting_exceptions`), problems listing both
+  overlapping rows.
+- 26 Oct -> `ambiguous`, problems listing both rows.
+
+All seven throwaway records were deleted by exact id, and Coach
+Availability Exceptions lists 0 records afterwards.

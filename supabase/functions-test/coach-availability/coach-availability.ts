@@ -239,8 +239,9 @@ function isActiveForCoach(r: AvailabilityRecord, coachId: string): boolean {
  *    first. Any malformed exception that could cover the date, or any
  *    conflict between covering exceptions, returns "ambiguous" - never a
  *    guess, never "latest wins".
- * 2. A positive exception (Available All Day / Different Hours) replaces
- *    the recurring pattern for that date entirely.
+ * 2. Positive exceptions (Available All Day / Different Hours) replace
+ *    the recurring pattern for that date entirely. Several non-overlapping
+ *    Different Hours rows are separate windows (never merged).
  * 3. An Unavailable exception: whole-day -> unavailable; timed -> blocks
  *    only its own window, and the rest of the day falls through to the
  *    recurring pattern (a 10:00-11:00 dentist appointment does not erase
@@ -313,24 +314,41 @@ export function resolveAvailability(
 
   const positives = covering.filter((e) => e.type !== "Unavailable");
   const negatives = covering.filter((e) => e.type === "Unavailable");
-  const distinctPositives = new Map(positives.map((p) => [`${p.type}|${p.start}|${p.end}`, p]));
 
-  if (positives.length && negatives.length) {
-    for (const e of covering) problems.push({ recordId: e.id, table: "Coach Availability Exceptions", issue: `conflicts with another exception covering ${query.date} (${e.type})` });
-    return result({ status: "ambiguous", reason: "conflicting_exceptions", source: "exception", matchedRecordId: null, matchedWindow: null });
+  // Genuine contradictions only: an Unavailable window overlapping a
+  // positive window in time, or two positive windows that overlap without
+  // being identical (e.g. Available All Day + Different Hours, or 09-12 vs
+  // 11-14 - most likely a correction left in place). Non-overlapping
+  // Different Hours rows are separate valid windows; identical duplicates
+  // and a timed Unavailable outside every positive window are consistent.
+  const conflicting = new Set<typeof covering[number]>();
+  for (const n of negatives) {
+    for (const p of positives) {
+      if (windowsOverlap(n.start, n.end, p.start, p.end)) conflicting.add(n).add(p);
+    }
   }
-  if (distinctPositives.size > 1) {
-    for (const e of positives) problems.push({ recordId: e.id, table: "Coach Availability Exceptions", issue: `conflicts with another exception covering ${query.date} (${e.type}${e.allDay ? "" : ` ${fmt(e.start)}-${fmt(e.end)}`})` });
+  for (let i = 0; i < positives.length; i++) {
+    for (let j = i + 1; j < positives.length; j++) {
+      const a = positives[i], b = positives[j];
+      const identical = a.start === b.start && a.end === b.end;
+      if (!identical && windowsOverlap(a.start, a.end, b.start, b.end)) conflicting.add(a).add(b);
+    }
+  }
+  if (conflicting.size) {
+    for (const e of covering.filter((c) => conflicting.has(c))) {
+      problems.push({ recordId: e.id, table: "Coach Availability Exceptions", issue: `conflicts with another exception covering ${query.date} (${e.type}${e.allDay ? "" : ` ${fmt(e.start)}-${fmt(e.end)}`})` });
+    }
     return result({ status: "ambiguous", reason: "conflicting_exceptions", source: "exception", matchedRecordId: null, matchedWindow: null });
   }
 
   if (positives.length) {
-    const p = positives[0];
-    const win = { start: fmt(p.start), end: fmt(p.end) };
-    if (windowContains(p.start, p.end, workStart, workEnd)) {
-      return result({ status: "available", reason: p.allDay ? "exception_available_all_day" : "within_exception_hours", source: "exception", matchedRecordId: p.id, matchedWindow: win });
+    // Each positive exception is its own window - never merged, same rule as recurring windows.
+    const containing = positives.find((p) => windowContains(p.start, p.end, workStart, workEnd));
+    if (containing) {
+      return result({ status: "available", reason: containing.allDay ? "exception_available_all_day" : "within_exception_hours", source: "exception", matchedRecordId: containing.id, matchedWindow: { start: fmt(containing.start), end: fmt(containing.end) } });
     }
-    return result({ status: "unavailable", reason: "outside_exception_hours", source: "exception", matchedRecordId: p.id, matchedWindow: win });
+    const only = positives.length === 1 ? positives[0] : null;
+    return result({ status: "unavailable", reason: "outside_exception_hours", source: "exception", matchedRecordId: only?.id ?? null, matchedWindow: only ? { start: fmt(only.start), end: fmt(only.end) } : null });
   }
 
   const blocking = negatives.find((n) => windowsOverlap(n.start, n.end, workStart, workEnd));
