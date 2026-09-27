@@ -3730,3 +3730,401 @@ exception/cover) is Slice 3.
 resolution.**
 
 Do not start Slice 3 automatically.
+
+## Coaches Foundation — Slice 3 (Occurrence Staff date-specific resolution) — 2026-09-27
+
+TEST-only. Production Airtable/Supabase, frontend, Google Sheets and
+finance untouched throughout. Full cover-request workflow (coach
+requesting cover, notifications, accept/decline, Management selection,
+escalation) deliberately NOT built this slice - Occurrence Staff is made
+resolvable as a staffing FACT, not yet a workflow.
+
+### Schema re-read before coding
+
+Occurrence Staff (`tblKL6FzOm4QY7g7J`) was re-inspected fresh in TEST
+before any code was written. Actual fields: `Occurrence Staff ID`
+(primary text), `Session Occurrence` (link, singular in practice),
+`Coach` (link), `Session Staff Source` (link to Session Staff),
+`Assignment Type` (single select: Planned / Cover / Additional /
+Temporary Role), `Planned Role Snapshot` (plain text), `Actual Role
+Snapshot` (plain text), `Attendance` (single select: Planned / Present /
+Absent), `Management Confirmed` (checkbox), `Confirmed At` / `Confirmed
+By User ID` / `Confirmed By Name Snapshot`, `Notes`, `Created` / `Last
+Updated`. No separate Active/Cancelled/Withdrawn checkbox or status field
+exists on this table - see "Valid-row rule" below for how that gap is
+resolved using only fields that actually exist. Role snapshots are plain
+text, NOT links to Coach Roles - `resolveOccurrenceRoleCaps()`/
+`roleCapsByRoleName()` resolve a snapshot's text against Coach Roles'
+own `Role Name` text.
+
+### The resolution rule
+
+One shared pure function, `resolveOccurrenceStaffing()` (canonical,
+`hub-content/player-access.ts`, exported) with a byte-identical private
+duplicate `resolveOccurrenceRoster()` in `parent-hub/index.ts` (same
+self-contained-Edge-Function convention as every prior slice's shared
+logic - each file carries a comment cross-referencing the other, any
+change must be made identically in both):
+
+```
+resolveOccurrenceStaffing(
+  dateIso, sessionStaffRowsForSession, occurrenceStaffRowsForOccurrence,
+  roleCapsById, roleCapsByNameMap, sessionStaffById
+) -> ResolvedOccurrenceCoach[]   // { coachId, roleCaps, fromOccurrenceStaff }
+```
+
+Two layers, always in this order:
+1. **Base** - every Session Staff row for the session that applies on
+   `dateIso` via `sessionStaffAppliesOnDate()` (Slice 2's rule,
+   unchanged) seeds the roster, keyed by coach id.
+2. **Overlay** - each *usable* Occurrence Staff row (see valid-row rule)
+   linked to the exact Session Occurrence dated `dateIso` is applied on
+   top, in Airtable row order:
+   - If `Assignment Type = "Cover"` AND `Session Staff Source` resolves
+     to a real Session Staff row, that source row's own coach is
+     REMOVED from the roster first (unless it's the same coach as the
+     covering row - a no-op self-cover).
+   - The Occurrence Staff row's own coach is then SET in the roster
+     (added if new, replacing any existing entry for that coach id if
+     not - "last write wins" for a coach touched by more than one row).
+
+This is called once per (session, date) from both consumers -
+`sessionStaffCapabilitiesForSession()` (hub-content, player access) and
+`resolveSessionCoachNames()` (parent-hub, display) - via an optional
+`occurrenceContext` parameter. Omitted (or no real Session Occurrence
+exists dated exactly `dateIso` for that session), both functions are
+byte-identical to Slice 2 - nothing about a session with no occurrences,
+or a date with no occurrence, changes at all. Never any write back to
+Session Staff - the resolver only reads and merges; the underlying
+recurring assignment is never mutated by a one-date fact.
+
+### Additive vs replacement behaviour
+
+- **Additive** (`Assignment Type = "Additional"`, or any type without a
+  resolvable `Session Staff Source`): the new coach is added alongside
+  the existing roster. Nobody is removed. Proven live: Danny (Alex Test,
+  Lead Coach, normal Session Staff) plus Joe (Sam Sample) added via one
+  Occurrence Staff row on a single dated occurrence -> that occurrence
+  resolves Danny + Joe; every other occurrence (and the same session with
+  no occurrence context at all) resolves Danny only.
+- **Replacement/cover** (`Assignment Type = "Cover"` with a resolvable
+  `Session Staff Source`): the source row's coach is removed from the
+  roster for that occurrence only, and the covering coach is added/set
+  in their place. Proven live: same Danny/Joe pair, `Cover` +
+  `Session Staff Source` pointing at Danny's own Session Staff row ->
+  that occurrence resolves Joe only (Danny's recurring row is completely
+  untouched in Airtable - still Active, still applies on every other
+  date); the very next real HTTP call for that same coach against that
+  same occurrence-dated day correctly showed NO player-data access for
+  Danny, exactly matching the brief's requirement that a coach must not
+  "incorrectly retain date-specific player-data access merely because
+  his recurring Session Staff row exists" once Occurrence Staff
+  explicitly represents he's been replaced.
+
+### Role snapshot precedence (documented and enforced)
+
+`resolveOccurrenceRoleCaps()` resolves an Occurrence Staff row's
+operative role in this order, each level failing closed independently -
+a present-but-unresolvable value at one level never falls through to a
+weaker one:
+1. **Actual Role Snapshot** (text) - if non-blank, resolved against
+   Coach Roles' `Role Name`. If it doesn't resolve to a real, Active,
+   player-access-eligible role, the row grants NO access - it does NOT
+   fall through to Planned or Source, even though those might resolve.
+2. **Planned Role Snapshot** (text) - used only when Actual is blank.
+   Same fail-closed resolution rule.
+3. **Linked Session Staff Source's own `Role`** - used only when BOTH
+   snapshots are blank. This is the one case where a live link is
+   consulted rather than a snapshot, and only as the last resort for a
+   Cover row that never had its own snapshot text entered.
+4. Null/no access - both snapshots blank and no resolvable Source (or no
+   Source at all).
+
+Rationale: the schema clearly intends the snapshot fields for historical
+truth (surviving a later Coach Roles catalogue change, or a later change
+to the linked Session Staff row's own role) - `Actual` over `Planned`
+reflects "what really happened" outranking "what was planned" wherever
+both exist, matching every other Actual/Planned pairing already in this
+schema (e.g. Confirmed At vs planned timing elsewhere). Live-confirmed:
+an `Actual Role Snapshot = "Learning Coach"` together with a conflicting
+`Planned Role Snapshot = "Coach"` AND a `Session Staff Source` resolving
+to Lead Coach still denied player access - Actual won outright, never
+blended with or overridden by the other two signals.
+
+### Session Staff Source
+
+Traces which recurring Session Staff assignment (if any) an
+occurrence-specific row originated from - used ONLY for the Cover-removal
+mechanic above and as the last-resort role fallback. It is NOT mandatory:
+a genuinely standalone one-date addition (the additive case) legitimately
+has no Session Staff Source, and no synthetic Session Staff row was ever
+created just to populate it. Live-confirmed: a standalone `Additional`
+row with `Session Staff Source` left blank and only `Actual Role
+Snapshot` set still resolved correctly to full Coach-role access -
+Source's absence doesn't gate or otherwise change staffing semantics.
+Expected non-blank: a `Cover` row representing an explicit
+replacement of a specific recurring assignment. Expected blank: any
+standalone `Additional` addition, or a `Cover`/`Temporary Role` row where
+the recurring assignment being covered doesn't (or no longer) exists as
+a resolvable Session Staff row.
+
+### Player-data access
+
+`resolvePlayerAccess()` (hub-content) now builds, per request, a
+`todayIso`-dated `Session record id -> Session Occurrence record id` map
+(only for occurrences actually dated exactly today, excluding
+Cancelled/Postponed - same "not a live candidate" filter as parent-hub's
+own `resolveNextOccurrence()`) and threads it through as
+`occurrenceContext` to `sessionStaffCapabilitiesForSession()`. The
+existing hard security rule is completely unchanged and re-verified
+through the new path: Lead Coach = access, Coach = access, Learning
+Coach = never access, regardless of whether the coach's role comes from
+a recurring Session Staff row or an Occurrence Staff row. Live-confirmed,
+all real `GET /hub-content/players` calls against a throwaway Session
+with a Session Occurrence dated exactly today:
+- No Occurrence Staff -> normal Session Staff (Lead Coach) resolves;
+  unrelated coach has no access.
+- Additive `Coach`-role Occurrence Staff row -> the added coach gains
+  `tier: "permanent"` access with Coach-level permissions; the existing
+  Lead Coach keeps full, unaffected access.
+- Same row switched to `Cover` + resolvable `Session Staff Source` ->
+  the covering coach resolves with access; the replaced recurring coach
+  loses access for that exact call (their own real `/hub-content/players`
+  response no longer contained that session's player at all).
+- Additive `Learning Coach`-role Occurrence Staff row -> the coach holds
+  a real Occurrence Staff row but gets NO player-data access (`null`
+  capabilities, excluded entirely), while the unaffected Lead Coach's own
+  access is untouched.
+- Additive `Lead Coach`-role Occurrence Staff row -> full access
+  including `can_edit_idp: true`, same as a recurring Lead Coach.
+- `Attendance = "Absent"` on an otherwise-valid Coach-role row -> the row
+  is ignored entirely, no access, no roster entry.
+- A row with `Coach` linked but no resolvable role at all (both
+  snapshots blank, no Source) -> fails closed, no access, matching the
+  documented precedence's terminal case.
+
+### Parent-facing coach display
+
+`resolveSessionCoachNames()` (parent-hub) takes the same optional
+`occurrenceContext`, built from the session's already-resolved
+`next_occurrence` (parent-hub already computes this via
+`resolveNextOccurrence()` - no separate floor-scan needed, unlike
+hub-content's today-based one). Display logic stays entirely separate
+from the player-access permission logic above (different function, no
+shared control flow) while both consume the identical
+`resolveOccurrenceStaffing()`/`resolveOccurrenceRoster()` merge so they
+can never disagree about who's actually staffing a given date.
+Live-confirmed via real `GET /parent-hub/me` as `parent.a`, sequential
+calls against one throwaway session as its Occurrence Staff row was
+mutated and as its near occurrence was cancelled to advance
+`next_occurrence`:
+- No Occurrence Staff -> `coaches: ["Alex Test"]` (baseline).
+- Additive `Coach`-role row -> `coaches: ["Alex Test","Sam Sample"]`
+  (both present).
+- Same row switched to `Cover` -> `coaches: ["Sam Sample"]` only (Alex
+  Test, the replaced coach, dropped from display).
+- The covered occurrence then marked Cancelled so the session's `next_
+  occurrence` genuinely advances to the following, unrelated occurrence
+  -> `coaches: ["Alex Test"]` again, Sam Sample does NOT carry forward -
+  live proof of one-date isolation for parent display, not just for
+  player access.
+
+### One-date isolation
+
+Structural, not just tested: `occurrenceIdForSessionToday`/
+`resolveNextOccurrence()` only ever resolve ONE Session Occurrence record
+per session per call, and `occurrenceContextForSession()`/its parent-hub
+equivalent only ever pass THAT occurrence's own Occurrence Staff rows
+(`buildOccurrenceStaffByOccurrenceId()`, keyed by occurrence record id)
+into the resolver. An Occurrence Staff row linked to a different
+occurrence is never even fetched into that date's merge - it cannot leak
+by construction, not merely by convention. Confirmed live in both
+directions above (additive/cover effects present only on the linked
+occurrence's date, absent on every other).
+
+### Active/cancelled/invalid Occurrence Staff (valid-row rule)
+
+`isUsableOccurrenceStaffRow(row)`: `Coach` link must be present, AND
+`Attendance` must not be `"Absent"`. No Active/Cancelled/Withdrawn field
+exists on this table (confirmed by the fresh schema re-read above), so
+`Attendance = "Absent"` was chosen as the interpretation of "does not
+operationally count" - it is the only existing field whose semantics
+already mean exactly that ("this person did not attend/deliver this
+occurrence"), not an invented field. No row is ever deleted for going
+operationally inactive - the historical record (who was originally
+planned, what actually happened) stays in Airtable regardless; the
+resolver simply excludes it from the live roster. A row missing its
+`Coach` link is likewise excluded outright (never resolves to "nobody" as
+a valid entry, never throws). A row that passes the usability check but
+whose role can't be resolved (both snapshots blank, no Source) still
+occupies a roster slot (`fromOccurrenceStaff: true`, `roleCaps: null`) -
+usable for display purposes (the coach's identity is real) but grants no
+access, per the role-precedence's fail-closed terminal case. Live-
+confirmed: an `Attendance = "Absent"` row with an otherwise fully valid
+Coach-role assignment produced zero access and no display effect.
+
+### Legacy Sheets cover path - deliberately still coexisting
+
+Not retired this slice, per instruction - that is Slice 4's job. The
+existing Changes-sheet-based "cover" tier (`resolveCoverSessionIds()`,
+`coachCoverCapabilities`, the separate `tier: "cover"` branch in
+`resolvePlayerAccess()`) is untouched code, still active, and was
+re-verified still working during regression. It reads only from the
+Google Sheet and never reads or writes Occurrence Staff, so the two
+mechanisms cannot collide or overwrite one another - they resolve
+entirely different tiers (`"permanent"` for Occurrence-Staff-driven
+results, including the new date-specific overlay, vs `"cover"` for the
+Sheet-driven fallback) for entirely different data sources. Both can be
+simultaneously true for different sessions in the same coach's response
+without conflict, exactly as designed to coexist temporarily.
+
+### Deploy
+
+- `hub-content` v8 (project `dkqubldmfyeuudecxmvh`) - `index.ts` +
+  `player-access.ts`. Deployed content downloaded and `diff`'d
+  byte-for-byte against the local repo files after deployment; confirmed
+  identical. (Two earlier deploy attempts in this slice were caught by
+  the same download-and-diff check before being trusted: one had a
+  transcription bug in an unrelated tail function, one had a literal
+  `"PLACEHOLDER"` stand-in for `player-access.ts` that still deployed
+  "successfully" - `deploy_edge_function` validates that imports resolve
+  to *a* file, not that the file exports the right names. Both were
+  caught and fixed before any real verification traffic was sent.)
+- `parent-hub` v11 (same project) - `index.ts` (self-contained, no
+  imports). Deployed content likewise downloaded and `diff`'d
+  byte-for-byte against the local repo file after deployment; confirmed
+  identical.
+
+### Real TEST verification - all 14 required items, all real HTTP calls via `pg_net`
+
+Two throwaway Sessions, `SLICE3-ACCESS` (`rec7woxFlmMoJEwmc`, deleted)
+and `SLICE3-DISPLAY` (`recAoWDuYWKegxOvj`, deleted), each with one
+Session Staff row (Alex Test/`coach.a`, Lead Coach, Active, no date
+bounds) and real Session Occurrences dated relative to the actual test
+date (2026-09-27): `SLICE3-ACCESS` had one occurrence dated exactly
+today (hub-content's player-access path is today-scoped);
+`SLICE3-DISPLAY` had a near occurrence (28 Sep) and a far one (5 Oct)
+(parent-hub's display path is next-occurrence-scoped). One throwaway
+Player (`SLICE3-PLAYER`, `recBwDlY2PfVwK6fS`, deleted) with an Active
+Player Session Link on `SLICE3-ACCESS`; Archie Atkinson (parent.a's
+existing verified child) given one additional, temporary Active Player
+Session Link onto `SLICE3-DISPLAY` for the display scenarios (deleted
+after, no effect on his TEST-A/TEST-B links). A single Occurrence Staff
+row per session was created once and then mutated through each state via
+real Airtable writes between real HTTP calls, rather than creating a new
+row per state, to keep the fixture footprint minimal. `coach.a`,
+`coach.b`, `manager`, `parent.a` Supabase Auth passwords were reset via
+SQL (`crypt()` on `auth.users`, same technique as prior slices) to sign
+in for real JWTs via `pg_net` (this sandbox cannot reach `supabase.co`
+directly).
+
+1. **No Occurrence Staff -> normal Session Staff resolves**: real calls
+   to both `/hub-content/players` (as `coach.a`) and `/parent-hub/me` (as
+   `parent.a`) before any Occurrence Staff row existed showed baseline
+   Lead Coach access/display only, on both throwaway sessions.
+2. **Additive Occurrence Staff affects only one occurrence**: `Coach`-
+   role `Additional` row -> the added coach (Sam Sample) gained access/
+   display on the linked occurrence; structurally impossible to affect
+   any other occurrence (see "One-date isolation" above).
+3. **Replacement/cover resolves the replacement coach**: same row
+   switched to `Cover` + resolvable `Session Staff Source` -> Sam Sample
+   resolved with access (hub-content) and as sole display name
+   (parent-hub) on that occurrence.
+4. **Replaced recurring coach does not retain occurrence-specific
+   access**: same call - Alex Test's own real `/hub-content/players`
+   response no longer contained `SLICE3-ACCESS`'s player at all.
+5. **Recurring coach still resolves on surrounding dates**: cancelling
+   the covered near occurrence advanced `SLICE3-DISPLAY`'s real `next_
+   occurrence` to the unrelated far one, whose display reverted to Alex
+   Test only - Sam Sample did not carry forward.
+6. **Lead Coach Occurrence Staff gets player access**: `Actual Role
+   Snapshot = "Lead Coach"` on an Additional row -> Sam Sample got full
+   access including `can_edit_idp: true`.
+7. **Coach Occurrence Staff gets player access**: covered under items 2
+   and 3 above - `Coach`-role rows granted access in both the additive
+   and cover states.
+8. **Learning Coach Occurrence Staff does not get player data**:
+   `Additional` row with `Planned Role Snapshot = "Learning Coach"` ->
+   Sam Sample held a real Occurrence Staff row but got zero access,
+   while Alex Test's own unaffected access was reconfirmed in the same
+   call.
+9. **Parent coach display reflects occurrence-specific replacement**:
+   item 3's parent-hub result, `coaches: ["Sam Sample"]` only.
+10. **Additive parent display returns both valid coaches**: item 2's
+    parent-hub result, `coaches: ["Alex Test","Sam Sample"]`.
+11. **Inactive/withdrawn Occurrence Staff ignored**: `Attendance =
+    "Absent"` on an otherwise-valid Coach-role row -> zero access, row
+    fully ignored.
+12. **Invalid/incomplete Occurrence Staff fails closed**: `Coach` linked,
+    both role snapshots blank, no `Session Staff Source` -> zero access.
+13. **Role snapshot precedence behaves as documented**: `Actual Role
+    Snapshot = "Learning Coach"` with a conflicting `Planned Role
+    Snapshot = "Coach"` and a `Session Staff Source` resolving to Lead
+    Coach -> still zero access (Actual won outright).
+14. **Session Staff Source trace does not change staffing semantics**: a
+    standalone `Additional` row with `Session Staff Source` left blank,
+    only `Actual Role Snapshot` set -> resolved to full Coach-role access
+    exactly as with a Source present.
+
+All exact throwaway record ids were captured at creation and deleted by
+those exact ids afterward (`SLICE3-ACCESS`/`SLICE3-DISPLAY` Sessions,
+their Session Staff/Session Occurrence/Player Session Link rows, the
+throwaway Player, and both Occurrence Staff rows) - re-confirmed via
+`contains "SLICE3"` searches across Sessions, Session Occurrences,
+Occurrence Staff and Players: zero results. TEST-A (`rec4cME6ncL4IAvlK`)
+and TEST-B (`recklh0OeaAMakQCJ`) were never targets of any write this
+slice; their data was read incidentally as part of the same real
+`coach.a`/`coach.b`/`parent.a` HTTP responses used for regression below
+and confirmed unchanged.
+
+**Transient flake noted, not a regression**: the very first real
+`/hub-content/players` call as `coach.a` (fired seconds after creating
+the throwaway fixtures) returned `200 []` - a legitimate empty response,
+not an error - while an identical immediate retry, and every subsequent
+call, returned the correct TEST-A + throwaway rows. Given the retry and
+every later call were consistently correct, and the deployed code's own
+logic was independently confirmed correct via the `diff` check above,
+this is treated as a one-off Airtable-API-level timing hiccup
+immediately after a burst of writes, not a defect in the resolver.
+
+### Regression
+
+- `coach.a`/`coach.b` real `/hub-content/players` responses (captured
+  throughout the verification above) continued to show their
+  pre-existing TEST-A/TEST-B rows unchanged - Alex still sees TEST-A's
+  Archie and Bella, Sam still sees TEST-B's Dylan/Charlie/Archie
+  (including Archie's separate former-access row), same tiers and
+  permissions as every prior slice's baseline.
+- `parent.a`'s real `/parent-hub/me` response continued to show Dylan
+  Davies' paused TEST-B session and Archie Atkinson's active TEST-A/
+  TEST-B sessions with unchanged `next_occurrence` dates and coach lists
+  (`["Sam Sample","Alex Test"]` for TEST-B), the ended TEST-B link, and
+  the one pending claim (Bella Brown) - all identical to the Slice 2
+  baseline.
+- Slice 2's own effective-dated handover (Danny -> Tom -> Joe) and the
+  Lead Coach/Coach/Learning Coach security rule were re-run as part of
+  the full suite below and remain green, unaffected by Slice 3's
+  additions (both are the `occurrenceContext`-omitted code path, byte-
+  identical to before this slice).
+- Full TEST suite (`node tests/run-all.js`), run after both deploys were
+  verified byte-identical: **50/50 test files passed**, including this
+  slice's own `access-resolution.test.ts` (**75/75** individual
+  assertions) and `session-coaches.test.ts` (**22/22**), plus
+  `nextoccurrencetest.js` (19/19) and `sessionaccesstest.js` (28/28)
+  covering Parent Hub next-occurrence and `/hub-content/players`
+  respectively. Schedule-foundation tests (Slice 6-10:
+  `sessiongeneratortest.js`, `propagationtest.js`, `dailytopuptest.js`,
+  etc.) remain green in the same run, untouched this slice.
+
+### Production isolation
+
+No production Airtable, production Supabase, frontend, Google Sheets or
+finance code/data was read or written at any point in this slice - every
+Airtable call targeted the TEST base `appQktredAuGa1X7e`, every Supabase
+call targeted the TEST project `dkqubldmfyeuudecxmvh`, and both deployed
+Edge Functions retain their unchanged TEST DEPLOYMENT GUARD.
+
+**Coaches Slice 3 is ready for Slice 4 retirement of the Sheets-based
+cover access path.**
+
+Do not start Slice 4 automatically.

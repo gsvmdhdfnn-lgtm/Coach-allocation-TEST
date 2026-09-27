@@ -42,6 +42,34 @@ function buildSessionStaffBySessionId(rows: any[]): Record<string, any[]> {
   return out;
 }
 
+// Coaches Slice 3: exact duplicates of parent-hub/index.ts's own Occurrence
+// Staff helpers (see that file's comments for the full rationale).
+function buildSessionStaffById(rows: any[]): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const r of rows) out[r.id] = r;
+  return out;
+}
+function buildOccurrenceStaffByOccurrenceId(rows: any[]): Record<string, any[]> {
+  const out: Record<string, any[]> = {};
+  for (const r of rows) {
+    const occId = firstLink(r.fields, "Session Occurrence");
+    if (!occId) continue;
+    if (!out[occId]) out[occId] = [];
+    out[occId].push(r);
+  }
+  return out;
+}
+function selectName(v: any): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  return v.name || "";
+}
+function isUsableOccurrenceStaffRow(row: { fields: Record<string, any> }): boolean {
+  if (!firstLink(row.fields, "Coach")) return false;
+  if (selectName(row.fields["Attendance"]) === "Absent") return false;
+  return true;
+}
+
 const ISO_DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Exact duplicate of hub-content/player-access.ts's sessionStaffAppliesOnDate()
@@ -64,26 +92,80 @@ function sessionStaffAppliesOnDate(row: { fields: Record<string, any> }, dateIso
 
 const ROLE_DISPLAY_PRIORITY: Record<string, number> = { "Lead Coach": 0, "Coach": 1, "Learning Coach": 2 };
 
+// Coaches Slice 3: exact duplicate of parent-hub/index.ts's own
+// resolveOccurrenceRoleName()/resolveOccurrenceRoster().
+function resolveOccurrenceRoleName(row: { fields: Record<string, any> }, sourceRow: any | null, roleById: Record<string, any>): string {
+  const actual = String(row.fields["Actual Role Snapshot"] || "").trim();
+  if (actual) return actual;
+  const planned = String(row.fields["Planned Role Snapshot"] || "").trim();
+  if (planned) return planned;
+  if (sourceRow) {
+    const roleId = firstLink(sourceRow.fields, "Role");
+    if (roleId && roleById[roleId]) return String(roleById[roleId].fields["Role Name"] || "");
+  }
+  return "";
+}
+function resolveOccurrenceRoster(
+  dateIso: string,
+  sessionStaffRowsForSession: any[],
+  occurrenceStaffRowsForOccurrence: any[],
+  roleById: Record<string, any>,
+  sessionStaffById: Record<string, any>
+): { coachId: string; roleName: string }[] {
+  const roster = new Map<string, string>();
+  for (const row of sessionStaffRowsForSession) {
+    if (!sessionStaffAppliesOnDate(row, dateIso)) continue;
+    const coachId = firstLink(row.fields, "Coach");
+    if (!coachId) continue;
+    const roleId = firstLink(row.fields, "Role");
+    const roleName = roleId && roleById[roleId] ? String(roleById[roleId].fields["Role Name"] || "") : "";
+    roster.set(coachId, roleName);
+  }
+  for (const row of occurrenceStaffRowsForOccurrence) {
+    if (!isUsableOccurrenceStaffRow(row)) continue;
+    const coachId = firstLink(row.fields, "Coach");
+    if (!coachId) continue;
+    const assignmentType = selectName(row.fields["Assignment Type"]);
+    const sourceId = firstLink(row.fields, "Session Staff Source");
+    const sourceRow = sourceId ? sessionStaffById[sourceId] ?? null : null;
+    if (assignmentType === "Cover" && sourceRow) {
+      const sourceCoachId = firstLink(sourceRow.fields, "Coach");
+      if (sourceCoachId && sourceCoachId !== coachId) roster.delete(sourceCoachId);
+    }
+    roster.set(coachId, resolveOccurrenceRoleName(row, sourceRow, roleById));
+  }
+  return [...roster.entries()].map(([coachId, roleName]) => ({ coachId, roleName }));
+}
+
 function resolveSessionCoachNames(
   sessionId: string,
   dateIso: string,
   sessionStaffBySessionId: Record<string, any[]>,
   coachById: Record<string, any>,
-  roleById: Record<string, any>
+  roleById: Record<string, any>,
+  occurrenceContext?: { occurrenceStaffRows: any[]; sessionStaffById: Record<string, any> } | null
 ): string[] {
-  const rows = (sessionStaffBySessionId[sessionId] || []).filter((r) => sessionStaffAppliesOnDate(r, dateIso));
+  const sessionStaffRowsForSession = sessionStaffBySessionId[sessionId] || [];
+  const roster = occurrenceContext
+    ? resolveOccurrenceRoster(dateIso, sessionStaffRowsForSession, occurrenceContext.occurrenceStaffRows, roleById, occurrenceContext.sessionStaffById)
+    : sessionStaffRowsForSession
+        .filter((r) => sessionStaffAppliesOnDate(r, dateIso))
+        .map((row) => {
+          const coachId = firstLink(row.fields, "Coach");
+          const roleId = firstLink(row.fields, "Role");
+          const roleName = roleId && roleById[roleId] ? String(roleById[roleId].fields["Role Name"] || "") : "";
+          return { coachId, roleName };
+        });
+
   const seen = new Set<string>();
   const entries: { name: string; priority: number }[] = [];
-  for (const row of rows) {
-    const coachId = firstLink(row.fields, "Coach");
+  for (const { coachId, roleName } of roster) {
     if (!coachId || seen.has(coachId)) continue;
     const coach = coachById[coachId];
     if (!coach) continue;
     const name = presentableName(coach.fields["Coach Name"]);
     if (!name) continue;
     seen.add(coachId);
-    const roleId = firstLink(row.fields, "Role");
-    const roleName = roleId && roleById[roleId] ? String(roleById[roleId].fields["Role Name"] || "") : "";
     const priority = ROLE_DISPLAY_PRIORITY[roleName];
     entries.push({ name, priority: priority === undefined ? 99 : priority });
   }
@@ -250,6 +332,46 @@ const coachById = {
   ]);
   const names = resolveSessionCoachNames("sessN", "2026-09-14", staff, coachById, roleById);
   ck("A malformed Effective From excludes the row from display rather than showing it as unbounded", names.length === 0, JSON.stringify(names));
+}
+
+// --- Coaches Slice 3, item 9: parent coach display reflects occurrence-specific replacement ---
+{
+  const coachOS = {
+    danny: { fields: { "Coach Name": "Danny Occurrence" } },
+    joe: { fields: { "Coach Name": "Joe Occurrence" } },
+  };
+  const ssDanny = { id: "ssOSDanny", fields: { Session: ["sessOS"], Coach: ["danny"], Role: ["lead"], Active: true } };
+  const staff = buildSessionStaffBySessionId([ssDanny]);
+  const sessionStaffById = buildSessionStaffById([ssDanny]);
+
+  const coverRow = { id: "osCover", fields: { Coach: ["joe"], "Session Occurrence": ["occCoverDisplay"], "Assignment Type": "Cover", "Session Staff Source": [ssDanny.id], "Actual Role Snapshot": "Lead Coach" } };
+  const occurrenceStaffByOcc = buildOccurrenceStaffByOccurrenceId([coverRow]);
+
+  const namesOnCoveredDate = resolveSessionCoachNames("sessOS", "2026-10-10", staff, coachOS, roleById, { occurrenceStaffRows: occurrenceStaffByOcc["occCoverDisplay"] || [], sessionStaffById });
+  ck("9a. Covered occurrence shows the covering coach only", namesOnCoveredDate.join(",") === "Joe Occurrence", namesOnCoveredDate.join(","));
+
+  const namesOnOtherDate = resolveSessionCoachNames("sessOS", "2026-10-11", staff, coachOS, roleById, { occurrenceStaffRows: [], sessionStaffById });
+  ck("9b. The following occurrence (no Occurrence Staff rows) shows the normal recurring coach again, not Joe", namesOnOtherDate.join(",") === "Danny Occurrence", namesOnOtherDate.join(","));
+
+  const namesNoContext = resolveSessionCoachNames("sessOS", "2026-10-11", staff, coachOS, roleById);
+  ck("9c. Omitting occurrenceContext entirely is byte-identical to Slice 2 (recurring coach only)", namesNoContext.join(",") === "Danny Occurrence", namesNoContext.join(","));
+}
+
+// --- Coaches Slice 3, item 10: additive parent display returns both valid coaches ---
+{
+  const coachOS = {
+    danny: { fields: { "Coach Name": "Danny Additive" } },
+    joe: { fields: { "Coach Name": "Joe Additive" } },
+  };
+  const ssDanny = { id: "ssAddDanny", fields: { Session: ["sessOS2"], Coach: ["danny"], Role: ["lead"], Active: true } };
+  const staff = buildSessionStaffBySessionId([ssDanny]);
+  const sessionStaffById = buildSessionStaffById([ssDanny]);
+
+  const additiveRow = { id: "osAdd", fields: { Coach: ["joe"], "Session Occurrence": ["occAddDisplay"], "Assignment Type": "Additional", Attendance: "Planned", "Planned Role Snapshot": "Coach" } };
+  const occurrenceStaffByOcc = buildOccurrenceStaffByOccurrenceId([additiveRow]);
+
+  const names = resolveSessionCoachNames("sessOS2", "2026-10-10", staff, coachOS, roleById, { occurrenceStaffRows: occurrenceStaffByOcc["occAddDisplay"] || [], sessionStaffById });
+  ck("10. An additive Occurrence Staff row shows BOTH the recurring coach and the added one, Lead Coach first by role priority", names.join(",") === "Danny Additive,Joe Additive", names.join(","));
 }
 
 console.log(R.map(([s, n, x]) => `${s}  ${n}${x ? "  -- " + x : ""}`).join("\n"));

@@ -485,6 +485,114 @@ function buildSessionStaffBySessionId(rows: any[]): Record<string, any[]> {
   return out;
 }
 
+/** Session Staff RECORD id -> its own row - Coaches Slice 3, the exact duplicate of hub-content/player-access.ts's buildSessionStaffById(). */
+function buildSessionStaffById(rows: any[]): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const r of rows) out[r.id] = r;
+  return out;
+}
+
+/** Occurrence RECORD id -> its Occurrence Staff rows - Coaches Slice 3, the exact duplicate of hub-content/player-access.ts's buildOccurrenceStaffByOccurrenceId(). */
+function buildOccurrenceStaffByOccurrenceId(rows: any[]): Record<string, any[]> {
+  const out: Record<string, any[]> = {};
+  for (const r of rows) {
+    const occId = firstLink(r.fields, "Session Occurrence");
+    if (!occId) continue;
+    if (!out[occId]) out[occId] = [];
+    out[occId].push(r);
+  }
+  return out;
+}
+
+/**
+ * Whether an Occurrence Staff row counts as staffing at all - Coaches
+ * Slice 3, the exact duplicate of hub-content/player-access.ts's
+ * isUsableOccurrenceStaffRow() (see that file's own comment for the full
+ * rationale: Occurrence Staff has no Active/cancelled field of its own;
+ * `Attendance = "Absent"` is this table's only field capable of meaning
+ * "this coach's assignment for this occurrence does not stand", read
+ * that way here as a documented interpretation, not an invented field).
+ */
+function isUsableOccurrenceStaffRow(row: { fields: Record<string, any> }): boolean {
+  if (!firstLink(row.fields, "Coach")) return false;
+  if (selectName(row.fields["Attendance"]) === "Absent") return false;
+  return true;
+}
+
+/**
+ * The role NAME that actually applied for ONE Occurrence Staff row -
+ * Coaches Slice 3, the display-tier twin of hub-content/player-access.ts's
+ * resolveOccurrenceRoleCaps() (same precedence, same fail-closed-per-level
+ * behaviour: Actual Role Snapshot, else Planned Role Snapshot, else - only
+ * when BOTH are blank - the linked Session Staff Source row's own Role's
+ * Role Name; "" if none resolve). Returns a Role NAME string rather than
+ * a capabilities object, since this file's display tier only ever needs
+ * the name for ROLE_DISPLAY_PRIORITY sorting, never an access decision.
+ */
+function resolveOccurrenceRoleName(row: { fields: Record<string, any> }, sourceRow: any | null, roleById: Record<string, any>): string {
+  const actual = String(row.fields["Actual Role Snapshot"] || "").trim();
+  if (actual) return actual;
+  const planned = String(row.fields["Planned Role Snapshot"] || "").trim();
+  if (planned) return planned;
+  if (sourceRow) {
+    const roleId = firstLink(sourceRow.fields, "Role");
+    if (roleId && roleById[roleId]) return String(roleById[roleId].fields["Role Name"] || "");
+  }
+  return "";
+}
+
+/**
+ * THE one shared merge algorithm (Coaches Slice 3, see TEST-ENV.md) for
+ * "who is actually staffing this ONE occurrence" - the display-tier twin
+ * of hub-content/player-access.ts's resolveOccurrenceStaffing() (same
+ * two-layer algorithm: base = effective-dated Session Staff for the
+ * session, keyed by coach id; then each usable Occurrence Staff row for
+ * this exact occurrence is applied on top - a `Cover` row with a
+ * resolvable Session Staff Source first removes that source row's own
+ * coach, then every usable row sets its own coach's entry, additive or
+ * role-overriding as appropriate). Returns role NAMES (not capabilities),
+ * since this file's display tier only needs a name to sort by - see that
+ * file's own comment for the full rationale; any change to the algorithm
+ * itself must be made identically in both files.
+ */
+function resolveOccurrenceRoster(
+  dateIso: string,
+  sessionStaffRowsForSession: any[],
+  occurrenceStaffRowsForOccurrence: any[],
+  roleById: Record<string, any>,
+  sessionStaffById: Record<string, any>
+): { coachId: string; roleName: string }[] {
+  const roster = new Map<string, string>();
+
+  for (const row of sessionStaffRowsForSession) {
+    if (!sessionStaffAppliesOnDate(row, dateIso)) continue;
+    const coachId = firstLink(row.fields, "Coach");
+    if (!coachId) continue;
+    const roleId = firstLink(row.fields, "Role");
+    const roleName = roleId && roleById[roleId] ? String(roleById[roleId].fields["Role Name"] || "") : "";
+    roster.set(coachId, roleName);
+  }
+
+  for (const row of occurrenceStaffRowsForOccurrence) {
+    if (!isUsableOccurrenceStaffRow(row)) continue;
+    const coachId = firstLink(row.fields, "Coach");
+    if (!coachId) continue;
+
+    const assignmentType = selectName(row.fields["Assignment Type"]);
+    const sourceId = firstLink(row.fields, "Session Staff Source");
+    const sourceRow = sourceId ? sessionStaffById[sourceId] ?? null : null;
+
+    if (assignmentType === "Cover" && sourceRow) {
+      const sourceCoachId = firstLink(sourceRow.fields, "Coach");
+      if (sourceCoachId && sourceCoachId !== coachId) roster.delete(sourceCoachId);
+    }
+
+    roster.set(coachId, resolveOccurrenceRoleName(row, sourceRow, roleById));
+  }
+
+  return [...roster.entries()].map(([coachId, roleName]) => ({ coachId, roleName }));
+}
+
 /**
  * Lead Coach reads first, then Coach, then Learning Coach, then anything
  * else - Coach Roles carries no Sort Order field of its own to order by.
@@ -521,30 +629,42 @@ const ROLE_DISPLAY_PRIORITY: Record<string, number> = { "Lead Coach": 0, "Coach"
  * still appear. An unpresentable name (a login-style handle, an email) is
  * dropped rather than shown, same rule as everywhere else in this file.
  *
- * Occurrence-specific cover (Occurrence Staff) is deliberately not
- * folded in here - this is the recurring Session Staff roster only. See
- * TEST-ENV.md for why that stays separate.
+ * Coaches Slice 3: `occurrenceContext`, when supplied, folds in that one
+ * occurrence's Occurrence Staff exceptions via resolveOccurrenceRoster()
+ * on top of the effective-dated Session Staff roster - a replacement
+ * (Cover) shows only the covering coach for that date, an addition shows
+ * both. Omitted, this function is byte-identical to Slice 2 (recurring
+ * Session Staff roster only).
  */
 function resolveSessionCoachNames(
   sessionId: string,
   dateIso: string,
   sessionStaffBySessionId: Record<string, any[]>,
   coachById: Record<string, any>,
-  roleById: Record<string, any>
+  roleById: Record<string, any>,
+  occurrenceContext?: { occurrenceStaffRows: any[]; sessionStaffById: Record<string, any> } | null
 ): string[] {
-  const rows = (sessionStaffBySessionId[sessionId] || []).filter((r) => sessionStaffAppliesOnDate(r, dateIso));
+  const sessionStaffRowsForSession = sessionStaffBySessionId[sessionId] || [];
+  const roster = occurrenceContext
+    ? resolveOccurrenceRoster(dateIso, sessionStaffRowsForSession, occurrenceContext.occurrenceStaffRows, roleById, occurrenceContext.sessionStaffById)
+    : sessionStaffRowsForSession
+        .filter((r) => sessionStaffAppliesOnDate(r, dateIso))
+        .map((row) => {
+          const coachId = firstLink(row.fields, "Coach");
+          const roleId = firstLink(row.fields, "Role");
+          const roleName = roleId && roleById[roleId] ? String(roleById[roleId].fields["Role Name"] || "") : "";
+          return { coachId, roleName };
+        });
+
   const seen = new Set<string>();
   const entries: { name: string; priority: number }[] = [];
-  for (const row of rows) {
-    const coachId = firstLink(row.fields, "Coach");
+  for (const { coachId, roleName } of roster) {
     if (!coachId || seen.has(coachId)) continue;
     const coach = coachById[coachId];
     if (!coach) continue;
     const name = presentableName(coach.fields["Coach Name"]);
     if (!name) continue;
     seen.add(coachId);
-    const roleId = firstLink(row.fields, "Role");
-    const roleName = roleId && roleById[roleId] ? String(roleById[roleId].fields["Role Name"] || "") : "";
     const priority = ROLE_DISPLAY_PRIORITY[roleName];
     entries.push({ name, priority: priority === undefined ? 99 : priority });
   }
@@ -724,7 +844,7 @@ async function handleParentMe(caller: { userId: string; email: string }) {
     console.error("Could not sync profiles.airtable_person_id", e);
   }
 
-  const [linkRows, playerRows, sessionRows, sessionLinkRows, sessionRequests, venueRows, occurrenceRows, sessionStaffRows, coachRows, coachRoleRows] = await Promise.all([
+  const [linkRows, playerRows, sessionRows, sessionLinkRows, sessionRequests, venueRows, occurrenceRows, sessionStaffRows, coachRows, coachRoleRows, occurrenceStaffRows] = await Promise.all([
     getAirtableRecords(TBL_PARENT_PLAYER_LINKS),
     getAirtableRecords("Players"),
     getAirtableRecords("Sessions"),
@@ -735,6 +855,7 @@ async function handleParentMe(caller: { userId: string; email: string }) {
     getAirtableRecords("Session Staff"),
     getAirtableRecords("Coaches"),
     getAirtableRecords("Coach Roles"),
+    getAirtableRecords("Occurrence Staff"),
   ]);
   const requestRows = sessionRequests.rows;
   const playerById: Record<string, any> = {};
@@ -746,6 +867,13 @@ async function handleParentMe(caller: { userId: string; email: string }) {
   for (const o of occurrenceRows) occurrenceById[o.id] = o;
   const occurrencesBySessionId = buildOccurrencesBySessionId(occurrenceRows);
   const sessionStaffBySessionId = buildSessionStaffBySessionId(sessionStaffRows);
+  // Coaches Slice 3: Occurrence Staff rows for the resolved next_occurrence
+  // (only, per occurrence - see resolveOccurrenceRoster()'s own comment)
+  // fold in as a one-date staffing exception on top of the recurring
+  // Session Staff roster above; a paused session has no occurrence context
+  // to fold in (see its own call site below), matching Slice 2.
+  const occurrenceStaffByOccurrenceId = buildOccurrenceStaffByOccurrenceId(occurrenceStaffRows);
+  const sessionStaffById = buildSessionStaffById(sessionStaffRows);
   const coachById: Record<string, any> = {};
   for (const c of coachRows) coachById[c.id] = c;
   const roleById: Record<string, any> = {};
@@ -801,9 +929,15 @@ async function handleParentMe(caller: { userId: string; email: string }) {
           // (the recurring-pattern-only case), so the roster still shows
           // someone rather than nothing.
           const staffDateIso = nextOcc && typeof nextOcc.fields["Date"] === "string" ? nextOcc.fields["Date"] : ukToday;
+          // Coaches Slice 3: fold in the resolved occurrence's own
+          // Occurrence Staff rows (only when a real occurrence resolved -
+          // the recurring-pattern-only case has no occurrence to fold in).
+          const occurrenceContext = nextOcc
+            ? { occurrenceStaffRows: occurrenceStaffByOccurrenceId[nextOcc.id] || [], sessionStaffById }
+            : null;
           return {
             ...sessionPayload(session, venueByRecordId),
-            coaches: resolveSessionCoachNames(session.id, staffDateIso, sessionStaffBySessionId, coachById, roleById),
+            coaches: resolveSessionCoachNames(session.id, staffDateIso, sessionStaffBySessionId, coachById, roleById, occurrenceContext),
             start_date: l.fields["Start Date"] || "",
             next_occurrence: nextOcc ? nextOccurrencePayload(nextOcc, session, venueByRecordId) : null,
           };

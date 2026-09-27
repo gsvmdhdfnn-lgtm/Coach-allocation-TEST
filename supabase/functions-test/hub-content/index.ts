@@ -1,13 +1,20 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import {
+  buildOccurrenceStaffByOccurrenceId,
   buildSessionStaffByCoachAndSession,
+  buildSessionStaffById,
+  buildSessionStaffBySessionId,
   capabilitiesForCoach,
   coachIdentityKeys,
   coachOwnStandingCapabilities,
+  firstLink,
   legacyFallbackPerms,
   nameKey,
   resolvePlayerAccess,
   roleCapabilitiesById,
+  roleCapsByRoleName,
+  selectName,
+  ukTodayIso,
   type PlayerAccessRow,
   type AccessTier,
 } from "./player-access.ts";
@@ -426,12 +433,21 @@ const LEGACY_ADMIN_PERMS = { can_edit_feedback: true, can_edit_idp: true, can_ed
  * names (now LEGACY - Active / LEGACY - Assigned Coaches in this base),
  * so it still returns no rows here, same as before this repair - fixing
  * it is a different task (see TEST-ENV.md).
+ *
+ * Coaches Slice 3: also fetches Session Occurrences and Occurrence Staff,
+ * purely to find - per session - the one occurrence (if any) dated
+ * exactly today, so that occurrence's own one-date staffing exceptions
+ * (an additive coach, or an explicit Cover replacing someone) participate
+ * in today's access decision via resolveOccurrenceStaffing() inside
+ * player-access.ts. A session with no occurrence dated today resolves
+ * exactly as it did in Slice 2 - Occurrence Staff never touches a date
+ * it isn't linked to.
  */
 async function handlePlayers(authHeader: string | null) {
   const caller = await resolveCaller(authHeader);
   if (!caller) return [];
 
-  const [playerRows, coachRows, sessionRows, linkRows, featureRows, coachRoleRows, sessionStaffRows] = await Promise.all([
+  const [playerRows, coachRows, sessionRows, linkRows, featureRows, coachRoleRows, sessionStaffRows, occurrenceRows, occurrenceStaffRows] = await Promise.all([
     getAirtableRecords("Players"),
     getAirtableRecords("Coaches"),
     getAirtableRecords("Sessions"),
@@ -439,6 +455,8 @@ async function handlePlayers(authHeader: string | null) {
     getAirtableRecords("Feature Controls"),
     getAirtableRecords("Coach Roles"),
     getAirtableRecords("Session Staff"),
+    getAirtableRecords("Session Occurrences"),
+    getAirtableRecords("Occurrence Staff"),
   ]);
 
   const coachRecordById: Record<string, any> = {};
@@ -451,16 +469,35 @@ async function handlePlayers(authHeader: string | null) {
   }
 
   const roleCapsById = roleCapabilitiesById(coachRoleRows);
+  const roleCapsByNameMap = roleCapsByRoleName(coachRoleRows);
   const callerCoachRecord = caller.airtablePersonId ? coachRecordById[caller.airtablePersonId] : null;
   // Cover-tier identity matching only (still Changes-sheet based - see player-access.ts).
   const coachNameKeys = coachIdentityKeys(callerCoachRecord, caller.displayName);
   // Legacy Assigned Coaches fallback only (see this function's own docstring) - deliberately untouched.
   const coachCapabilities = capabilitiesForCoach(callerCoachRecord, roleCapsById);
   const sessionStaffBySessionAndCoach = buildSessionStaffByCoachAndSession(sessionStaffRows);
+  const sessionStaffBySessionId = buildSessionStaffBySessionId(sessionStaffRows);
+  const sessionStaffById = buildSessionStaffById(sessionStaffRows);
+  const occurrenceStaffByOccurrenceId = buildOccurrenceStaffByOccurrenceId(occurrenceStaffRows);
   // Computed here (not after) so coachOwnStandingCapabilities' Coaches
   // Slice 2 date check uses the exact same instant as resolvePlayerAccess()
   // below and resolveCoverSessionIds() further down - one "now" per request.
   const today = new Date();
+  const todayIso = ukTodayIso(today);
+  // Session RECORD id -> the Session Occurrence RECORD id dated exactly
+  // today, for sessions that have one - Coaches Slice 3. Cancelled/
+  // Postponed occurrences are skipped: an occurrence that isn't really
+  // happening today shouldn't grant a one-date staffing exception, same
+  // "not a live candidate" filter parent-hub's resolveNextOccurrence()
+  // already applies for its own, separate purpose.
+  const occurrenceIdForSessionToday: Record<string, string> = {};
+  for (const occ of occurrenceRows) {
+    if (occ.fields["Date"] !== todayIso) continue;
+    const status = selectName(occ.fields["Status"]);
+    if (status === "Cancelled" || status === "Postponed") continue;
+    const sid = firstLink(occ.fields, "Session");
+    if (sid) occurrenceIdForSessionToday[sid] = occ.id;
+  }
   const coachCoverCapabilities = caller.airtablePersonId
     ? coachOwnStandingCapabilities(caller.airtablePersonId, sessionStaffRows, roleCapsById, today)
     : null;
@@ -481,6 +518,11 @@ async function handlePlayers(authHeader: string | null) {
     roleCapsById,
     coverSessionIds,
     today,
+    occurrenceIdForSessionToday,
+    occurrenceStaffByOccurrenceId,
+    sessionStaffBySessionId,
+    sessionStaffById,
+    roleCapsByNameMap,
   });
 
   const legacyFlag = featureRows.find((r: any) => r.fields["Feature Key"] === "legacy_assigned_coaches");

@@ -51,15 +51,29 @@
  *    role must also be in PLAYER_ACCESS_ROLES AND Can View Players must
  *    be true, every time, server-side.
  *
- * COVER (Occurrence Staff) IS DELIBERATELY STILL SEPARATE. Dated cover is
- * not yet resolved from Occurrence Staff - it still comes from the
+ * Coaches Slice 3 (see TEST-ENV.md): for a session that has a Session
+ * Occurrence dated exactly `today`, that occurrence's own Occurrence
+ * Staff rows now participate directly in the "permanent" tier below, via
+ * resolveOccurrenceStaffing() - a one-date exception (additive coach, or
+ * an explicit Cover replacing a named Session Staff coach for that one
+ * occurrence only) on top of the effective-dated Session Staff roster,
+ * never mutating the underlying Session Staff records and never bleeding
+ * onto any other date. When a session has no occurrence dated `today` -
+ * the overwhelming majority of calls, since most sessions don't happen
+ * every single day - this tier falls back to plain Session-Staff-only
+ * resolution, byte-identical to Slice 2.
+ *
+ * THE EXISTING "cover" TIER BELOW IS A DIFFERENT THING AND IS DELIBERATELY
+ * STILL SEPARATE. That tier (AccessTier "cover") is resolved from the
  * published Changes Google Sheet, matched by coach identity (see
- * coachIdentityKeys() below), exactly as before. Migrating cover onto
- * Occurrence Staff needs its own fetch, its own session/date index, and a
- * decision on how Occurrence Staff's Assignment Type/Attendance fields
- * should affect display - a materially bigger change than restoring the
- * current-session path above, so it stays out of this repair on purpose.
- * A coach covering a session they hold no Session Staff row on is given
+ * coachIdentityKeys() below) - for a coach covering a session they hold
+ * NO Session Staff row on at all, anywhere. Occurrence Staff, by
+ * contrast, always resolves into the "permanent" tier (it is scoped to a
+ * specific Session's specific occurrence, exactly like Session Staff),
+ * even when it represents a cover assignment in the everyday sense
+ * (Assignment Type = "Cover"). Migrating the Changes-sheet cover tier
+ * itself onto Occurrence Staff is Slice 4's job, not this one - see
+ * TEST-ENV.md. A coach covering via the Changes-sheet mechanism is given
  * their own STANDING capabilities (their highest-priority role across any
  * of their own current Session Staff rows - see coachOwnStandingCapabilities())
  * rather than nothing, since the old single "Coach Role" field on the
@@ -111,7 +125,7 @@ function attachmentUrl(fields: Record<string, any>, fieldName: string): string {
   return list[0].url || "";
 }
 
-function firstLink(fields: Record<string, any>, name: string): string {
+export function firstLink(fields: Record<string, any>, name: string): string {
   const list = fields[name];
   return Array.isArray(list) && list.length ? list[0] : "";
 }
@@ -195,7 +209,7 @@ export function sessionStaffAppliesOnDate(row: { fields: Record<string, any> }, 
  * selectName() (duplicated rather than imported, per this file's own
  * "no shared filesystem across functions" convention).
  */
-function selectName(v: any): string {
+export function selectName(v: any): string {
   if (v == null) return "";
   if (typeof v === "string") return v;
   return v.name || "";
@@ -387,6 +401,238 @@ export function buildSessionStaffByCoachAndSession(sessionStaffRows: any[]): Rec
 }
 
 /**
+ * Session RECORD id -> ALL Session Staff rows for that session, any coach,
+ * unfiltered - Coaches Slice 3. A flat companion to
+ * buildSessionStaffByCoachAndSession() above (which is keyed by coach
+ * too): resolveOccurrenceStaffing() below needs the WHOLE roster for a
+ * session at once, to build the base map it then layers Occurrence Staff
+ * on top of - it does not know which coach it's looking for in advance.
+ */
+export function buildSessionStaffBySessionId(sessionStaffRows: any[]): Record<string, any[]> {
+  const map: Record<string, any[]> = {};
+  for (const row of sessionStaffRows) {
+    const sessionId = firstLink(row.fields, "Session");
+    if (!sessionId) continue;
+    if (!map[sessionId]) map[sessionId] = [];
+    map[sessionId].push(row);
+  }
+  return map;
+}
+
+/** Session Staff RECORD id -> its own row - Coaches Slice 3, for resolving an Occurrence Staff row's "Session Staff Source" link back to the row (and coach) it traces to. */
+export function buildSessionStaffById(sessionStaffRows: any[]): Record<string, any> {
+  const map: Record<string, any> = {};
+  for (const row of sessionStaffRows) map[row.id] = row;
+  return map;
+}
+
+/** Occurrence RECORD id -> ALL Occurrence Staff rows linked to that exact occurrence - Coaches Slice 3. Never grouped or looked up by date or by Session: an Occurrence Staff row affects only the one occurrence it links to. */
+export function buildOccurrenceStaffByOccurrenceId(occurrenceStaffRows: any[]): Record<string, any[]> {
+  const map: Record<string, any[]> = {};
+  for (const row of occurrenceStaffRows) {
+    const occurrenceId = firstLink(row.fields, "Session Occurrence");
+    if (!occurrenceId) continue;
+    if (!map[occurrenceId]) map[occurrenceId] = [];
+    map[occurrenceId].push(row);
+  }
+  return map;
+}
+
+/**
+ * Coach Roles RECORD id -> capabilities, indexed by "Role Name" text -
+ * Coaches Slice 3, deliberately a SECOND index alongside
+ * roleCapabilitiesById()'s by-id one (built from the exact same rows).
+ * Occurrence Staff's "Planned Role Snapshot"/"Actual Role Snapshot"
+ * fields are plain text (singleLineText), not links, so they can only
+ * ever be resolved back to a real Coach Roles record by matching text -
+ * the same "snapshot the display value, look up by name" pattern this
+ * codebase already uses elsewhere (Feedback Ratings' Label/Group
+ * Snapshot, parent-hub's own ROLE_DISPLAY_PRIORITY keyed by Role Name).
+ * Exact, case-sensitive match against Airtable's own "Role Name" text -
+ * a typo'd or since-retired snapshot value resolves to nothing here
+ * (undefined), which callers must treat as unresolved/fail-closed, never
+ * as "no role restriction".
+ */
+export function roleCapsByRoleName(coachRoleRows: any[]): Record<string, CoachRoleCapabilities> {
+  const map: Record<string, CoachRoleCapabilities> = {};
+  for (const r of coachRoleRows) {
+    const name = String(r.fields["Role Name"] || "");
+    if (!name) continue;
+    map[name] = {
+      active: r.fields["Active"] === true,
+      roleName: name,
+      roleKey: String(r.fields["Role Key"] || ""),
+      canViewPlayers: r.fields["Can View Players"] === true,
+      canAddFeedback: r.fields["Can Add Feedback"] === true,
+      canEditDevelopmentPlans: r.fields["Can Edit Development Plans"] === true,
+      canRecordAttendance: r.fields["Can Record Attendance"] === true,
+    };
+  }
+  return map;
+}
+
+/**
+ * Whether an Occurrence Staff row counts as staffing at all - Coaches
+ * Slice 3. Two requirements, both fail-closed:
+ *  - a linked Coach (an Occurrence Staff row with no Coach cannot
+ *    resolve to anyone, so it is simply invisible - never an error, never
+ *    a wildcard).
+ *  - `Attendance` is not "Absent". Occurrence Staff has NO "Active" or
+ *    "Cancelled" checkbox of its own (unlike Session Staff) - the schema
+ *    was inspected fresh for this slice and confirmed to have no such
+ *    field. `Attendance` (Planned / Present / Absent) is this table's
+ *    only field whose value can plausibly mean "this coach's assignment
+ *    for this occurrence does not stand" - Absent is read that way here.
+ *    This is a documented INTERPRETATION of a schema that has no explicit
+ *    withdrawn/cancelled flag, not an invented field; see TEST-ENV.md.
+ *    Historical rows are never deleted for this - an Absent row simply
+ *    stops resolving as staffing, its own record is untouched.
+ */
+function isUsableOccurrenceStaffRow(row: { fields: Record<string, any> }): boolean {
+  if (!firstLink(row.fields, "Coach")) return false;
+  if (selectName(row.fields["Attendance"]) === "Absent") return false;
+  return true;
+}
+
+/**
+ * The role that actually applied for ONE Occurrence Staff row - Coaches
+ * Slice 3. Precedence, each level fail-closed on its own (a level that is
+ * non-blank but does not resolve to a real Coach Roles record returns
+ * null immediately; it never falls through to a weaker signal, matching
+ * this codebase's existing malformed-date convention of excluding rather
+ * than guessing past a present-but-bad value):
+ *  1. `Actual Role Snapshot` - what actually applied, confirmed after the
+ *     fact. The most specific, most authoritative signal this table has.
+ *  2. `Planned Role Snapshot` - the intended role, before/absent an
+ *     actual confirmation.
+ *  3. The linked `Session Staff Source` row's own Role - used only when
+ *     BOTH snapshot fields are blank, meaning this occurrence row never
+ *     bothered restating a role of its own and is deferring entirely to
+ *     the recurring assignment it traces back to.
+ *  4. Neither snapshot filled in AND no (or no resolvable) Session Staff
+ *     Source - null. This occurrence row's role cannot be determined; it
+ *     is fail-closed to "no access" everywhere below, though it may still
+ *     be shown for DISPLAY purposes by a caller that only needs a name
+ *     (see parent-hub/index.ts's own duplicate of this logic).
+ *
+ * These snapshot fields exist so historical truth survives later changes
+ * to the Coach Roles catalogue or to the linked Session Staff row's own
+ * Role - this function NEVER re-derives a role live from Session Staff
+ * Source once a snapshot is present; the snapshot always wins once it
+ * exists, by design.
+ */
+function resolveOccurrenceRoleCaps(
+  row: { fields: Record<string, any> },
+  sourceRow: any | null,
+  roleCapsByName: Record<string, CoachRoleCapabilities>,
+  roleCapsById: Record<string, CoachRoleCapabilities>
+): CoachRoleCapabilities | null {
+  const actual = String(row.fields["Actual Role Snapshot"] || "").trim();
+  if (actual) return roleCapsByName[actual] ?? null;
+  const planned = String(row.fields["Planned Role Snapshot"] || "").trim();
+  if (planned) return roleCapsByName[planned] ?? null;
+  if (sourceRow) {
+    const roleId = firstLink(sourceRow.fields, "Role");
+    if (roleId) return roleCapsById[roleId] ?? null;
+  }
+  return null;
+}
+
+export interface ResolvedOccurrenceCoach {
+  coachId: string;
+  roleCaps: CoachRoleCapabilities | null;
+  /** True when this coach's entry came from (or was role-overridden by) an Occurrence Staff row, rather than being pure Session Staff. */
+  fromOccurrenceStaff: boolean;
+}
+
+/**
+ * THE one shared merge algorithm (Coaches Slice 3, see TEST-ENV.md) for
+ * "who is actually staffing this ONE occurrence" - used by every resolver
+ * in this codebase that needs to know, duplicated identically into
+ * parent-hub/index.ts per this file's own "no shared filesystem"
+ * convention (see that file's own copy for the cross-reference comment).
+ *
+ * Two layers, in order:
+ *  1. BASE: every Session Staff row for the session that applies on
+ *     `dateIso` (sessionStaffAppliesOnDate(), Coaches Slice 2, unchanged) -
+ *     exactly what would resolve with no Occurrence Staff involved at
+ *     all, keyed by coach id.
+ *  2. OVERLAY: each USABLE Occurrence Staff row for this exact occurrence
+ *     (isUsableOccurrenceStaffRow()) is applied on top, in the order
+ *     given:
+ *       - `Assignment Type = "Cover"` with a `Session Staff Source` that
+ *         resolves to a real Session Staff row: that source row's own
+ *         coach is REMOVED from the base roster first (unless it is the
+ *         same coach as this Occurrence Staff row's own Coach, in which
+ *         case there is nothing to remove) - this is the schema's
+ *         explicit representation of "this coach has been replaced for
+ *         this occurrence", per the Coaches Slice 3 brief. A `Cover` row
+ *         whose Session Staff Source does not resolve (blank, or a
+ *         broken link) still ADDS its own coach - unambiguous that this
+ *         person is staffing, even though who exactly they replace is
+ *         unknown; nobody is removed in that case.
+ *       - Every usable row (Cover, Additional, Planned or Temporary
+ *         Role alike) then SETS this row's own Coach into the roster
+ *         with the role resolved by resolveOccurrenceRoleCaps() - an
+ *         Additional/Planned row simply adds a new entry; a Temporary
+ *         Role (or any row) for a coach who already has a base entry
+ *         OVERWRITES that entry's role for this occurrence only, which
+ *         is exactly a same-coach role override and needs no special
+ *         case beyond "last write wins" for that coach id.
+ *
+ * This never mutates a Session Staff row and never looks at any
+ * Occurrence Staff row outside the one occurrence being resolved - a
+ * one-date exception can never bleed onto another date or another
+ * session by construction, since `occurrenceStaffRowsForOccurrence` is
+ * always pre-filtered by the caller to one occurrence's own rows.
+ *
+ * Overlap among ADDITIONS is never resolved here, same as Session Staff:
+ * two Occurrence Staff rows for two different coaches on the same
+ * occurrence both resolve (see buildOccurrenceStaffByOccurrenceId() -
+ * both rows are simply present in `occurrenceStaffRowsForOccurrence` and
+ * each SETS its own coach id independently).
+ */
+export function resolveOccurrenceStaffing(
+  dateIso: string,
+  sessionStaffRowsForSession: any[],
+  occurrenceStaffRowsForOccurrence: any[],
+  roleCapsById: Record<string, CoachRoleCapabilities>,
+  roleCapsByNameMap: Record<string, CoachRoleCapabilities>,
+  sessionStaffById: Record<string, any>
+): ResolvedOccurrenceCoach[] {
+  const roster = new Map<string, ResolvedOccurrenceCoach>();
+
+  for (const row of sessionStaffRowsForSession) {
+    if (!sessionStaffAppliesOnDate(row, dateIso)) continue;
+    const coachId = firstLink(row.fields, "Coach");
+    if (!coachId) continue;
+    const roleId = firstLink(row.fields, "Role");
+    const caps = roleId ? roleCapsById[roleId] ?? null : null;
+    roster.set(coachId, { coachId, roleCaps: caps, fromOccurrenceStaff: false });
+  }
+
+  for (const row of occurrenceStaffRowsForOccurrence) {
+    if (!isUsableOccurrenceStaffRow(row)) continue;
+    const coachId = firstLink(row.fields, "Coach");
+    if (!coachId) continue;
+
+    const assignmentType = selectName(row.fields["Assignment Type"]);
+    const sourceId = firstLink(row.fields, "Session Staff Source");
+    const sourceRow = sourceId ? sessionStaffById[sourceId] ?? null : null;
+
+    if (assignmentType === "Cover" && sourceRow) {
+      const sourceCoachId = firstLink(sourceRow.fields, "Coach");
+      if (sourceCoachId && sourceCoachId !== coachId) roster.delete(sourceCoachId);
+    }
+
+    const caps = resolveOccurrenceRoleCaps(row, sourceRow, roleCapsByNameMap, roleCapsById);
+    roster.set(coachId, { coachId, roleCaps: caps, fromOccurrenceStaff: true });
+  }
+
+  return [...roster.values()];
+}
+
+/**
  * A coach's capabilities FOR ONE SESSION ON ONE DATE, from whichever of
  * their own Session Staff rows on that session actually applies on
  * `dateIso` (sessionStaffAppliesOnDate() - Active + Effective From/Until,
@@ -400,14 +646,43 @@ export function buildSessionStaffByCoachAndSession(sessionStaffRows: any[]): Rec
  * data-entry duplicate), the first one found that grants access wins -
  * this only ever needs ONE applicable row to grant the coach access, not
  * every one of them.
+ *
+ * `occurrenceContext` (Coaches Slice 3, optional) - when the session has
+ * a real Session Occurrence dated exactly `dateIso`, pass its Occurrence
+ * Staff rows here so a one-date exception participates in this decision
+ * too, via resolveOccurrenceStaffing(). Omitted (or the session has no
+ * occurrence on this date), this function is byte-identical to Slice 2.
+ * A coach explicitly replaced via Occurrence Staff `Cover` for this exact
+ * occurrence is excluded here even though their Session Staff row is
+ * still Active and in range - the occurrence-specific fact wins.
  */
 export function sessionStaffCapabilitiesForSession(
   sessionId: string,
   coachId: string,
   dateIso: string,
   sessionStaffBySessionAndCoach: Record<string, Record<string, any[]>>,
-  roleCapsById: Record<string, CoachRoleCapabilities>
+  roleCapsById: Record<string, CoachRoleCapabilities>,
+  occurrenceContext?: {
+    occurrenceStaffRows: any[];
+    sessionStaffRowsForSession: any[];
+    sessionStaffById: Record<string, any>;
+    roleCapsByNameMap: Record<string, CoachRoleCapabilities>;
+  } | null
 ): CoachRoleCapabilities | null {
+  if (occurrenceContext) {
+    const roster = resolveOccurrenceStaffing(
+      dateIso,
+      occurrenceContext.sessionStaffRowsForSession,
+      occurrenceContext.occurrenceStaffRows,
+      roleCapsById,
+      occurrenceContext.roleCapsByNameMap,
+      occurrenceContext.sessionStaffById
+    );
+    const entry = roster.find((r) => r.coachId === coachId);
+    if (!entry) return null;
+    return isPlayerAccessRole(entry.roleCaps) ? entry.roleCaps : null;
+  }
+
   const rows = (sessionStaffBySessionAndCoach[sessionId] || {})[coachId] || [];
   for (const row of rows) {
     if (!sessionStaffAppliesOnDate(row, dateIso)) continue;
@@ -516,6 +791,23 @@ export interface ResolveInput {
   /** Airtable Session RECORD ids the caller is covering today (date-specific, from the Changes sheet) - unchanged mechanism, deliberately still separate from Session Staff (see file header). */
   coverSessionIds: Set<string>;
   today: Date;
+  /**
+   * Coaches Slice 3, all optional - omitted (or leave any one undefined)
+   * and this function is byte-identical to Slice 2, no Occurrence Staff
+   * involved anywhere. Session RECORD id -> the Session Occurrence RECORD
+   * id dated exactly `today` for that session, only for sessions that
+   * have one (from the caller's own occurrence-floor read - see
+   * hub-content/index.ts).
+   */
+  occurrenceIdForSessionToday?: Record<string, string>;
+  /** Occurrence RECORD id -> its Occurrence Staff rows, from buildOccurrenceStaffByOccurrenceId(). */
+  occurrenceStaffByOccurrenceId?: Record<string, any[]>;
+  /** Session RECORD id -> ALL Session Staff rows for that session, from buildSessionStaffBySessionId(). */
+  sessionStaffBySessionId?: Record<string, any[]>;
+  /** Session Staff RECORD id -> its own row, from buildSessionStaffById(). */
+  sessionStaffById?: Record<string, any>;
+  /** Coach Roles Role Name text -> capabilities, from roleCapsByRoleName(). */
+  roleCapsByNameMap?: Record<string, CoachRoleCapabilities>;
 }
 
 /**
@@ -569,8 +861,44 @@ export function resolvePlayerAccess(input: ResolveInput): PlayerAccessRow[] {
     roleCapsById,
     coverSessionIds,
     today,
+    occurrenceIdForSessionToday,
+    occurrenceStaffByOccurrenceId,
+    sessionStaffBySessionId,
+    sessionStaffById,
+    roleCapsByNameMap,
   } = input;
   const todayIso = ukTodayIso(today);
+
+  /**
+   * Coaches Slice 3: built once per session, only when every piece needed
+   * to resolve Occurrence Staff was actually supplied AND this session
+   * has a real occurrence dated `todayIso` - otherwise undefined, and the
+   * "permanent" tier below falls back to plain Session Staff, exactly
+   * Slice 2. Kept as a small memoised lookup rather than rebuilt per
+   * player/link, since the same session is looked at many times over the
+   * loop below.
+   */
+  const occurrenceContextCache = new Map<
+    string,
+    { occurrenceStaffRows: any[]; sessionStaffRowsForSession: any[]; sessionStaffById: Record<string, any>; roleCapsByNameMap: Record<string, CoachRoleCapabilities> } | null
+  >();
+  function occurrenceContextForSession(sessionId: string) {
+    if (occurrenceContextCache.has(sessionId)) return occurrenceContextCache.get(sessionId)!;
+    let context = null;
+    if (occurrenceIdForSessionToday && occurrenceStaffByOccurrenceId && sessionStaffBySessionId && sessionStaffById && roleCapsByNameMap) {
+      const occurrenceId = occurrenceIdForSessionToday[sessionId];
+      if (occurrenceId) {
+        context = {
+          occurrenceStaffRows: occurrenceStaffByOccurrenceId[occurrenceId] || [],
+          sessionStaffRowsForSession: sessionStaffBySessionId[sessionId] || [],
+          sessionStaffById,
+          roleCapsByNameMap,
+        };
+      }
+    }
+    occurrenceContextCache.set(sessionId, context);
+    return context;
+  }
 
   const sessionById: Record<string, any> = {};
   for (const s of sessions) sessionById[s.id] = s;
@@ -643,7 +971,7 @@ export function resolvePlayerAccess(input: ResolveInput): PlayerAccessRow[] {
         // A coach merely being staffed/covering must NEVER grant access
         // if their role/capabilities prohibit it - checked before
         // anything else, every call, every session.
-        const staffCaps = sessionStaffCapabilitiesForSession(sid, coachRecordId, todayIso, sessionStaffBySessionAndCoach, roleCapsById);
+        const staffCaps = sessionStaffCapabilitiesForSession(sid, coachRecordId, todayIso, sessionStaffBySessionAndCoach, roleCapsById, occurrenceContextForSession(sid));
         const isStaffed = !!staffCaps;
         const isCovering = !isStaffed && coverSessionIds.has(sid);
         const caps = isStaffed ? staffCaps : isCovering ? coachCoverCapabilities : null;
