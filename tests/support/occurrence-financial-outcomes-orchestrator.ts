@@ -3,8 +3,9 @@
  * outcomes), kept in sync by hand exactly like every other deployed
  * copy. Import paths below are adjusted to this directory's own file
  * names (financial-outcomes.ts is unchanged; repository.ts becomes
- * occurrence-financial-outcomes-repository.ts) - everything else is kept
- * identical.
+ * occurrence-financial-outcomes-repository.ts; lock-client.ts becomes
+ * occurrence-financial-outcomes-lock-client.ts) - everything else is
+ * kept identical.
  *
  * Composition layer for Coaches Slice 6 (see TEST-ENV.md) - the one place
  * validation, existence checks, the Parent/Venue upsert boundary, and the
@@ -42,6 +43,7 @@ import {
   updateAllocation,
   updateOutcomeRow,
 } from "./occurrence-financial-outcomes-repository.ts";
+import type { LockClient } from "./occurrence-financial-outcomes-lock-client.ts";
 
 export type SetCoachOutcomeResult =
   | { status: "validation_error"; error: string }
@@ -75,14 +77,72 @@ export async function setCoachOutcome(deps: { airtable: AirtableConfig }, input:
 export type SetOccurrenceOutcomeResult =
   | { status: "validation_error"; error: string }
   | { status: "occurrence_not_found" }
+  | { status: "lock_unavailable" }
   | { status: "created"; recordId: string }
   | { status: "updated"; recordId: string };
+
+const DEFAULT_LOCK_MAX_ATTEMPTS = 25;
+const DEFAULT_LOCK_RETRY_DELAY_MS = 40;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export interface LockRetryOptions {
+  maxAttempts?: number;
+  retryDelayMs?: number;
+}
+
+/**
+ * Coaches Slice 6 hardening (see TEST-ENV.md - "Occurrence Financial
+ * Outcome concurrency"). Serializes the ENTIRE upsert-or-update sequence
+ * below per occurrence, so two genuinely concurrent Parent/Venue writes
+ * for the SAME occurrence can never both see "no existing row" and both
+ * create one - the exact race real TEST verification hit when this
+ * session fired two writes in parallel instead of sequentially.
+ *
+ * `acquire()` returns immediately (null on contention, same as the
+ * existing generation-lock pattern this mirrors) - this function is the
+ * caller's own choice to keep retrying for a short, bounded budget
+ * (~1s by default) rather than either blocking forever or dropping a
+ * legitimate concurrent Management request outright. A lock that is
+ * never released (e.g. a crashed invocation) self-heals after 5 minutes
+ * at the Postgres level (see acquire_occurrence_outcome_lock) - this
+ * loop's own budget is about tolerating brief contention between two
+ * live requests, not about outliving a stuck lock.
+ */
+async function withOccurrenceLock<T>(
+  lock: LockClient,
+  occurrenceId: string,
+  fn: () => Promise<T>,
+  opts: LockRetryOptions = {}
+): Promise<T | { status: "lock_unavailable" }> {
+  const maxAttempts = opts.maxAttempts ?? DEFAULT_LOCK_MAX_ATTEMPTS;
+  const retryDelayMs = opts.retryDelayMs ?? DEFAULT_LOCK_RETRY_DELAY_MS;
+
+  let token: string | null = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    token = await lock.acquire(occurrenceId);
+    if (token) break;
+    if (attempt < maxAttempts - 1) await sleep(retryDelayMs);
+  }
+  if (!token) {
+    return { status: "lock_unavailable" };
+  }
+  try {
+    return await fn();
+  } finally {
+    await lock.release(occurrenceId, token);
+  }
+}
 
 /**
  * Shared upsert sequence for Parent/Venue (identical shape, different
  * validator/patch-builder/field family) - looks up the one-row-per-
  * occurrence boundary itself; never called with a family name string, so
  * there is no way for a caller to accidentally mix the two families up.
+ * Always called through withOccurrenceLock() below, never directly, so
+ * this function itself does not need to know about locking at all.
  */
 async function upsertOccurrenceOutcome(
   deps: { airtable: AirtableConfig },
@@ -102,27 +162,29 @@ async function upsertOccurrenceOutcome(
 }
 
 export async function setParentOutcome(
-  deps: { airtable: AirtableConfig },
+  deps: { airtable: AirtableConfig; lock: LockClient },
   input: OccurrenceOutcomeInput,
   decidedBy: DecidedBy,
-  nowIso: string = new Date().toISOString()
+  nowIso: string = new Date().toISOString(),
+  lockOpts?: LockRetryOptions
 ): Promise<SetOccurrenceOutcomeResult> {
   const validationError = validateParentOutcomeInput(input);
   if (validationError) return { status: "validation_error", error: validationError };
   const patch = buildParentOutcomePatch(input, decidedBy, nowIso);
-  return upsertOccurrenceOutcome(deps, input.occurrenceId, patch);
+  return withOccurrenceLock(deps.lock, input.occurrenceId, () => upsertOccurrenceOutcome(deps, input.occurrenceId, patch), lockOpts);
 }
 
 export async function setVenueOutcome(
-  deps: { airtable: AirtableConfig },
+  deps: { airtable: AirtableConfig; lock: LockClient },
   input: OccurrenceOutcomeInput,
   decidedBy: DecidedBy,
-  nowIso: string = new Date().toISOString()
+  nowIso: string = new Date().toISOString(),
+  lockOpts?: LockRetryOptions
 ): Promise<SetOccurrenceOutcomeResult> {
   const validationError = validateVenueOutcomeInput(input);
   if (validationError) return { status: "validation_error", error: validationError };
   const patch = buildVenueOutcomePatch(input, decidedBy, nowIso);
-  return upsertOccurrenceOutcome(deps, input.occurrenceId, patch);
+  return withOccurrenceLock(deps.lock, input.occurrenceId, () => upsertOccurrenceOutcome(deps, input.occurrenceId, patch), lockOpts);
 }
 
 export interface FinancialOutcomesView {

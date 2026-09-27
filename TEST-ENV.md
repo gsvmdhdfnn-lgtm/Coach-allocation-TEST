@@ -5010,6 +5010,9 @@ Finance/Management to weigh if concurrent multi-user editing of the
 same occurrence's outcome becomes a real scenario, rather than silently
 left undocumented.
 
+**Resolved** - see "Post-Slice-6 hardening — Occurrence Financial
+Outcome concurrency" below, closed before Slice 7 began.
+
 ### Management-only security
 
 Every `occurrence-financial-outcomes` route (`/coach-outcome`,
@@ -5218,5 +5221,183 @@ executed - this slice only records the operational decision that later
 Finance/Payments work can safely consume.
 
 **Coaches Slice 6 is ready for Slice 7 coach availability.**
+
+## Post-Slice-6 hardening — Occurrence Financial Outcome concurrency — TEST only — 2026-09-27
+
+Closes the one documented limitation above ("Known limitation, documented
+rather than engineered around") before Slice 7 begins. Scope was
+deliberately narrow, per the brief: make concurrent writes for the same
+Session Occurrence unable to create duplicate financial-outcome records,
+without changing the approved Coach/Parent/Venue outcome model and
+without touching production/frontend/Sheets/Stripe/Finance execution.
+Neither `financial-outcomes.ts` (validation/patch-building) nor
+`repository.ts` (Airtable I/O) nor the three-entry-point
+`setCoachOutcome`/`setParentOutcome`/`setVenueOutcome` shape was changed
+- only the sequencing around the existing Parent/Venue upsert gained a
+lock.
+
+### Design choice and why the alternatives were rejected
+
+Three options were inspected before writing any code:
+
+1. **One combined atomic Management write** (a single request carrying
+   both Parent and Venue decisions together) - rejected. The brief
+   requires "Parent and Venue outcome updates must be able to update
+   that same record independently"; a combined-write endpoint would
+   either force both decisions to arrive together (violating that
+   requirement outright) or still need a second independent-update path
+   for the common case of Parent and Venue being decided at different
+   times by different people, at which point the combined endpoint
+   solves nothing and the race is back.
+2. **Reuse `generation_locks` directly** (the existing per-entity lock
+   table already used by `session-occurrences`, keyed by
+   `session_record_id`) - rejected. That table is semantically scoped to
+   Session-occurrence generation, a different domain; storing an
+   Occurrence Financial Outcomes/Session-Occurrence id in a column named
+   `session_record_id` would be overloading an unrelated id type into an
+   existing column for convenience, not "reusing an existing pattern" -
+   it would make a future reader unable to trust what that column means.
+3. **A new, domain-scoped lock table/RPC pair, same proven shape** -
+   chosen. `occurrence_outcome_locks` (keyed by
+   `occurrence_record_id text`) plus `acquire_occurrence_outcome_lock`/
+   `release_occurrence_outcome_lock` Postgres functions, deliberately
+   mirroring `generation_locks`' own proven design one-for-one: an
+   atomic `INSERT ... ON CONFLICT (pk) DO NOTHING` for acquire (so
+   ownership is decided by a single atomic statement, not a
+   check-then-insert race of its own), a `gen_random_uuid()` lock token
+   returned to the caller so release is token-matched rather than
+   presence-matched (a stale invocation that wakes up after its lock was
+   reclaimed can never delete the new owner's lock), and the same
+   5-minute self-heal sweep (`delete ... where locked_at < now() -
+   interval '5 minutes'`) for a crashed-invocation's lock to expire on
+   its own. This is "reuse an existing locking/idempotency pattern"
+   taken literally - the exact shape that has already been proven
+   correct in this codebase - applied to its own domain rather than
+   shared across two unrelated ones.
+
+### What the lock guards, and what it deliberately does not
+
+Only `setParentOutcome`/`setVenueOutcome` acquire the lock, via a new
+`withOccurrenceLock()` wrapper in `orchestrator.ts` that serializes the
+entire "does a row exist for this occurrence -> update it, else create
+one" sequence per occurrence id. `setCoachOutcome` is untouched and
+acquires no lock: it always `PATCH`es a caller-supplied `allocationId`
+directly, never creates a row and never looks one up by occurrence, so
+it has no duplicate-row race by construction - locking it would be
+scope creep the brief explicitly warned against ("do not change the
+approved Coach/Parent/Venue outcome model").
+
+`withOccurrenceLock()` calls `acquire()` in a bounded retry loop (25
+attempts, 40ms apart, ~1s total budget by default) rather than either
+blocking forever or dropping a legitimate concurrent Management request
+outright - `acquire()` itself returns immediately (null on contention,
+same as `generation_locks`' own client), so retrying is the caller's own
+choice. If the budget is exhausted, the new `"lock_unavailable"` status
+is returned and surfaced as HTTP 409 ("This occurrence's financial
+outcome is being updated by another request - please retry") rather than
+either silently failing or hanging the request - Management retries
+naturally resolve this, and the Postgres-level 5-minute self-heal means
+a genuinely stuck lock (e.g. a crashed invocation) cannot wedge the
+occurrence permanently.
+
+### Deterministic concurrent-write test
+
+`tests/support/occurrence-financial-outcomes.test.ts` item 19 (5
+assertions, 19a-19e) fires `setParentOutcome`/`setVenueOutcome`
+concurrently via `Promise.all`, sharing one lock instance and one mocked
+`fetch` store with an artificial delay on **both** the mocked
+GET-list-existing-row call (30ms) and the mocked POST-create call
+(15ms). Both delays were required for the test to be a genuine
+reproduction, not a vacuous one: an earlier throwaway sanity script
+(never committed) found that delaying only the GET-list call was
+insufficient - even against a no-op "always grants" lock, only one row
+resulted, because Node's timer/microtask ordering let the first writer's
+entire remaining synchronous chain (list response -> existence check ->
+an instant mocked create) complete inside the same timer callback before
+the second writer's own list-timer had fired to see the store still
+empty. Adding a second delay to the mocked create call closes that gap.
+The same sanity script confirmed, before the shipped test was finalised,
+that this exact harness (a) reliably produces 2 duplicate rows against a
+no-op lock and (b) reliably produces exactly 1 row against a real lock
+(even the in-memory test fake) - proving the shipped test would have
+failed pre-fix and passes post-fix, not merely that it passes now.
+Assertions: 19a both concurrent calls succeed (one `created`, one
+`updated`) rather than one erroring or being silently dropped; 19b
+exactly one Occurrence Financial Outcomes record exists afterward; 19c
+only one real create call was ever made; 19d the GET-list endpoint was
+hit twice (once per writer's own existence check, serialized one after
+the other by the lock, not coincidentally avoided); 19e the single
+surviving record carries **both** intended values - the Parent call's
+Credit/£20 and the Venue call's Paid/£50, neither lost nor overwritten
+by the other.
+`occurrence-financial-outcomes.test.ts`: **37/37** assertions passing
+(32 from Slice 6 plus this hardening's 5).
+
+### Deploy
+
+`occurrence-financial-outcomes` v2 (project `dkqubldmfyeuudecxmvh`) - all
+five files (`index.ts`, `financial-outcomes.ts`, `orchestrator.ts`,
+`repository.ts`, and the new `lock-client.ts`). Deployed content
+downloaded via `get_edge_function` and `diff`'d byte-for-byte against
+the local repo files after deployment; confirmed **identical** for all
+five files before any real TEST HTTP verification was trusted, same
+discipline as every prior slice's deploy.
+
+### Real TEST concurrency verification, real HTTP via `pg_net`
+
+Fresh Management JWT obtained via the established
+password-reset-via-`crypt()` + `pg_net` pattern (`manager@test.invalid`).
+One throwaway Session Occurrence created directly (`THROWAWAY -
+concurrency hardening verification`, `rectRaanez1kRZyvo`, deleted) - no
+Coach, Session, or Coach Allocation needed, since Parent/Venue outcome
+writes only require a valid Session Occurrence to exist.
+
+Two `net.http_post` calls (`POST /parent-outcome` Refund/£15/"Concurrency
+hardening test - parent leg", `POST /venue-outcome` Credit/£30/
+"Concurrency hardening test - venue leg") for the **same** occurrence
+were issued together in one SQL statement, neither awaited before the
+other fired - the same genuinely-concurrent-wall-clock technique that
+originally reproduced the race during Slice 6's own verification. Real
+results: `{"status":"created","recordId":"reco9YQFXsylz6N0K"}` and
+`{"status":"updated","recordId":"reco9YQFXsylz6N0K"}` - **both calls
+resolved to the same record**, one creating it and the other updating
+it, rather than each creating its own row. A follow-up `GET /outcomes`
+confirmed: `{"parentOutcome":{"outcome":"Refund","amount":15,"reason":
+"Concurrency hardening test - parent leg"},"venueOutcome":{"outcome":
+"Credit","amount":30,"reason":"Concurrency hardening test - venue
+leg"}}` - both values preserved. This was cross-checked directly against
+the Airtable table itself (not just the API's own read, which could mask
+a duplicate via `.find()`'s first-match behaviour): a filtered
+`list_records_for_table` query on Occurrence Financial Outcomes for this
+occurrence returned `totalRecordCount: 1`, the single record
+`reco9YQFXsylz6N0K` with both `Parent Outcome: Refund`/£15 and `Venue
+Outcome: Credit`/£30 stored on it. `occurrence_outcome_locks` was
+confirmed empty (`count: 0`) immediately afterward - both locks were
+acquired, used, and released cleanly, with nothing left for the 5-minute
+self-heal to ever need to claim.
+
+The throwaway Occurrence Financial Outcomes row and Session Occurrence
+were deleted by their exact ids immediately after verification.
+
+### Regression
+
+Full TEST suite (`node tests/run-all.js`): **52/52 test files passing**,
+exit code 0, including `occurrence-financial-outcomes.test.ts` at 37/37
+(re-run standalone to confirm items 19a-19e specifically). This
+hardening touched only `occurrence-financial-outcomes`'s own
+`orchestrator.ts`/`index.ts` plus its new `lock-client.ts` and a new,
+isolated Postgres table/pair of RPC functions - no other Edge Function,
+table, or test file was modified, so no other slice's behaviour could
+have changed as a side effect.
+
+### Production isolation
+
+No production Airtable, production Supabase, frontend, Google Sheets, or
+Stripe was read, written, or otherwise touched. Every Airtable call
+targeted the TEST base `appQktredAuGa1X7e`; every Supabase call targeted
+the TEST project `dkqubldmfyeuudecxmvh`; `occurrence-financial-outcomes`
+carries the same TEST DEPLOYMENT GUARD as every other TEST function.
+
+**Slice 6 concurrency hardening is complete and ready for Slice 7.**
 
 Do not start Slice 7 automatically.

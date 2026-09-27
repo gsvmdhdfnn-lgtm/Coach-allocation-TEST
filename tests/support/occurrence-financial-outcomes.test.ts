@@ -5,7 +5,9 @@
 // convention as daily-top-up.test.ts/coach-allocations.test.ts) to prove
 // the real orchestrator sequencing - upsert, idempotency, safe update,
 // and reschedule separation - end to end against an Airtable-shaped
-// in-memory store, independent of any real network call.
+// in-memory store, independent of any real network call. Item 19 (post-
+// Slice-6 hardening) proves the per-occurrence lock added afterward
+// prevents the exact concurrent-create race real TEST verification hit.
 import {
   KNOWN_COACH_OUTCOMES,
   buildCoachOutcomePatch,
@@ -22,6 +24,38 @@ import {
   setParentOutcome,
   setVenueOutcome,
 } from "./occurrence-financial-outcomes-orchestrator.ts";
+import type { LockClient } from "./occurrence-financial-outcomes-lock-client.ts";
+
+/**
+ * In-memory LockClient for unit tests - faithfully mirrors the real
+ * Postgres RPCs' semantics (atomic acquire, ownership-checked release)
+ * without needing a real database. JS's single-threaded event loop makes
+ * the Map-based check-and-set below genuinely atomic (no `await` inside
+ * acquire()), the same guarantee the real `insert ... on conflict do
+ * nothing` gives at the Postgres level - so this fake is a faithful
+ * stand-in for proving the ORCHESTRATOR's retry/serialization logic,
+ * even though the real RPC round-trip itself is only exercised by real
+ * TEST HTTP verification (see TEST-ENV.md).
+ */
+function createInMemoryLockClient(): LockClient {
+  const held = new Map<string, string>();
+  let nextToken = 1;
+  return {
+    async acquire(occurrenceRecordId: string): Promise<string | null> {
+      if (held.has(occurrenceRecordId)) return null;
+      const token = `tok-${nextToken++}`;
+      held.set(occurrenceRecordId, token);
+      return token;
+    },
+    async release(occurrenceRecordId: string, lockToken: string): Promise<boolean> {
+      if (held.get(occurrenceRecordId) === lockToken) {
+        held.delete(occurrenceRecordId);
+        return true;
+      }
+      return false;
+    },
+  };
+}
 
 const R: [string, string, string][] = [];
 let failed = false;
@@ -111,11 +145,33 @@ function makeStore() {
     allocations: new Map<string, Record<string, any>>(),
     outcomeRows: new Map<string, Record<string, any>>(),
     outcomeCreateCalls: 0,
+    outcomeListCalls: 0,
     nextOutcomeId: 1,
   };
 }
 
-function installMockFetch(store: ReturnType<typeof makeStore>) {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * `listDelayMs`/`createDelayMs` (both default 0) add an artificial delay
+ * before the Occurrence Financial Outcomes LIST/CREATE responses - only
+ * item 19 sets these, to widen the check-then-write race window the same
+ * way real Airtable network latency did during Slice 6's real TEST
+ * verification (both the existence-check AND the create call are real
+ * network round trips there). Confirmed necessary on BOTH legs: with only
+ * the LIST call delayed, this mock's instant CREATE response let the
+ * first writer's full sequence finish inside a single Node timer
+ * callback, accidentally preventing the second writer's list-check from
+ * ever landing in the open window - delaying CREATE too closes that gap
+ * and makes the race genuinely, deterministically reproducible without a
+ * real lock (verified separately against a no-op lock before this test
+ * was written). Items 11-15 leave both at 0 - they don't need them and it
+ * would only slow those down for no benefit, since they call these
+ * functions sequentially.
+ */
+function installMockFetch(store: ReturnType<typeof makeStore>, listDelayMs = 0, createDelayMs = 0) {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: any, opts: any = {}) => {
     const u = String(url);
@@ -149,9 +205,12 @@ function installMockFetch(store: ReturnType<typeof makeStore>) {
       return jsonResponse({ id: outcomeByIdMatch[1], fields: store.outcomeRows.get(outcomeByIdMatch[1]) });
     }
     if (/\/Occurrence%20Financial%20Outcomes(\?.*)?$/.test(u) && method === "GET") {
+      store.outcomeListCalls++;
+      if (listDelayMs > 0) await sleep(listDelayMs);
       return jsonResponse({ records: [...store.outcomeRows.entries()].map(([id, fields]) => ({ id, fields })) });
     }
     if (/\/Occurrence%20Financial%20Outcomes$/.test(u) && method === "POST") {
+      if (createDelayMs > 0) await sleep(createDelayMs);
       store.outcomeCreateCalls++;
       const id = `recOutcomeRow${String(store.nextOutcomeId++).padStart(6, "0")}`;
       store.outcomeRows.set(id, { ...body.records[0].fields });
@@ -177,9 +236,10 @@ async function testItem11() {
     store.occurrences.set(occId, { Status: "Cancelled" });
     store.allocations.set(allocId, { "Session Occurrence": [occId], "Rate Amount Snapshot": 30, "Paid Units": 1 });
 
+    const lock = createInMemoryLockClient();
     await setCoachOutcome({ airtable: AIRTABLE }, { allocationId: allocId, outcome: "Paid" }, DECIDED_BY);
-    await setParentOutcome({ airtable: AIRTABLE }, { occurrenceId: occId, outcome: "Credit", amount: 20 }, DECIDED_BY);
-    await setVenueOutcome({ airtable: AIRTABLE }, { occurrenceId: occId, outcome: "None" }, DECIDED_BY);
+    await setParentOutcome({ airtable: AIRTABLE, lock }, { occurrenceId: occId, outcome: "Credit", amount: 20 }, DECIDED_BY);
+    await setVenueOutcome({ airtable: AIRTABLE, lock }, { occurrenceId: occId, outcome: "None" }, DECIDED_BY);
 
     const view = await readFinancialOutcomes({ airtable: AIRTABLE }, occId);
     ck(
@@ -206,8 +266,9 @@ async function testItem12and13() {
     store.occurrences.set(originalId, { Status: "Postponed", "Replacement Occurrence": [replacementId] });
     store.occurrences.set(replacementId, { Status: "Scheduled" });
 
-    await setParentOutcome({ airtable: AIRTABLE }, { occurrenceId: originalId, outcome: "Refund", amount: 40 }, DECIDED_BY);
-    await setVenueOutcome({ airtable: AIRTABLE }, { occurrenceId: originalId, outcome: "Credit", amount: 10 }, DECIDED_BY);
+    const lock = createInMemoryLockClient();
+    await setParentOutcome({ airtable: AIRTABLE, lock }, { occurrenceId: originalId, outcome: "Refund", amount: 40 }, DECIDED_BY);
+    await setVenueOutcome({ airtable: AIRTABLE, lock }, { occurrenceId: originalId, outcome: "Credit", amount: 10 }, DECIDED_BY);
 
     const originalView = await readFinancialOutcomes({ airtable: AIRTABLE }, originalId);
     ck(
@@ -235,8 +296,9 @@ async function testItem14() {
     const occId = "recOcc14000000001";
     store.occurrences.set(occId, { Status: "Cancelled" });
 
-    const first = await setParentOutcome({ airtable: AIRTABLE }, { occurrenceId: occId, outcome: "Credit", amount: 20, reason: "Weather" }, DECIDED_BY);
-    const second = await setParentOutcome({ airtable: AIRTABLE }, { occurrenceId: occId, outcome: "Credit", amount: 20, reason: "Weather" }, DECIDED_BY);
+    const lock = createInMemoryLockClient();
+    const first = await setParentOutcome({ airtable: AIRTABLE, lock }, { occurrenceId: occId, outcome: "Credit", amount: 20, reason: "Weather" }, DECIDED_BY);
+    const second = await setParentOutcome({ airtable: AIRTABLE, lock }, { occurrenceId: occId, outcome: "Credit", amount: 20, reason: "Weather" }, DECIDED_BY);
 
     ck("14a. The first confirmation creates a row", first.status === "created");
     ck("14b. Repeating the exact same confirmation updates the SAME row rather than creating another", second.status === "updated" && second.recordId === first.recordId, JSON.stringify({ first, second }));
@@ -254,14 +316,81 @@ async function testItem15() {
     const occId = "recOcc15000000001";
     store.occurrences.set(occId, { Status: "Cancelled" });
 
-    const first = await setVenueOutcome({ airtable: AIRTABLE }, { occurrenceId: occId, outcome: "Paid", amount: 50 }, DECIDED_BY);
-    const second = await setVenueOutcome({ airtable: AIRTABLE }, { occurrenceId: occId, outcome: "Credit", amount: 30, reason: "Venue agreed to a credit instead" }, DECIDED_BY);
+    const lock = createInMemoryLockClient();
+    const first = await setVenueOutcome({ airtable: AIRTABLE, lock }, { occurrenceId: occId, outcome: "Paid", amount: 50 }, DECIDED_BY);
+    const second = await setVenueOutcome({ airtable: AIRTABLE, lock }, { occurrenceId: occId, outcome: "Credit", amount: 30, reason: "Venue agreed to a credit instead" }, DECIDED_BY);
 
     ck("15a. Editing a prior decision updates the SAME row, not a new one", second.status === "updated" && second.recordId === first.recordId, JSON.stringify({ first, second }));
     ck("15b. Only one real create call was ever made, across the original decision and its later edit", store.outcomeCreateCalls === 1, String(store.outcomeCreateCalls));
 
     const view = await readFinancialOutcomes({ airtable: AIRTABLE }, occId);
     ck("15c. The stored state reflects the LATEST decision (Credit/£30), not the original (Paid/£50)", view!.venueOutcome!.outcome === "Credit" && view!.venueOutcome!.amount === 30, JSON.stringify(view!.venueOutcome));
+  } finally {
+    restore();
+  }
+}
+
+// --- 19. Post-Slice-6 hardening: concurrent Parent+Venue writes to the
+// same occurrence never create duplicate records ---
+//
+// This is a deterministic reconstruction of the exact race real TEST
+// verification hit in Slice 6: Parent-outcome and Venue-outcome fired
+// for the SAME occurrence at (near-)the same instant, rather than one
+// after the other. Artificial delays on both the mocked LIST call and
+// the mocked CREATE call widen the check-then-write window the same way
+// real Airtable network latency did on both legs - confirmed necessary
+// on both (not just LIST) by running this exact scenario against a
+// no-op "always grants" lock before writing this test: with only LIST
+// delayed, this mock's instant CREATE let the first writer finish inside
+// one Node timer callback, accidentally closing the window; delaying
+// CREATE too reliably reproduced 2 rows without a real lock, and exactly
+// 1 with one - confirming both that the race is genuine and that this
+// test would have caught it. Both calls below share ONE lock client
+// instance (mirroring index.ts constructing a single module-level
+// lockClient shared by every request), and use a short retryDelayMs so
+// the test stays fast while still exercising several real contention/
+// retry cycles.
+async function testItem19() {
+  const store = makeStore();
+  const restore = installMockFetch(store, /* listDelayMs */ 30, /* createDelayMs */ 15);
+  try {
+    const occId = "recOcc19000000001";
+    store.occurrences.set(occId, { Status: "Cancelled" });
+    const lock = createInMemoryLockClient();
+    const lockOpts = { maxAttempts: 50, retryDelayMs: 5 };
+
+    const [parentResult, venueResult] = await Promise.all([
+      setParentOutcome({ airtable: AIRTABLE, lock }, { occurrenceId: occId, outcome: "Credit", amount: 20, reason: "Weather - parent credit" }, DECIDED_BY, undefined, lockOpts),
+      setVenueOutcome({ airtable: AIRTABLE, lock }, { occurrenceId: occId, outcome: "Paid", amount: 50 }, DECIDED_BY, undefined, lockOpts),
+    ]);
+
+    ck(
+      "19a. Both concurrent calls succeeded (one created, one updated the same row) rather than one being dropped or erroring",
+      (parentResult.status === "created" || parentResult.status === "updated") && (venueResult.status === "created" || venueResult.status === "updated"),
+      JSON.stringify({ parentResult, venueResult })
+    );
+    ck(
+      "19b. Exactly ONE Occurrence Financial Outcomes record exists for the occurrence after both concurrent writes - the lock prevented the duplicate-create race",
+      store.outcomeRows.size === 1,
+      `outcomeRows.size = ${store.outcomeRows.size}`
+    );
+    ck(
+      "19c. Only one real create call was ever made to Occurrence Financial Outcomes, even though two writers raced for it",
+      store.outcomeCreateCalls === 1,
+      String(store.outcomeCreateCalls)
+    );
+    ck(
+      "19d. The lock genuinely serialized the two writers rather than the mock coincidentally avoiding the race - the LIST endpoint was hit twice (once per writer's own existence check, one after the other)",
+      store.outcomeListCalls === 2,
+      String(store.outcomeListCalls)
+    );
+
+    const view = await readFinancialOutcomes({ airtable: AIRTABLE }, occId);
+    ck(
+      "19e. The single surviving record has BOTH intended values preserved - the Parent call's Credit/£20 AND the Venue call's Paid/£50, neither lost nor overwritten by the other",
+      view!.parentOutcome!.outcome === "Credit" && view!.parentOutcome!.amount === 20 && view!.venueOutcome!.outcome === "Paid" && view!.venueOutcome!.amount === 50,
+      JSON.stringify(view)
+    );
   } finally {
     restore();
   }
@@ -301,6 +430,7 @@ async function main() {
   await testItem12and13();
   await testItem14();
   await testItem15();
+  await testItem19();
 
   console.log(R.map(([s, n, x]) => `${s}  ${n}${x ? "  -- " + x : ""}`).join("\n"));
   console.log(`\n${R.filter((r) => r[0] === "PASS").length}/${R.length} passing`);

@@ -30,6 +30,7 @@ import {
   setVenueOutcome,
 } from "./orchestrator.ts";
 import { type AirtableConfig } from "./repository.ts";
+import { createSupabaseLockClient } from "./lock-client.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
 const AIRTABLE_BASE_ID = Deno.env.get("AIRTABLE_BASE_ID")!;
@@ -57,6 +58,7 @@ if (!/^app[A-Za-z0-9]{14}$/.test(AIRTABLE_BASE_ID || "")) {
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -105,6 +107,16 @@ async function requireManagement(req: Request): Promise<{ ok: true; caller: { us
 }
 
 const airtableConfig: AirtableConfig = { baseId: AIRTABLE_BASE_ID, token: AIRTABLE_TOKEN };
+/**
+ * Coaches Slice 6 hardening (see TEST-ENV.md) - guards the Occurrence
+ * Financial Outcomes upsert-or-update sequence per occurrence, same
+ * lock-client convention as session-occurrences/index.ts's own
+ * lockClient, pointed at this domain's own table/RPC functions instead.
+ * Not used by handleCoachOutcome - Coach outcome is always an update to
+ * a caller-supplied allocationId, never a create, so it has no
+ * duplicate-row race to guard against.
+ */
+const lockClient = createSupabaseLockClient({ supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY });
 
 const RECORD_ID_RE = /^rec[A-Za-z0-9]{14}$/;
 
@@ -158,7 +170,7 @@ async function handleParentOutcome(req: Request): Promise<Response> {
 
   try {
     const outcome = await setParentOutcome(
-      { airtable: airtableConfig },
+      { airtable: airtableConfig, lock: lockClient },
       { occurrenceId: body.occurrenceId, outcome: body.outcome, amount: body.amount ?? null, reason: body.reason ?? null },
       { userId: auth.caller.userId, name: auth.caller.displayName }
     );
@@ -167,6 +179,8 @@ async function handleParentOutcome(req: Request): Promise<Response> {
         return jsonResponse({ error: outcome.error }, 400);
       case "occurrence_not_found":
         return jsonResponse({ error: `No Session Occurrence found for id ${body.occurrenceId}` }, 404);
+      case "lock_unavailable":
+        return jsonResponse({ error: "This occurrence's financial outcome is being updated by another request - please retry" }, 409);
       case "created":
         return jsonResponse(outcome, 201);
       case "updated":
@@ -194,7 +208,7 @@ async function handleVenueOutcome(req: Request): Promise<Response> {
 
   try {
     const outcome = await setVenueOutcome(
-      { airtable: airtableConfig },
+      { airtable: airtableConfig, lock: lockClient },
       { occurrenceId: body.occurrenceId, outcome: body.outcome, amount: body.amount ?? null, reason: body.reason ?? null },
       { userId: auth.caller.userId, name: auth.caller.displayName }
     );
@@ -203,6 +217,8 @@ async function handleVenueOutcome(req: Request): Promise<Response> {
         return jsonResponse({ error: outcome.error }, 400);
       case "occurrence_not_found":
         return jsonResponse({ error: `No Session Occurrence found for id ${body.occurrenceId}` }, 404);
+      case "lock_unavailable":
+        return jsonResponse({ error: "This occurrence's financial outcome is being updated by another request - please retry" }, 409);
       case "created":
         return jsonResponse(outcome, 201);
       case "updated":
