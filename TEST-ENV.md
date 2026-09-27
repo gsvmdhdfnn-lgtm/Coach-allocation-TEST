@@ -2280,3 +2280,314 @@ created, read from with intent to write, or written to. No frontend
 file touched. No Google Sheets or finance file touched.
 
 **Slice 8 automatic triggering is ready for Slice 9 Session History.**
+
+## Slice 9 - Session History
+
+Goal, per your instruction: when Management makes a structural change to
+a recurring Session, record a clean audit entry - what changed, who
+changed it, when, and what the system did to future occurrences as a
+result. Session History is the history of structural changes to a
+recurring Session, never a list of past occurrences.
+
+### What creates a History entry
+
+Written from inside `propagateForSession()` (Day/Time/Venue/Capacity/
+Operating Dates) or `generateForSession()` (Created/Active Status) -
+the exact same safe structural-edit flow already used by Slice 6/8
+propagation and generation, never a separate write path:
+
+- **Day, Time, Venue, Capacity, Operating Dates (End Date)** - one row
+  per structural dimension that ACTUALLY changed in a `/propagate` or
+  `/trigger-session-saved` call, written by `propagateForSession()`
+  after the occurrence-level plan and the Session's own new fields have
+  both already been written successfully.
+- **Created** - one row the first time `generateForSession()` runs with
+  `sessionEvent: { kind: "created" }`, written by `generateForSession()`
+  after generation has run.
+- **Active Status** - one row when `generateForSession()` runs with
+  `sessionEvent: { kind: "status_changed", oldStatus, newStatus }` and
+  `oldStatus !== newStatus`.
+
+### What does NOT create a History entry
+
+Exactly the occurrence-level facts you listed - individual occurrence
+cancellation/postponement/reschedule, a one-off occurrence override,
+cover, Occurrence Staff, register/attendance, Confirmation State - none
+of these ever go anywhere near `createHistoryEntries()`. Also: a
+no-op save (a field resubmitted with its own current value - see
+"Idempotency" below), a `/generate` or daily-top-up call (neither ever
+passes `caller`/`sessionEvent`, so `orchestrator.ts` never even attempts
+a History write for them), and a propagation call that throws before
+reaching the History-write step.
+
+### Schema
+
+Reused Slice 1's `Session History` table exactly as it stood - no new
+fields, no new table, no inspection blocker found: `History ID`
+(primary field, a human-browsing convenience only - nothing in this
+codebase ever looks a row up by it), `Session`, `Change Type` (all 7
+existing choices used: Day/Time/Venue/Capacity/Operating Dates/Active
+Status/Created), `Old Value`/`New Value` (plain strings, concise: e.g.
+`"17:00 – 11:00"` -> wait, `"17:00 – 18:00"` / `"18:00 – 19:00"` for
+Time, venue NAMES not record IDs for Venue via a new read-only
+`fetchVenueNames()` lookup, `"12"`/`"20"` for Capacity, `"Start
+2026-09-01, End (none)"` style for Operating Dates), `Change Summary`
+(the human-readable system outcome, e.g. `"13 future occurrence(s)
+updated to the new time."` or `"6 occurrence(s) cancelled beyond the
+new End Date."` - built from the SAME plan/outcome the call actually
+produced, per-dimension counts derived by filtering `plan.toCancel`/
+`toUpdate`/`toCrystallise`/`skippedOverrides`/`manualReview` by their
+own distinct `reason` text rather than trusting the plan's aggregate
+totals, so a Day+End-Date combined edit still attributes each row's own
+count correctly), `Changed At` (server `now.toISOString()`, an ISO8601
+UTC instant - the field's own Europe/London display config handles
+timezone presentation; a client-supplied timestamp is never trusted as
+the authority), `Changed By User ID`/`Changed By Name Snapshot` (see
+below).
+
+### Ordering relative to propagation/generation - the safest ordering, as inspected before changing code
+
+Inspected `propagation-orchestrator.ts`/`orchestrator.ts` first, per
+your instruction, before writing any Slice 9 code. Both already acquire
+the per-Session lock, do their real work, and release in a `finally` -
+Slice 9 adds nothing that changes that shape, only a write inside it:
+
+1. acquire the per-Session lock (unchanged, Slice 3/6)
+2. read the Session's CURRENT fields + existing occurrences (unchanged)
+3. plan the occurrence-level consequences against OLD values (unchanged)
+4. apply that plan to Session Occurrences (unchanged)
+5. write the Session's own new default fields (unchanged) - **only the
+   dimensions that genuinely changed** (Slice 9: see "Idempotency")
+6. **write Session History** - one row per dimension that changed, using
+   the REAL counts from step 4's plan result - new in Slice 9
+7. release the lock (unchanged, `finally`)
+
+Step 6 only ever runs after steps 4 and 5 have both already succeeded -
+if either throws, the function's `finally` releases the lock and
+returns/rethrows before step 6 is ever reached, so a History write can
+never claim more happened than actually did, and a failed edit never
+leaves a false success row. This ordering was the direct answer to
+"propose the safest ordering before changing code": History is
+deliberately LAST, not first and not interleaved with the occurrence
+writes, specifically so it can only ever describe a genuinely-completed
+edit.
+
+For `generateForSession()` (Created/Active Status), the same shape:
+acquire lock -> generate -> write History (Slice 9, using the real
+generation outcome) -> release lock in `finally`.
+
+The per-Session lock is held across the ENTIRE structural edit +
+propagation/generation + History write, exactly as instructed - there is
+no window where another writer could touch this Session between the
+occurrence-level plan being applied and its History row being written.
+
+### Changed By
+
+`HistoryCaller { userId, displayName }` - built once per authenticated
+HTTP call from the exact same `resolveCaller()` result every route
+already uses for its Management role check (never a separate lookup),
+and threaded through `/propagate` and `/trigger-session-saved` into
+`propagateForSession()`/`generateForSession()`'s new `options.caller`
+parameter. `Changed By User ID` = the Supabase Auth user id (stable).
+`Changed By Name Snapshot` = `profile.display_name`, falling back to
+the caller's own email if display_name is blank (added this slice, to
+`resolveCaller()`), and falling back a second time to the bare userId
+inside the History-writing code itself in the (here, unreachable) case
+both are somehow blank - the display name is genuinely a SNAPSHOT,
+written once at Changed-At time and never re-derived from a live lookup
+afterward, so History stays readable even if the person's name changes
+or their account is later deactivated.
+
+### Multi-field save
+
+A single `/trigger-session-saved` (or `/propagate`) call with
+`changes.time` + `changes.venue` + `changes.capacity` all present in
+ONE request produces exactly one occurrence-level plan (unchanged
+Slice 6 `planRecurringEdit()`, called once) and exactly one Session
+field write (`updateSessionFields()`, called once, with all three
+fields in one PATCH) - propagation runs exactly once, never per History
+dimension. Session History then reports that ONE call's real outcome as
+THREE separate rows (Time/Venue/Capacity), each with its own accurate
+Old/New Value and Change Summary, built from the SAME plan result.
+Verified for real in TEST (below): `SLICE9-MULTI`'s one call changing
+time+venue+capacity together produced 13 occurrence updates (once, not
+three times) and exactly 3 History rows.
+
+### Idempotency / retries - no request/change ID needed
+
+Every `changes.*` key is compared against the Session's own CURRENT
+field value (read fresh at the top of the call) before it is planned,
+written, or audited at all. A key present in `changes` whose value
+already equals the Session's current field is treated as "no change
+happened" and is excluded from the occurrence-level plan, the Session
+field write, AND History - all three, for free, from the one
+comparison. This means a genuine retry of an already-applied edit
+naturally writes nothing the second time (the Session's own field is
+now the "old" value the retry compares against), with no explicit
+request/change ID or event-sourcing machinery required - verified for
+real in TEST (below) by resending `SLICE9-DAY`'s exact same day change
+twice.
+
+`Created`/`Active Status` have no Session-record field of their own
+that plays this same role (nothing on the Session record proves "this
+exact transition was already recorded" the way the Default Day field
+does for Day), so these two Change Types instead check Session History
+itself before writing: `Created` is skipped if any `Created` row
+already exists for the Session; `Active Status` is skipped if a row
+with the exact same OLD/NEW status pair already exists. **Known,
+documented limitation**: a genuine LATER real toggle back to an
+identical old/new status pair would also be suppressed by this check -
+accepted as fine for how this field is actually used (a Session
+doesn't realistically flip Draft/Active repeatedly moment to moment),
+not claimed as a fully general event-sourced guarantee. No new schema
+was needed for this, so nothing was flagged/stopped for your review per
+the "if an explicit request/change ID is genuinely required, stop and
+report" instruction - it genuinely wasn't required.
+
+### Session creation - documented integration point
+
+No canonical Management create-Session write path exists yet in TEST
+(same finding as Slice 8's Draft/Active integration point) - no fake UI
+flow was invented. The documented contract: a future Management
+"create Session" backend flow creates the Session record itself (all
+its own fields, including an initial Lifecycle Status), then calls
+`POST /trigger-session-saved` once with `sessionEvent: { kind:
+"created" }` and no `changes` - exactly the same call shape as every
+other immediate-trigger use, just with `sessionEvent` set. This
+generates the Session's initial occurrences (if created Active) and
+writes one `Created` History row whose New Value is the initial
+Lifecycle Status and whose Change Summary reports the real generation
+outcome (e.g. `"Session created (Recurring) as Active. 13
+occurrence(s) generated."`) - no meaningless Old Value is manufactured
+(left blank).
+
+### Historical occurrence correction - explicitly out of scope
+
+Not implemented this slice, per your instruction - flagged as future
+occurrence-level audit work only, separate from Session History.
+
+### Real TEST verification - all real HTTP calls via `pg_net`
+
+Nine throwaway Sessions (`SLICE9-DAY`/`-TIME`/`-VENUE`/`-CAP`/
+`-ENDDATE`/`-D2A`/`-MULTI`/`-FAIL`/`-CREATE`), each seeded with 13
+initial occurrences first (except `-D2A`, left Draft, and `-CREATE`,
+generated fresh by its own Created-event call). Signed in as
+`manager@test.invalid` for a real management JWT.
+
+1. **Day change**: `Monday -> Tuesday` on `SLICE9-DAY` ->
+   `Change Type: Day`, Old `"Monday"`, New `"Tuesday"`, Summary "13
+   future occurrence(s) cancelled for the old day; new day's
+   occurrences will be generated by the next trigger or scheduled
+   top-up." - matching the real plan (`cancelled: 13, backfillNeeded:
+   true`) and the real backfill (13 generated).
+2. **Time change**: `10:00–11:00 -> 14:00–15:00` on `SLICE9-TIME` ->
+   Old `"10:00 – 11:00"`, New `"14:00 – 15:00"`, Summary "13 future
+   occurrence(s) updated to the new time." - matching `updated: 13`.
+3. **Venue change**: `Test Park -> Sample Sports Hall` on
+   `SLICE9-VENUE` -> Old `"Test Park"`, New `"Sample Sports Hall"`
+   (real venue NAMES, resolved from record IDs) - confirmed the
+   Session's own `Venue` field was genuinely updated in Airtable, not
+   just planned.
+4. **Capacity change**: `12 -> 20` on `SLICE9-CAP` -> Old `"12"`, New
+   `"20"`.
+5. **Operating End Date change**: End Date set to `2026-11-15` on
+   `SLICE9-ENDDATE` -> `Change Type: Operating Dates`, Old `"Start
+   2026-09-01, End (none)"`, New `"Start 2026-09-01, End 2026-11-15"`,
+   Summary "6 occurrence(s) cancelled beyond the new End Date." -
+   matching `cancelled: 6`.
+6. **Draft -> Active**: `SLICE9-D2A` PATCHed to Active in Airtable
+   (documented integration point, same as Slice 8), then
+   `sessionEvent: { kind: "status_changed", oldStatus: "Draft",
+   newStatus: "Active" }` -> `Change Type: Active Status`, Old
+   `"Draft"`, New `"Active"`, Summary "13 occurrence(s) generated." -
+   generation genuinely ran (13 created).
+7. **Multiple-field save**: `SLICE9-MULTI`, one call changing time +
+   venue + capacity together -> exactly 3 History rows (Time/Venue/
+   Capacity), exactly one occurrence-level plan (13 time updates, 0
+   cancellations - venue/capacity had nothing to crystallise on a
+   Session with no frozen occurrences), confirmed via the real
+   response body (a single `plan.updated: 13`) that propagation ran
+   once, not three times.
+8. **Unchanged/no-op save**: resent `SLICE9-DAY`'s exact same
+   `dayOfWeek: "Tuesday"` change a second time -> `plan` entirely empty
+   (`updated/cancelled/crystallised: 0, backfillNeeded: false`) - no
+   new History row (table re-read: still exactly one `Day` row for
+   this Session).
+9. **Failed propagation leaves no false success row**: `SLICE9-FAIL`,
+   `venue.newVenueRecordIds: ["recZZZZZZZZZZZZZZ"]` (well-formed,
+   non-existent) -> real `500`, Airtable's own real rejection
+   (`"Airtable update Sessions error: 422 {"error":{"type":
+   "ROW_DOES_NOT_EXIST",...}}"`) - the occurrence-level plan for this
+   Session was empty anyway (no frozen occurrences), so the failure
+   happened at the Session-field-write step, strictly before History is
+   ever reached; confirmed zero History rows exist for this Session,
+   and `generation_locks` still reached 0 afterward (the lock's
+   `finally` released it even though the write threw).
+10. **Retry of an already-applied edit does not duplicate History**:
+    covered twice - item 8 above (Day), and resending `SLICE9-D2A`'s
+    exact same `status_changed` `Draft->Active` event a second time
+    (generation correctly returned `no_changes`, and Session History
+    re-read afterward: still exactly one `Active Status` row, not two).
+11. **Changed By ID/name snapshot correct**: every one of the 10 real
+    History rows written this slice carries `Changed By User ID:
+    "285f819e-e0d4-4257-8121-5f16781e97ba"` (the real
+    `manager@test.invalid` Supabase Auth user id) and `Changed By Name
+    Snapshot: "Morgan Manager"` (her real `profiles.display_name`).
+12. **Change Summary matches the actual propagation result**: cross-
+    checked above, item by item, against each call's own real plan/
+    outcome numbers - never a guess, always the same counts the
+    response body itself reported.
+13. **Session creation** (not itself one of the 12 numbered items, but
+    explicitly required by "What creates Session History"): `SLICE9-
+    CREATE` created Active directly in Airtable, then `sessionEvent: {
+    kind: "created" }` -> `Change Type: Created`, Old Value blank, New
+    Value `"Active"`, Summary "Session created (Recurring) as Active.
+    13 occurrence(s) generated." - generation genuinely ran (13
+    created), matching the real outcome.
+
+Final tally: **10 real History rows** written across the whole
+verification pass, exactly matching manual arithmetic (Day×1 + Time×2
++ Venue×2 + Capacity×2 + Operating Dates×1 + Active Status×1 +
+Created×1 = 10) - no more, no fewer, confirmed by re-reading the whole
+`Session History` table after every call in the sequence, including
+both retries.
+
+**Cleanup**: all 9 throwaway Sessions, all 130 occurrence records they
+generated (10×13 - the 9 seeded sessions plus `SLICE9-DAY`'s 13-row
+backfill), and all 10 History rows deleted by their exact captured
+record IDs. Re-confirmed via `search_records` for "Slice9"/"SLICE9"
+across Sessions, Session Occurrences and Session History: zero results.
+`generation_locks`: 0 rows throughout and after.
+
+### Regression
+
+- **TEST-A** (`rec4cME6ncL4IAvlK`) / **TEST-B** (`recklh0OeaAMakQCJ`):
+  still exactly 14 / 13 occurrences, untouched by any Slice 9 call.
+- **Parent Hub** (`GET /parent-hub/me` as `parent.a`): identical to the
+  documented baseline (Dylan paused on TEST-B, Archie active on TEST-A/
+  TEST-B with the same next-occurrence details as every prior slice).
+- **hub-content/players** (`GET /hub-content/players` as `coach.a`):
+  identical to baseline - Archie + Bella, `permanent` tier.
+- **Slice 6 propagation / Slice 8 automatic triggering**: a real
+  `POST /daily-top-up` call after cleanup -> `{"considered":2,
+  "generated":0,"noChanges":2,"skippedLocked":0,"failed":0,...}` -
+  TEST-A/TEST-B both still correctly `no_changes`, confirming the
+  daily sweep and its underlying `generateForSession()` still behave
+  correctly with the Slice 9 changes layered on top.
+- **Full TEST suite**: `node tests/run-all.js` -> **50/50 test files
+  passed**, unchanged (no new local test file this slice - Slice 9's
+  logic lives entirely inside the already-verified-by-real-HTTP
+  orchestrator files, per the same reasoning as Slice 4/8).
+
+### Production / frontend / Sheets / finance
+
+Confirmed untouched: production Airtable (`apprptFotQuVL1mhs`) still
+has no `Session History` table (never created there - Slice 9 only
+ever wrote to the TEST base `appQktredAuGa1X7e`'s existing Slice-1
+table); production Supabase (`bkkukymqaxawnudoxdjs`) and its functions
+unchanged; no frontend file touched; no Google Sheets file touched; no
+finance file touched. `session-occurrences` (TEST project
+`dkqubldmfyeuudecxmvh`) deployed as **v8** - the only Edge Function
+touched this slice, and only in the TEST project.
+
+**Slice 9 Session History is ready for Slice 10 full regression and handoff.**

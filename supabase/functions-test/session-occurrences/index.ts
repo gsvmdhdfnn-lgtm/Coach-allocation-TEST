@@ -15,8 +15,8 @@
  * automatic is built on top of it.
  */
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { generateForSession } from "./orchestrator.ts";
-import { fetchSession, type AirtableConfig } from "./repository.ts";
+import { generateForSession, type SessionEvent } from "./orchestrator.ts";
+import { fetchSession, type AirtableConfig, type HistoryCaller } from "./repository.ts";
 import { createSupabaseLockClient } from "./lock-client.ts";
 import { propagateForSession, type PropagateChanges } from "./propagation-orchestrator.ts";
 import { triggerSessionSaved } from "./session-trigger.ts";
@@ -90,8 +90,24 @@ async function resolveCaller(
     airtablePersonId: profile.airtable_person_id || null,
     active: profile.active === true,
     userId: userData.user.id,
-    displayName: profile.display_name || null,
+    // Falls back to the caller's own email when display_name is blank -
+    // Session History's Changed By Name Snapshot (Slice 9) must never be
+    // left empty just because a profile never set a display name.
+    displayName: profile.display_name || userData.user.email || null,
   };
+}
+
+/**
+ * Session History's Changed By identity (Slice 9, see TEST-ENV.md) -
+ * built once per authenticated call from the exact same resolveCaller()
+ * result every route already uses for the Management role check, never
+ * from a separate lookup. `displayName` is snapshotted as-is, including
+ * its own email fallback above - orchestrator.ts falls back a second
+ * time to the bare userId only in the (here, unreachable) case both are
+ * somehow blank.
+ */
+function historyCallerFrom(caller: { userId: string; displayName: string | null }): HistoryCaller {
+  return { userId: caller.userId, displayName: caller.displayName };
 }
 
 const airtableConfig: AirtableConfig = { baseId: AIRTABLE_BASE_ID, token: AIRTABLE_TOKEN };
@@ -219,6 +235,32 @@ function validatePropagateChanges(changes: any): string | null {
   return null;
 }
 
+const VALID_LIFECYCLE_STATUSES = ["Draft", "Active", "Inactive"];
+
+/**
+ * Validates the optional `sessionEvent` field of a `/trigger-session-
+ * saved` request body (Slice 9, see TEST-ENV.md) - the future Management
+ * "save Session" flow's way of saying "I already wrote the Session
+ * record's own Created/Lifecycle Status field just now; here's the
+ * transition, so you can react to it AND audit it correctly." This
+ * route/orchestrator never writes that field itself (see orchestrator.ts's
+ * own header) - it only trusts this shape once it's been validated here.
+ */
+function validateSessionEvent(sessionEvent: any): string | null {
+  if (sessionEvent == null) return null;
+  if (typeof sessionEvent !== "object" || Array.isArray(sessionEvent)) {
+    return "sessionEvent must be an object";
+  }
+  if (sessionEvent.kind === "created") return null;
+  if (sessionEvent.kind === "status_changed") {
+    if (!VALID_LIFECYCLE_STATUSES.includes(sessionEvent.oldStatus) || !VALID_LIFECYCLE_STATUSES.includes(sessionEvent.newStatus)) {
+      return `sessionEvent.oldStatus/newStatus must each be one of: ${VALID_LIFECYCLE_STATUSES.join(", ")}`;
+    }
+    return null;
+  }
+  return 'sessionEvent.kind must be "created" or "status_changed"';
+}
+
 async function handlePropagate(req: Request): Promise<Response> {
   const caller = await resolveCaller(req.headers.get("Authorization"));
   if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
@@ -258,7 +300,9 @@ async function handlePropagate(req: Request): Promise<Response> {
     const outcome = await propagateForSession(
       { airtable: airtableConfig, lock: lockClient },
       sessionRecordId,
-      body.changes as PropagateChanges
+      body.changes as PropagateChanges,
+      new Date(),
+      { caller: historyCallerFrom(caller) }
     );
     return jsonResponse(outcome, 200);
   } catch (error) {
@@ -277,6 +321,12 @@ async function handlePropagate(req: Request): Promise<Response> {
  * TEST-ENV.md as the integration point a future Management "save
  * Session" backend flow should call once, synchronously, right after
  * writing the Session record's own fields.
+ *
+ * `sessionEvent` (Slice 9, also optional) is how that same future
+ * Management flow tells this route "the write I just made was a Session
+ * creation / a Lifecycle Status change" so the right Session History row
+ * gets written - this route/orchestrator never infers that from the
+ * Session record itself, and never writes that field itself either.
  */
 async function handleTriggerSessionSaved(req: Request): Promise<Response> {
   const caller = await resolveCaller(req.headers.get("Authorization"));
@@ -302,6 +352,9 @@ async function handleTriggerSessionSaved(req: Request): Promise<Response> {
     if (validationError) return jsonResponse({ error: validationError }, 400);
   }
 
+  const sessionEventError = validateSessionEvent(body?.sessionEvent);
+  if (sessionEventError) return jsonResponse({ error: sessionEventError }, 400);
+
   let exists: boolean;
   try {
     exists = await sessionExists(sessionRecordId);
@@ -317,7 +370,11 @@ async function handleTriggerSessionSaved(req: Request): Promise<Response> {
     const outcome = await triggerSessionSaved(
       { airtable: airtableConfig, lock: lockClient },
       sessionRecordId,
-      body?.changes as PropagateChanges | undefined
+      {
+        caller: historyCallerFrom(caller),
+        changes: body?.changes as PropagateChanges | undefined,
+        sessionEvent: body?.sessionEvent as SessionEvent | undefined,
+      }
     );
     return jsonResponse(outcome, 200);
   } catch (error) {

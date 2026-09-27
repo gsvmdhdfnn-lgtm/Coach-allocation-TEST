@@ -30,6 +30,19 @@ export interface AirtableConfig {
   token: string;
 }
 
+/**
+ * The authenticated Management caller behind a structural edit - Slice 9
+ * (see TEST-ENV.md). `displayName` is snapshotted into every History row
+ * this caller produces (`Changed By Name Snapshot`) precisely so History
+ * stays readable even if the person's profile/display name changes
+ * later - callers must never re-derive a name from a live lookup instead
+ * of using this snapshot.
+ */
+export interface HistoryCaller {
+  userId: string;
+  displayName: string | null;
+}
+
 async function getAirtableRecords(config: AirtableConfig, tableName: string): Promise<any[]> {
   const records: any[] = [];
   let offset = "";
@@ -226,4 +239,109 @@ export async function createOccurrences(
   const records = shells.map((shell) => ({ fields: buildOccurrenceCreatePayload(shell, session) }));
   const recordIds = await airtableBatchCreate(config, "Session Occurrences", records);
   return { created: recordIds.length, recordIds };
+}
+
+/**
+ * Session History (Slice 9, see TEST-ENV.md) - the audit trail of
+ * STRUCTURAL changes to a recurring Session, never a list of past
+ * occurrences. Reuses the exact schema Slice 1 already created (History
+ * ID, Session, Change Type, Old Value, New Value, Change Summary,
+ * Changed At, Changed By User ID, Changed By Name Snapshot) - no new
+ * fields or tables. Every write here is create-only, consistent with
+ * this file's own charter; nothing in this codebase ever updates or
+ * deletes a History row.
+ */
+export interface HistoryEntryToCreate {
+  changeType: "Day" | "Time" | "Venue" | "Capacity" | "Operating Dates" | "Active Status" | "Created";
+  oldValue: string;
+  newValue: string;
+  changeSummary: string;
+  changedByUserId: string;
+  changedByNameSnapshot: string;
+  /** ISO8601 UTC instant - the server's own `now`, never a client-supplied timestamp. Airtable's own Europe/London display config on this field handles the timezone presentation; this file always writes a plain UTC instant. */
+  changedAt: string;
+}
+
+/**
+ * History ID is a human-browsing convenience only (Airtable's primary
+ * field for this table) - nothing in this codebase ever looks a History
+ * row up BY this value. Real lookups (the retry-safety checks below) key
+ * on Session + Change Type + Old/New Value instead, so this ID's exact
+ * shape is not load-bearing.
+ */
+export function buildHistoryCreatePayload(sessionRecordId: string, entry: HistoryEntryToCreate): Record<string, unknown> {
+  return {
+    "History ID": `HIST-${sessionRecordId}-${entry.changeType.replace(/\s+/g, "")}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    Session: [sessionRecordId],
+    "Change Type": entry.changeType,
+    "Old Value": entry.oldValue,
+    "New Value": entry.newValue,
+    "Change Summary": entry.changeSummary,
+    "Changed At": entry.changedAt,
+    "Changed By User ID": entry.changedByUserId,
+    "Changed By Name Snapshot": entry.changedByNameSnapshot,
+  };
+}
+
+/**
+ * Creates one or more Session History rows. A no-op for an empty list,
+ * same convention as createOccurrences() - callers (orchestrator.ts,
+ * propagation-orchestrator.ts) decide WHETHER anything genuinely changed
+ * before ever building an entry to pass here; this function never makes
+ * that judgement call itself.
+ */
+export async function createHistoryEntries(
+  config: AirtableConfig,
+  sessionRecordId: string,
+  entries: HistoryEntryToCreate[]
+): Promise<{ created: number; recordIds: string[] }> {
+  if (entries.length === 0) return { created: 0, recordIds: [] };
+  const records = entries.map((entry) => ({ fields: buildHistoryCreatePayload(sessionRecordId, entry) }));
+  const recordIds = await airtableBatchCreate(config, "Session History", records);
+  return { created: recordIds.length, recordIds };
+}
+
+/**
+ * All existing Session History rows for one Session - used two ways:
+ * (a) the retry-safety checks for "Created"/"Active Status" rows (see
+ * orchestrator.ts), since those two Change Types have no Session-record
+ * field of their own whose current value naturally proves "this exact
+ * transition was already recorded", unlike Day/Time/Venue/Capacity/
+ * Operating Dates where the Session's own field IS that proof; and
+ * (b) TEST verification. Same whole-table-fetch-and-filter convention as
+ * fetchSessionDatesForSession/fetchExistingOccurrencesForSession above.
+ */
+export async function fetchSessionHistoryForSession(
+  config: AirtableConfig,
+  sessionRecordId: string
+): Promise<{ id: string; fields: Record<string, any> }[]> {
+  const all = await getAirtableRecords(config, "Session History");
+  return all
+    .filter((r) => Array.isArray(r.fields?.Session) && r.fields.Session.includes(sessionRecordId))
+    .map((r) => ({ id: r.id, fields: r.fields || {} }));
+}
+
+/**
+ * Resolves Venue record IDs to their human-readable Venue Name, for
+ * Session History's Venue Old Value/New Value (the Session's own Venue
+ * field is a plain array of record IDs over the real Airtable API, never
+ * names - see the Slice 9 Venue History example in TEST-ENV.md, which
+ * needs "Freemen's"/"Meadowbank", not record IDs). A Venue that no
+ * longer exists (deleted after the fact) falls back to its own record ID
+ * rather than throwing - a stale/broken link must never prevent an
+ * otherwise-successful structural edit's History row from being written.
+ */
+export async function fetchVenueNames(config: AirtableConfig, recordIds: string[]): Promise<Record<string, string>> {
+  const entries = await Promise.all(
+    recordIds.map(async (id): Promise<[string, string]> => {
+      try {
+        const raw = await getAirtableRecordById(config, "Venues", id);
+        const name = typeof raw.fields?.["Venue Name"] === "string" ? raw.fields["Venue Name"] : id;
+        return [id, name];
+      } catch {
+        return [id, id];
+      }
+    })
+  );
+  return Object.fromEntries(entries);
 }
