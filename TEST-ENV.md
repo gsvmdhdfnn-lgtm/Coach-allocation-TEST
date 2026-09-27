@@ -6736,3 +6736,202 @@ All writes went to TEST base `appQktredAuGa1X7e` / TEST project
 `dkqubldmfyeuudecxmvh`.
 
 **Coaches Slice 9 cover workflow is ready for Slice 10 coach work summaries.**
+
+## Post-Coaches-Slice-9 Supabase security hardening — 2026-09-27
+
+TEST project `dkqubldmfyeuudecxmvh` only. This fixes the two pre-existing
+issues flagged during Slice 9 verification. The only changes are
+privileges and RLS: no function body, no business logic, no Edge
+Function code and no frontend changed. Nothing was redeployed.
+
+### Security issues found (audit before the fix)
+
+**1. `public.cron_auth_secrets`**
+
+- Holds the per-job secret (`name`, `secret`, `created_at`; 1 row) that
+  `session-occurrences /daily-top-up` checks through
+  `validate_cron_secret(p_name, p_secret)`.
+- **RLS was disabled.** This was the Supabase advisor's ERROR-level
+  finding.
+- The table grants were already only `postgres` + `service_role`. A real
+  pre-fix probe of anon/Coach/Parent `GET /rest/v1/cron_auth_secrets`
+  returned 401/403 `42501`, so the exposure was latent rather than
+  exploited. Any future over-broad grant would still have opened it
+  wide.
+
+**2. Legacy lock RPCs**
+
+- `acquire_occurrence_outcome_lock(text)` /
+  `release_occurrence_outcome_lock(text, uuid)` were **EXECUTE-able by
+  PUBLIC, `anon` and `authenticated`**.
+  - Pre-fix real probes: anon, a Coach JWT and a Parent JWT each called
+    `POST /rest/v1/rpc/acquire_occurrence_outcome_lock` and got **200
+    plus a live lock token**.
+  - Anyone could therefore hold any occurrence's financial-outcome lock
+    for up to 5 minutes, blocking Management writes (a denial of
+    service).
+  - The three probe lock rows (`SECPROBE-BEFORE-anon/coach/parent`) were
+    deleted by exact key straight away.
+- `acquire_generation_lock` / `release_generation_lock` were already
+  `service_role`-only. Pre-fix probes: anon 401, Coach/Parent 403. This
+  corrects the Slice 9 note, which grouped them in: only the
+  occurrence-outcome pair was actually exposed.
+- **Tables:** `generation_locks` and `occurrence_outcome_locks` had RLS
+  on with no policies (rows hidden, and reads returned `[]`), but still
+  granted **all table privileges** (SELECT/INSERT/UPDATE/DELETE/
+  **TRUNCATE**/REFERENCES/TRIGGER) to `anon` and `authenticated`.
+  TRUNCATE is not governed by RLS.
+- The newer `cover_date_locks` table and its cover lock RPCs (Slice 9)
+  were already `service_role`-only. They were the reference for this
+  fix.
+
+Every legitimate caller already uses the **service-role key**:
+
+- `session-occurrences/lock-client.ts`,
+  `occurrence-financial-outcomes/lock-client.ts` and
+  `coach-cover/lock-client.ts` call the RPCs with
+  `SUPABASE_SERVICE_ROLE_KEY`.
+- `session-occurrences` validates the cron secret the same way.
+- The pg_cron job (`session-occurrences-daily-top-up`, owner `postgres`)
+  only sends an HTTP request carrying the header. It never reads the
+  table itself.
+
+So restricting to `service_role` breaks no real flow.
+
+### Hardening applied (migration `post_slice9_security_hardening`)
+
+```sql
+alter table public.cron_auth_secrets enable row level security;
+revoke all on table public.cron_auth_secrets from public, anon, authenticated;
+grant select, insert, update, delete on table public.cron_auth_secrets to service_role;
+revoke execute on function public.validate_cron_secret(text, text) from public, anon, authenticated;
+grant execute on function public.validate_cron_secret(text, text) to service_role;
+
+revoke execute on function public.acquire_occurrence_outcome_lock(text) from public, anon, authenticated;
+revoke execute on function public.release_occurrence_outcome_lock(text, uuid) from public, anon, authenticated;
+grant execute on function public.acquire_occurrence_outcome_lock(text) to service_role;
+grant execute on function public.release_occurrence_outcome_lock(text, uuid) to service_role;
+-- generation + cover lock pairs: same revoke/grant re-asserted (idempotent)
+
+revoke all on table public.generation_locks from public, anon, authenticated;
+revoke all on table public.occurrence_outcome_locks from public, anon, authenticated;
+revoke all on table public.cover_date_locks from public, anon, authenticated;
+```
+
+- **No RLS policies were added**, deliberately. RLS with zero policies
+  denies every RLS-subject role:
+  - `service_role` has BYPASSRLS;
+  - the `SECURITY DEFINER` lock/secret functions run as their owner
+    `postgres`, which is also the table owner, so RLS does not apply to
+    them.
+- The advisor now shows only the INFO-level "RLS enabled, no policy" on
+  these four tables, which is the intended deny-all.
+- The secret value is never returned by any client-facing function.
+  `validate_cron_secret` returns only a boolean and is `service_role`
+  only.
+
+### Who can access what (after)
+
+| Object | anon | authenticated (Coach / Parent / Management JWT) | service_role (Edge Functions) | postgres (owner, pg_cron) |
+|---|---|---|---|---|
+| `cron_auth_secrets` (RLS on, 0 policies) | no | no | yes (bypasses RLS) | yes |
+| `validate_cron_secret()` | no | no | yes | yes |
+| `generation_locks` / `occurrence_outcome_locks` / `cover_date_locks` (RLS on, 0 policies) | no | no | yes | yes |
+| `acquire_/release_generation_lock` | no | no | yes | yes |
+| `acquire_/release_occurrence_outcome_lock` | no | no | yes | yes |
+| `acquire_/release_cover_date_lock` | no | no | yes | yes |
+
+Management never calls these directly. Management product actions go
+through the Edge Functions, which authenticate the user's JWT and then
+use the service-role key for lock infrastructure.
+
+Function ACLs now read `{postgres=X/postgres,service_role=X/postgres}`.
+Table ACLs now read `{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres}`.
+
+### Real TEST verification (after), real HTTP via `pg_net`
+
+Fresh JWTs for `manager@test.invalid`, `coach.a@test.invalid` and
+`parent.a@test.invalid`. Anon calls used only the publishable key.
+
+**Direct attacks - all 39 probes rejected with `42501 permission
+denied`** (anon 401, Coach 403, Parent 403):
+
+- acquire **and** release RPCs for all three lock pairs;
+- `validate_cron_secret`;
+- `GET` of `cron_auth_secrets` and all three lock tables;
+- direct `POST` inserts into `cron_auth_secrets` and
+  `occurrence_outcome_locks`.
+
+**Legitimate server flows still work:**
+
+- **Schedule generation:**
+  - Management `POST /session-occurrences/generate {TEST-A}` -> 200
+    `no_changes`. The lock was acquired and released: a denied RPC is a
+    500, a held lock is `skipped_locked`.
+  - The **real pg_cron command**, executed verbatim from `cron.job`
+    (secret never read or printed), -> `/daily-top-up` 200
+    `{considered:2, noChanges:2, skippedLocked:0, failed:0}`. This proves
+    both the cron-secret check against the now-RLS-protected table and
+    per-Session generation locks for TEST-A and TEST-B.
+- **Financial outcomes**, on a throwaway Draft Session
+  (`rec9o5zfFTuVXtyqr`) and occurrence (`reclDarVRZ2HDq7vQ`):
+  - Management `parent-outcome` (Credit £12.50) -> 201 `created`
+    (`rec39EVLNshV5wENF`);
+  - `venue-outcome` (Paid £40) -> 200 `updated`, the same row;
+  - read-back via `/outcomes` showed both families intact;
+  - the Coach JWT on that Management route -> 403, unchanged.
+- **Cover workflow:**
+  - Management `/coach-cover/cancel` on a non-existent date -> 404
+    `request_not_found`, which is reached only inside the cover lock;
+  - Management `/manage` -> 200;
+  - Coach `/mine` -> 200;
+  - Parent -> 403.
+- **Ownership-token behaviour is unchanged** for all three pairs, run
+  directly as the owner: the first acquire returns a token, a second
+  acquire returns null, a release with the wrong token returns false,
+  and the owner's release returns true.
+- **After verification**, `generation_locks`, `occurrence_outcome_locks`
+  and `cover_date_locks` are all **0 rows**, and `cron_auth_secrets`
+  still holds its 1 row.
+- The throwaway outcome row, occurrence and Session were deleted by
+  exact ID.
+- The TEST-only passwords of the three accounts remain those set with
+  the established `crypt()` pattern during Slice 9.
+
+### Regression
+
+`node tests/run-all.js`: **55/55 test files passed**. Among them:
+
+- `coachcovertest.js` 88/88;
+- `occurrencefinancialoutcomestest.js` 37/37;
+- `sessiongeneratortest.js` 37/37;
+- `propagationtest.js` 43/43;
+- `dailytopuptest.js` 7/7;
+- `coachcompliancetest.js` 87/87;
+- `coachavailabilitytest.js` 85/85;
+- `coachallocationstest.js` 25/25;
+- `accessresolutiontest.js` 74/74;
+- `parenthubtest.js` 44/44.
+
+### Not changed (out of scope, reported only)
+
+- **Advisor WARN:** `public.handle_new_user()` (the signup trigger
+  function) is SECURITY DEFINER and EXECUTE-able by anon/authenticated.
+- **Advisor WARN:** Auth leaked-password protection is disabled.
+- **Root cause for future objects:** the `public` schema's default
+  privileges still grant new tables/functions to anon/authenticated.
+  Any new infrastructure table or RPC needs an explicit revoke, as this
+  migration and Slice 9's did.
+
+### Production isolation
+
+- **Production Supabase:** untouched - no migration, no grants, no
+  calls.
+- **Production Airtable:** untouched.
+- **Frontend:** untouched.
+- **Google Sheets:** untouched.
+- **Finance:** untouched.
+- **Edge Functions:** none redeployed.
+- **Notifications:** no emails or notifications sent.
+
+**Post-Slice-9 Supabase security hardening is complete and ready for Coaches Slice 10.**
