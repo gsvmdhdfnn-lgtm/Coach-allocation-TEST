@@ -120,6 +120,9 @@ const RULES = [
   rule("coach_compliance_expiry", "ATT-011", { sev: "Warning", sort: 11, override: true, area: "Coaches", action: "Review Compliance" }),
   rule("compliance_verification_pending", "ATT-042", { sev: "Normal", sort: 42, override: false, area: "Coaches", action: "Review Compliance" }),
   rule("non_compliant_coach_assigned", "ATT-031", { sev: "Warning", urg: [48, "Hours Before"], locked: "Warning", sort: 31, override: false, area: "Coaches", action: "Review Compliance" }),
+  // Slice 7 rules (real TEST values); with no availability rows they raise nothing here.
+  rule("coach_schedule_conflict", "ATT-012", { sev: "Warning", urg: [48, "Hours Before"], sort: 12, action: "Review Conflict" }),
+  rule("assigned_coach_unavailable", "ATT-014", { sev: "Warning", urg: [48, "Hours Before"], sort: 14 }),
 ];
 const ruleRec = (k: string) => RULES.find((r) => r.fields["Rule Key"] === k)!;
 
@@ -178,6 +181,8 @@ function world(o: World) {
     "Cover Responses": [],
     "Coach Documents": o.docs ?? [],
     "Coach Document Requirements": o.reqs ?? REQS,
+    "Coach Availability": [],
+    "Coach Availability Exceptions": [],
   };
   requests = [];
 }
@@ -269,7 +274,7 @@ async function main() {
     ck("P1. No attachment data anywhere in the payload (no URL, filename, 'Attachment' or presence flag)", !blob.includes(SECRET_URL) && !blob.includes(SECRET_FILE) && !blob.includes("secret.example") && !/attachment/i.test(blob));
     ck("P2. Coach-level payload: coach, requirement, document, status, reason, dates, verification, action, destination, severity", aFa.targetIds.coachId === CA.id && aFa.targetIds.requirementId === REQ_FA && aFa.targetIds.documentId === id("DAlexFa") && aFa.context.coachName === "Alex Soon" && aFa.context.documentType === "First Aid" && aFa.context.expiryDate === day(10) && aFa.context.issueDate === day(-100) && aFa.context.verifiedAt === "2026-09-01T09:00:00.000Z" && aFa.actionLabel === "Review Compliance" && aFa.destination.area === "Coaches" && aFa.destination.route === "coaches/compliance" && aFa.destination.params.coachId === CA.id && aFa.context.complianceAsOf === TODAY);
     ck("P3. Context values are scalars only (no nested objects / arrays)", b.cases.every((c: any) => Object.values(c.context).every((v) => v === null || ["string", "number", "boolean"].includes(typeof v))));
-    ck("R1. One request: each table listed once (15 lists: 5 config + 6 staffing + 2 cover + 2 compliance), one compliance pass", Object.keys(b.diagnostics.reads.lists).length === 15 && Object.values(b.diagnostics.reads.lists).every((n: any) => n === 1) && reads().filter((t) => t === "Coach Documents").length === 1 && compliancePassStats.passes === 1);
+    ck("R1. One request: each table listed once (17 lists: 5 config + 6 staffing + 2 cover + 2 compliance + 2 availability), one compliance pass", Object.keys(b.diagnostics.reads.lists).length === 17 && Object.values(b.diagnostics.reads.lists).every((n: any) => n === 1) && reads().filter((t) => t === "Coach Documents").length === 1 && compliancePassStats.passes === 1);
     ck("R2. No config issues for clean data, queue complete", b.complete === true && b.configIssues.length === 0, JSON.stringify(b.configIssues));
 
     // Verification resolves the review case naturally (no "mark reviewed").
@@ -345,7 +350,7 @@ async function main() {
     ck("I6. Assignment key = non_compliant_coach_assigned|occurrence:<id>|coach:<id> (one case per assignment, not per requirement)", asg.every((c: any) => /^non_compliant_coach_assigned\|occurrence:rec\w{14}\|coach:rec\w{14}$/.test(c.caseKey)));
     ck("O1. Overlap: Bea has an expiry case (DBS), a review case (First Aid) AND assignment cases - distinct keys coexist, no duplicates", !!find(b, kExp(CB.id, REQ_DBS)) && !!find(b, kRev(CB.id, REQ_FA)) && !!bea3 && new Set(b.cases.map((c: any) => c.caseKey)).size === b.cases.length);
     ck("O2. Staffing rules keep working alongside (S1 occurrences still evaluated by the staffing engine)", b.diagnostics.evaluated.some((e: any) => e.ruleKey === "no_lead_coach") && b.diagnostics.evaluated.some((e: any) => e.ruleKey === "non_compliant_coach_assigned"));
-    ck("R3. Shared passes: ONE staffing pass and ONE compliance pass per request; every table listed once", staffingPassStats.passes === 1 && compliancePassStats.passes === 1 && Object.values(b.diagnostics.reads.lists).every((n: any) => n === 1) && Object.keys(b.diagnostics.reads.lists).length === 15);
+    ck("R3. Shared passes: ONE staffing pass and ONE compliance pass per request; every table listed once", staffingPassStats.passes === 1 && compliancePassStats.passes === 1 && Object.values(b.diagnostics.reads.lists).every((n: any) => n === 1) && Object.keys(b.diagnostics.reads.lists).length === 17);
 
     // Cover replacement: Bea covered by Gus (compliant) on the 3-day occurrence via Occurrence Staff.
     const beaRow = staff(S1.id, CB.id, ROLE_LEAD);

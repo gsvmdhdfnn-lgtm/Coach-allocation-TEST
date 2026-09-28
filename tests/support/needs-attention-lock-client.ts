@@ -1,7 +1,7 @@
 /**
  * Test-suite copy of the canonical needs-attention/lock-client.ts, kept in sync
  * by hand exactly like every other deployed copy. Only import paths adjusted:
- * ./needs-attention|repository|registry|staffing|cover|compliance|exceptions|lock-client.ts become needs-attention-*.ts.
+ * ./needs-attention|repository|registry|staffing|cover|compliance|coach-schedule|exceptions|lock-client.ts become needs-attention-*.ts.
  */
 /**
  * TEST Supabase lock client for the Needs Attention exception write path

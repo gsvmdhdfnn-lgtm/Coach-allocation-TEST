@@ -11008,3 +11008,356 @@ is empty, and `/cases` → **Clear**, 8 evaluated, 15 lists (each once),
   - the production promotion. Production must carry the compliance
     requirement data model (Coach Document Requirements already exists
     there) plus everything NA8.11 lists.
+
+---
+
+## Needs Attention Foundation — Slice 7 (coach availability and schedule conflicts) — TEST only — 2026-09-28
+
+**Scope.** Two catalogue rules are now evaluated:
+
+| Rule Key | Rule ID | Management-facing name |
+|---|---|---|
+| `assigned_coach_unavailable` | ATT-014 | Assigned coach unavailable |
+| `coach_schedule_conflict` | ATT-012 | Coach scheduling conflict |
+
+**Not in scope:** the Work Summary rules (ATT-043 to 046 stay
+`not_implemented`), the Settings UI, Finance, Players / Parents,
+safeguarding, notifications, caching, the Supabase migration and
+production. Slice 8 has not been started.
+
+**Pre-checks passed:**
+- HEAD = origin = `544ec2b`, clean tree;
+- deployed needs-attention v7 was byte-identical to the repo;
+- the live queue was Clear (8 evaluated, 15 lists);
+- the availability domain was unchanged since Coaches Slice 7 (`7358752`),
+  and coach-cover's copy of the resolver is identical;
+- the TEST availability tables were empty.
+
+**Stop and approval.** Two points in the catalogue did not match the
+foundation, so work stopped before any code was written:
+- The ATT-014 description said "unavailable or ambiguous", but the
+  resolver keeps Ambiguous separate.
+- ATT-012 did not say whether both occurrences must be eligible.
+
+These decisions were approved:
+
+1. ATT-014 raises **only** when the existing resolver returns
+   `unavailable`. Ambiguous never creates a case; it is surfaced as the
+   config issue `availability_ambiguous`.
+2. **Every** `unavailable` result counts. That includes an explicit
+   Unavailable exception, a declared-unavailable weekly row, and work
+   outside the hours the coach supplied (`outside_recurring_windows` /
+   `outside_exception_hours`). Unknown stays no case.
+3. For ATT-012, **both** occurrences in a pair must pass the normal
+   Slice 3 eligible-occurrence filter.
+
+Only the two catalogue **Description** texts were updated to say this. No
+severity, Supports Override flag, locked minimum, threshold, key format or
+Settings row was changed.
+
+### NA10.1 Files
+
+| File | Change |
+|---|---|
+| `needs-attention/coach-schedule.ts` | **New.** Copied availability resolver block, one availability pass, one conflict pass, both evaluators, case shaping. Pure (no I/O) |
+| `needs-attention/registry.ts` | Registers `COACH_SCHEDULE_EVALUATORS` after compliance |
+| `needs-attention/needs-attention.ts` | `ENGINE_VERSION` = `needs-attention-slice-7` (nothing else) |
+| `tests/support/needs-attention-coach-schedule.ts` | Hand-kept copy (generated like the other copies; D1 drift-checked) |
+| `tests/support/needs-attention-coach-schedule.test.ts` + `tests/e2e/needsattentioncoachscheduletest.js` | **New**, 55 checks |
+| `tests/support/needs-attention.test.ts` | Registry / engine-version / reads / drift checks evolved for Slice 7 (108 checks) |
+| `tests/support/needs-attention-compliance.test.ts` | Fixture catalogue gains ATT-012 / ATT-014 and the two availability tables; R1 / R3 expect 17 lists |
+| other `tests/support/needs-attention-*.ts` copies | Header line only (lists `coach-schedule`) |
+
+`coach-availability`, `coach-cover` and `coach-compliance` were **not**
+changed or redeployed. The repository, orchestrator, staffing pass,
+exceptions, lock client and index are unchanged.
+
+### NA10.2 Availability semantics (ATT-014): one resolver
+
+- `coach-schedule.ts` carries a block **copied verbatim** from
+  `coach-availability/coach-availability.ts`: the row readers, the
+  weekly-window logic, dated-exception precedence, the Europe/London wall
+  clock and `resolveAvailability`.
+- Test DR1 asserts every chunk still appears byte-for-byte in the
+  canonical file; DR2 asserts the same against coach-cover's copy.
+- Nothing below the block decides availability; it only acts on the
+  resolver's status.
+
+| Resolver status (reason) | ATT-014 |
+|---|---|
+| `available` | nothing |
+| `unavailable`: `exception_unavailable`, `outside_exception_hours`, `declared_unavailable_recurring`, `outside_recurring_windows` | **case**; the reason code and text travel in the payload |
+| `unknown` (`no_availability_supplied`) | **nothing** ("not marked available" is not unavailable) |
+| `ambiguous`: `malformed_exception`, `conflicting_exceptions`, `malformed_recurring_availability` | **no case**; config issue `availability_ambiguous` naming the coach, the occurrence and the problem rows |
+
+- The requested window is the occurrence's real Start / End Date & Time,
+  converted to the UK wall clock. It must fall on one UK date with
+  end > start.
+- If the times are missing, reversed or cross midnight, no timing is
+  invented. The coach × occurrence is reported as
+  `availability_not_evaluable` and no case is raised.
+- Only coaches who **count as assigned** are evaluated: the staffing pass
+  status is `valid` or `unknown_role`. Inactive coaches and missing Coach
+  records never produce a case.
+
+### NA10.3 Conflict semantics (ATT-012)
+
+- Assignments come from the shared staffing pass, per coach, across
+  **eligible** occurrences only (decision 3):
+  - Scheduled;
+  - not superseded;
+  - Session Lifecycle Active;
+  - inside the 14-day window.
+- Overlap uses **half-open intervals on the real instants**: two
+  occurrences overlap when `aStart < bEnd && bStart < aEnd`.
+  - Back-to-back (one ends 17:00, the next starts 17:00) is **not** a
+    conflict.
+  - A 1-minute overlap is.
+  - This is the same rule coach-cover uses (drift test DR3).
+- An occurrence with missing or invalid times is never paired. When the
+  coach has another assignment on the same UK date, the config issue
+  `conflict_not_evaluable` is raised instead.
+- The conflict pass needs **no** availability data. ATT-012 sources are
+  the 6 staffing tables only.
+- Unavailable and conflict cases **coexist**: neither suppresses the
+  other (test I1, and verified live).
+
+### NA10.4 Case identity and duplicate prevention
+
+| Rule | Case Key |
+|---|---|
+| ATT-014 | `assigned_coach_unavailable\|occurrence:<Session Occurrence id>\|coach:<Coach id>` |
+| ATT-012 | `coach_schedule_conflict\|coach:<Coach id>\|occurrence:<lower id>\|occurrence:<higher id>` |
+
+- These are the catalogue key formats, unchanged.
+- Pairs are formed per coach over occurrence ids sorted ascending, with
+  i < j. There is therefore **no mirror duplicate** (A/B vs B/A).
+- The key order is **id order, not time order**. Test K2 covers the case
+  where the lower id starts later.
+- A triple overlap gives exactly its unique pairs: 3 cases for 3
+  mutually overlapping occurrences (T1). That is acceptable at the
+  expected volume; no grouping was invented.
+- Keys hold only record ids, so edits to times or names keep the same
+  identity while the overlap persists.
+
+### NA10.5 Severity and exceptions
+
+- Both rules take severity from the catalogue only:
+  - base **Warning**;
+  - **Urgent 48 Hours Before**, inclusive, anchored to the occurrence
+    start. For a conflict, the anchor is the earlier start.
+  - no locked minimum and no state severity.
+- Tests: V1 checks the 48h escalation and V2 the exact boundary.
+  Verified live: about 82h out gives Warning.
+- Both rules keep **Supports Override = Yes** (unchanged). An exact-case
+  exception suppresses exactly that key (Slice 5 path, unchanged). The
+  exception row links Coach + Session Occurrence, derived server-side.
+- If the organisation turns Allow Override off, the result is 403
+  `override_disabled_by_settings` (X4).
+
+### NA10.6 Payload and placeholder destinations
+
+- **ATT-014 context:**
+  - coachId / Name / Role, and assignedVia;
+  - session and occurrence ids / names;
+  - date, start / end, and startLocal;
+  - `availabilityStatus`, `availabilityReason` + text,
+    `availabilitySource` (exception / recurring);
+  - `availabilityRecordId` (when a single row decided it),
+    `availabilityWindow`, `requestedWindow`, `availabilityDate`.
+- **ATT-012 context:**
+  - coach;
+  - occurrence / session ids and names A / B;
+  - start / end A / B, and roles A / B;
+  - `overlapStart` / `overlapEnd` / `overlapMinutes`.
+  - `relatedIds` lists both sessions and occurrences.
+- **No player data** and no availability notes enter a case (P1).
+- **Destination:** area "Schedule & Sessions", actions "Review Staffing" /
+  "Review Conflict" (catalogue). The routes are **placeholders**; no
+  screen exists yet:
+  - `schedule/occurrence-staffing` (params: occurrenceId, sessionId,
+    coachId);
+  - `coaches/schedule-conflict` (params: coachId, occurrenceIdA,
+    occurrenceIdB).
+- No "resolve" action exists. A case clears only when the data changes or
+  an exception is approved.
+
+### NA10.7 Staffing interaction and Occurrence Staff
+
+- Both passes consume the **memoised shared staffing pass**. The dated
+  merge decides who is evaluated:
+  - Session Staff effective dates;
+  - Occurrence Staff additions;
+  - Cover rows with a Session Staff Source, which remove the source coach
+    from that occurrence.
+- An Absent Occurrence Staff row is not an assignment. It is ignored by
+  the shared resolver (see NA10.10).
+- Staffing cases are identical with the Slice 7 rules on or off (S1).
+- Verified live: a Cover on OB (Quinn replacing Pat) removed Pat's
+  conflict and created Quinn's OA / OB conflict.
+
+### NA10.8 Gating, reads and performance
+
+- `module_coaches` off: neither rule runs and **no availability or
+  staffing table is read** (5 config lists; G1, and verified live).
+- ATT-014 disabled: the two availability tables are not read (G2). A
+  caseKey lookup of a conflict reads 5 config + 6 staffing tables (G3).
+- A full request is **17 lists**: 15 before, plus Coach Availability and
+  Coach Availability Exceptions.
+  - Each table is read once.
+  - There is one availability pass (availability grouped by coach in
+    memory) and one conflict pass.
+  - There are no per-coach or per-occurrence queries, no caching and no
+    concurrency change.
+- **Latency** (function edge logs, `execution_time_ms`):
+
+  | State | Timings |
+  |---|---|
+  | First call after deploy (cold) | 5.59 s (`debug=1`) |
+  | Cold again, after about 6 min idle | 6.94 s |
+  | Warm, Clear (17 lists) | 1.93 / 1.69 / 1.73 s (`debug=1`: 1.63) |
+  | Warm, with 3 Slice 7 cases (latency re-probe) | 1.56 s; 2.33 s for the first call after a 5-min gap (`debug=1`) |
+
+  The Slice 6 figures were Clear 1.35–1.49 s and cases 1.36–1.78 s.
+  Two more lists add roughly 0.2 s on a warm call. The live probe's own
+  calls (20:18–20:25Z) never reached the log stream for **any**
+  function, so those timings were not captured. A short re-probe (same
+  prefix, 8 records, deleted) supplied the with-cases figure. There was
+  no caching and no concurrency change.
+
+### NA10.9 Verification
+
+**Unit** (`needs-attention-coach-schedule.test.ts`, **55 checks**, real
+orchestrator and registry):
+- AV1–AV5 resolver outcomes;
+- WC1–WC2 wall clock / untimed;
+- OV1–OV2 overlap;
+- U1–U11 unavailable (explicit, outside-hours, Available All Day
+  override, Unknown, Ambiguous → config issue, inactive coach, inactive
+  exception row, payload, severity);
+- C1–C5 conflicts (overlap, back-to-back, different coaches, key,
+  payload);
+- I1 coexistence;
+- R1–R2 reads;
+- P1 privacy;
+- K1–K2 identity;
+- O1–O4 Occurrence Staff (Cover, removal, addition, Absent);
+- E1–E2 eligibility of both occurrences;
+- T1 triple overlap;
+- N1 untimed;
+- V1–V2 severity;
+- S1 staffing unchanged;
+- G1–G4 gating;
+- X1–X4 exceptions;
+- DR1–DR5 drift / purity / catalogue.
+
+**Deliberate-failure check:** 14 mutations were injected into the copy; **13 are caught**:
+- Ambiguous raises a case;
+- Unknown raises a case;
+- closed-interval overlap. This was first injected into the identical line
+  in the copied `windowsOverlap`; retargeted at `intervalsOverlap`, it is
+  caught by OV1, C2 and C4;
+- inactive coaches counted;
+- the pair key sorted by start time. This was initially missed; it is now
+  caught by K2;
+- mirror duplicates;
+- the ambiguous issue dropped;
+- invented end times;
+- UTC used as the wall clock;
+- the conflict rule made to need availability tables;
+- the anchor on the later start;
+- only explicit Unavailable counted;
+- the untimed issue dropped.
+
+**M10** (availability memo removed) is not caught and cannot be. The pass
+has a single consumer (ATT-014), so the memo does not change behaviour; it
+is kept only for symmetry with the other shared passes.
+
+**Full suite:** 62 files / **1,891 PASS / 0 FAIL**. The baseline was 61 /
+1,835; the delta is the new 55-check file plus 1 extra D1 check.
+
+**Deploy:** `needs-attention` **v8** (`verify_jwt` true, **11 files**).
+- `ezbr_sha256` `ddef9599696ecf7b9d74c57b597bcbf2ab025d4c07470053d48ec52af9aa4a48`.
+- Every deployed file is byte-identical to the repo: coach-schedule
+  `d368d2df705a…`, needs-attention `c81ca423b833…`, registry
+  `e580947f256b…`; the others are unchanged.
+- No other function was redeployed.
+
+**Live** (prefix `NA-S7-PROBE`, real routes via pg_net; "today"
+2026-09-28, Europe/London). The probe set-up:
+- coaches Pat and Quinn (both active);
+- sessions SA and SB;
+- OA Fri 2 Oct 07:00–08:00 BST and OB 07:45–08:45 BST;
+- Session Staff: Pat on SA and SB, Quinn on SA;
+- Pat's weekly Friday availability 06:00–10:00;
+- Pat's dated exception on 2 Oct: Unavailable.
+
+| Step | Action | Result |
+|---|---|---|
+| 0 | Baseline on v8 | Clear; 10 evaluated; **17 lists**, each once; 0 config issues |
+| 1 | Probe set-up above | **3 cases**: ATT-014 Pat × OA and Pat × OB (`exception_unavailable`, record id = the exception), plus ATT-012 Pat OA/OB (overlap 07:45–08:00, 15 min). All Warning (about 82h out). **Quinn (Unknown) → no case** |
+| 2 | Pat's exception changed to Available All Day; Quinn given two contradictory exceptions for 2 Oct | Pat's two unavailable cases **gone**; the conflict remains. Quinn: **no case**, config issue `availability_ambiguous` naming both exception rows |
+| 2b | Quinn's pair deleted; Quinn given weekly Friday 09:00–10:00 | ATT-014 Quinn × OA with reason **`outside_recurring_windows`** (decision 2). Weekly row then deleted, so Quinn is back to Unknown |
+| 3 | Occurrence Staff Cover on OB: Quinn replaces Pat's SB row | Pat's conflict **gone**; **Quinn OA/OB conflict** appears. Quinn Unknown → no unavailable case. Cover row then deleted |
+| 4 | Exact-case exception on Pat's conflict | **201**; queue Clear, **suppressed 1**. Then revoked (200) |
+| 5 | OB moved to 07:00–08:00Z (back-to-back with OA 06:00–07:00Z) | **Clear**, no conflict |
+| 5b | OB moved to 06:59–07:59Z (1-minute overlap) | Conflict returns, `overlapMinutes` 1, unsuppressed (proves the revoke) |
+| 6 | `module_coaches` Enabled off (then restored at once) | Clear; ATT-012 / ATT-014 (and all coach rules) `module_off`; **only the 5 config tables read** |
+
+**Cleanup** by exact ID, **17 records**, plus 3 rows created and deleted
+mid-probe:
+- 2 coaches, 2 sessions and 2 occurrences;
+- 3 Session Staff rows;
+- 1 Coach Availability row and 1 exception row;
+- 1 Needs Attention Exception;
+- the mid-probe rows: Quinn's 2 exceptions, Quinn's weekly row and the
+  cover row.
+
+A later latency re-probe (NA10.8) added and deleted **8 more** records:
+1 coach, 2 sessions, 2 occurrences, 2 Session Staff rows and 1 exception.
+
+Prefix searches on all touched tables return 0.
+`needs_attention_exception_locks` is empty. `module_coaches` is Enabled. `/cases` → **Clear**, 10 evaluated, 17 lists (each once),
+0 config issues.
+
+**Regression after cleanup:** all returned 200:
+- `/me` for Management, Coach and Parent;
+- hub-content `/players`, **md5 `685b11e7…` unchanged**;
+- parent-hub `/me` and `/claims/pending`;
+- coach-compliance `/summary`;
+- coach-cover `/manage`.
+
+Every response hash except coach-cover's (which carries a timestamp)
+equals an earlier baseline.
+
+### NA10.10 Separation, flags, and the Slice 8 handoff
+
+- **Supabase migration:** `coach-schedule.ts` is pure: the resolver
+  block plus passes and shaping over plain rows. It uses no fetch, Deno
+  or writes (DR4). A Supabase repository only needs to supply the same
+  8 row sets (6 staffing + 2 availability) in the same field shapes. The
+  resolver reads:
+  - Day of Week, Available, Start / End Time, Active;
+  - Start / End Date, Availability Type, Active.
+- **Absent without cover:** an Occurrence Staff row with Attendance =
+  Absent is ignored by the shared resolver. A recurring coach marked
+  Absent **without** a Cover row is therefore still treated as assigned,
+  and could raise ATT-014 / ATT-012. This is the existing Slice 3 rule
+  shared with every staffing rule; it was not changed here.
+- **Outside-hours cases** have no single `availabilityRecordId` (the
+  weekly rows as a whole decided it); the reason code says so.
+- **Conflict detail order** follows the key (id order), not time order.
+  Start times are in the payload.
+- **Triple overlaps** produce one case per pair (3 for 3), which is
+  acceptable at the expected volume.
+- **Placeholder routes:** `schedule/occurrence-staffing` and
+  `coaches/schedule-conflict`; there is no UI.
+- **Still carried:** exact-case exceptions only; tables read whole (fine
+  at TEST scale); Volunteer deferred.
+- **Slice 8 has not been started.** Remaining work includes:
+  - the Work Summary rules (ATT-043 to 046);
+  - outcome and venue rules;
+  - Settings editing;
+  - UI and notifications;
+  - the production promotion. Production must carry the availability
+    tables plus everything NA9.11 lists.
