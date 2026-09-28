@@ -8285,8 +8285,9 @@ e.g. no_lead_coach|occurrence:recXXXXXXXXXXXXXX
   link. Airtable record ids are unique within this base only. For
   multi-organisation Covaro the key must be scoped by organisation, for
   example matched together with the Organisation link or prefixed with
-  `org:<Organisation ID>|` at storage time. Slice 2 must decide this
-  before any cross-base or shared-base deployment.
+  `org:<Organisation ID>|` at storage time. *Decided in NA2.5:*
+  Organisation is a separate mandatory scope, and the Case Key stays
+  org-free.
 - Type tokens in use: `occurrence`, `coach`, `requirement`, `coverdate`,
   `allocation`, `summary`, `session`, `venue`, `player`, `claim`,
   `request`, `playerlink`, `parentlink`, `profile`, plus Planned
@@ -8307,7 +8308,7 @@ e.g. no_lead_coach|occurrence:recXXXXXXXXXXXXXX
 | ATT-014 | `assigned_coach_unavailable` | Staffing & Cover | module_coaches | Yes | Warning | — | 48 Hours Before | Yes | Schedule & Sessions / Review Staffing |
 | ATT-018 | `venue_missing` | Sessions & Venues | module_schedule | Yes | Normal | 7 Days Before | 48 Hours Before | Yes | Schedule & Sessions / Assign Venue |
 | ATT-031 | `non_compliant_coach_assigned` | Coaches & Compliance | module_coaches | Yes | Warning (lock Warning) | — | 48 Hours Before | No | Coaches / Review Compliance |
-| ATT-041 | `cover_open` | Staffing & Cover | module_coaches | Yes | Normal | 24 Hours Overdue | 24 Hours Before | No | Coaches / Resolve Cover |
+| ATT-041 | `cover_open` | Staffing & Cover | module_coaches | Yes | Normal | 48 Hours Overdue *(was 24; corrected in NA2.3)* | 24 Hours Before | No | Coaches / Resolve Cover |
 | ATT-042 | `compliance_verification_pending` | Coaches & Compliance | module_coaches | Yes | Normal | — | — | No | Coaches / Review Compliance |
 | ATT-043 | `coach_outcome_pending` | Coaches & Compliance | module_coaches | Yes | Normal | 48 Hours Overdue | — | No | Coaches / Record Coach Outcome |
 | ATT-044 | `work_summary_queried` | Coaches & Compliance | module_coaches | Yes | Normal | 3 Days Overdue | — | No | Coaches / Review Query |
@@ -8334,7 +8335,7 @@ e.g. no_lead_coach|occurrence:recXXXXXXXXXXXXXX
 | ATT-026 | `payment_revenue_mismatch` | Finance & Billing | module_finance | No | Normal | — | — | Yes | Finance / Review Payment |
 | ATT-027 | `system_sync_failed` | System & Data | module_system | No | Warning | — | — | No | Settings & System / Review System Health |
 | ATT-029 | `parent_player_access_incomplete` | Players & Parents | module_players_parents | No | Normal | — | — | Yes | Players & Parents / Review Access |
-| ATT-030 | `safeguarding_action_open` | Coaches & Compliance | module_players_parents | No | Urgent (lock Urgent) | — | — | No | Needs Attention / Review Safeguarding |
+| ATT-030 | `safeguarding_action_open` | Coaches & Compliance | module_safeguarding *(was module_players_parents; NA2.4)* | No | Urgent (lock Urgent) | — | — | No | Needs Attention / Review Safeguarding |
 | ATT-032 | `session_change_not_propagated` | System & Data | module_system | No | Warning | — | — | No | Settings & System / Review Sync |
 | ATT-033 | `player_information_incomplete` | Players & Parents | module_players_parents | No | Normal | — | — | Yes | Players & Parents / Review Player |
 | ATT-034 | `session_billing_setup_missing` | Finance & Billing | module_finance | No | Normal | — | — | Yes | Finance / Review Billing Setup |
@@ -8443,20 +8444,16 @@ verification script asserts that none of these keys or IDs is present.
   **only** `session_no_coach` is raised. `no_lead_coach`,
   `session_understaffed` and `learning_coach_only` are suppressed for that
   occurrence.
-- **Open question for Slice 2 review.** Outside the zero-staff case the
-  three rules are currently specified as independent. So an occurrence
-  that requires a Lead Coach and is staffed only by a Learning Coach
-  raises both `no_lead_coach` and `learning_coach_only`. The locked
-  decisions do not cover this; confirm it before implementing.
+- **Lead required + Learning Coach only.** *Resolved:* the locked
+  precedence is in NA2.2. Only `no_lead_coach` is raised.
 - **Cover (3.6/3.7).** There is exactly **one** case per cover date:
   `cover_open`, keyed on the Staff Availability Requests row with
   `Cover Date Status` = Open. Its severity model:
   - **Normal** when raised.
   - **Warning** once the request has been open ≥ Warning threshold, i.e.
-    request age measured from the cover date row's created time. The
-    default is **24 hours and is PROVISIONAL**, chosen to mirror the
-    existing Slice 9 `unfilledSignal` (Open ≥ 24h since `createdTime`).
-    Review it before production.
+    request age measured from the cover date row's created time.
+    *Superseded:* the default is now locked at **48 hours** (NA2.3). The
+    original provisional default was 24 hours.
   - **Urgent** when the occurrence starts within the Urgent threshold
     (default 24 **Hours Before**). This is driven by time until the
     session, not by request age.
@@ -8523,7 +8520,7 @@ when Volunteer is added.
   the two identifiers must be reconciled: re-point TEST profiles to
   `ORG-TEST-001`, or add an explicit mapping. Otherwise every
   organisation-scoped lookup will find no Settings/Exceptions (fail
-  closed) or, worse, be bypassed.
+  closed) or, worse, be bypassed. *The audit and outcome are in NA2.1.*
 
 ### NA1.12 Verification
 
@@ -8572,14 +8569,354 @@ when Volunteer is added.
 - No Finance, Players/Parents, Communications or Development logic.
 - No Supabase tables, storage or caching.
 
-**Prerequisites before Slice 2:**
+**Prerequisites before Slice 2:** these were worked through in the
+**Pre-Slice-2 Technical Prep** section below (NA2). The outcome of each
+item is recorded there.
 
-1. Resolve the organisation-ID mismatch (NA1.11).
-2. Confirm the staffing-rule co-occurrence question (NA1.9).
-3. Confirm the provisional 24h cover request-age Warning default.
-4. Decide Case Key organisation scoping for multi-org (NA1.6).
-5. Note that work-summary Status is only refreshed when a summary is read.
-   The evaluator must either recompute or accept stored-status staleness
-   for `work_summary_*`.
-6. Before adding Volunteer, apply the cover-suitability prerequisite
-   (NA1.10).
+
+---
+
+## Needs Attention — Pre-Slice-2 Technical Prep — TEST only — 2026-09-28
+
+**Scope.** A narrow prerequisite pass before Slice 2. The only changes are
+TEST Airtable catalogue values, one Feature Controls row and
+documentation. **No code was changed or deployed.** There is no
+evaluator, repository, Edge Function, API or UI. TEST Supabase was **not**
+modified (see NA2.1). Production was only *read*: its
+`profiles.organisation_id` default, its signup trigger and its
+Organisation & Branding row. This section supersedes the Slice 1 items it
+names. Those items are marked in place in the Slice 1 section.
+
+**Pre-checks.**
+- Branch `foundation/test-base-isolation`; HEAD = origin = `9c7ed15`;
+  clean tree.
+- The Slice 1 tables and the 38-rule catalogue are present.
+- The 7 `module_*` Feature Controls rows are present.
+- Settings and Exceptions are empty.
+
+### NA2.1 Organisation identity — audit and outcome (NOT aligned; one approval needed)
+
+**Where `organisation_id` / `ORG-JOSHEVANS` / `ORG-TEST-001` are used in
+TEST:**
+
+| Place | Use | Behavioural dependency |
+|---|---|---|
+| `profiles.organisation_id` column | `text NOT NULL DEFAULT 'ORG-JOSHEVANS'` | Stores the value only |
+| `public.handle_new_user()` (trigger `on_auth_user_created` on `auth.users`) | **Hard-codes** `'ORG-JOSHEVANS'` for every new signup | Signup path |
+| RLS on `profiles` | `Users can read own profile`: `auth.uid() = user_id` | None (org not referenced) |
+| Other public functions (the 9 lock RPCs, `validate_cron_secret`) | — | None (org not referenced) |
+| `supabase/functions-test/me/index.ts` | Selects and **echoes** `organisation_id` | None (never compared) |
+| The other 9 TEST functions (coach-*, hub-content, parent-hub, session-occurrences, occurrence-financial-outcomes) | Select `role, airtable_person_id, active, display_name` only | **None** |
+| `hub-content /settings` | Returns the Airtable `Organisation ID` of the Active Organisation & Branding row (`ORG-TEST-001` in TEST) | Display only |
+| Frontend `content-provider.js` | `organisation_id: 'ORG-JOSHEVANS'` as a **fallback default** only, overridden by `/settings`. No frontend code reads `/me`'s `organisation_id` | None |
+| Test mocks (`tests/support/hub-content-mock*.js`, 3 e2e tests) | Mock `/me` returns `ORG-JOSHEVANS` | None (the frontend never reads it) |
+
+The 10 deployed TEST functions are exactly the 10 in `functions-test`.
+
+**Answers.**
+
+1. **Which functions depend on the profile organisation value?** None
+   behaviourally. `me` only echoes it. No auth, RLS, role or Airtable
+   lookup compares it.
+2. **Would changing TEST profiles to `ORG-TEST-001` alter auth or access?**
+   No, for existing users.
+3. **Is `ORG-JOSHEVANS` hard-coded?** Yes, in two TEST runtime places:
+   - the `handle_new_user()` signup trigger;
+   - the `profiles.organisation_id` column default.
+
+   It is also the frontend fallback default and appears in test mocks;
+   neither is behavioural.
+4. **Do TEST and production assume the same ID?** Production is
+   internally consistent: Airtable Organisation ID = `ORG-JOSHEVANS`, all
+   profiles = `ORG-JOSHEVANS`, and the same trigger and default. Only TEST
+   Airtable was deliberately renamed to `ORG-TEST-001`. TEST Supabase
+   still mirrors production.
+5. **Do tests rely on the current value?** No. The mocks carry it, but no
+   assertion or frontend path reads it.
+
+**Why the profiles were NOT aligned in this task.** Updating the 6 profile
+rows alone would re-split the identity at the very next TEST signup: the
+trigger and the column default would keep minting `ORG-JOSHEVANS`. That is
+a worse state than today. A correct alignment therefore also changes the
+**auth signup trigger** and a **column default**. That is beyond the
+permitted "profile organisation IDs only", and the brief requires a STOP
+for auth-path changes. No workaround or dual-ID compatibility logic was
+added.
+
+**Smallest prerequisite plan: one TEST-only migration, awaiting
+approval.** It is not applied.
+
+```sql
+-- TEST ONLY (dkqubldmfyeuudecxmvh). NEVER apply to production (bkkukymqaxawnudoxdjs),
+-- whose Airtable Organisation ID genuinely is ORG-JOSHEVANS.
+begin;
+alter table public.profiles alter column organisation_id set default 'ORG-TEST-001';
+create or replace function public.handle_new_user()
+ returns trigger language plpgsql security definer set search_path to 'public'
+as $function$
+begin
+  insert into public.profiles (user_id, organisation_id, role, active)
+  values (
+    new.id,
+    'ORG-TEST-001',
+    case when new.raw_user_meta_data ->> 'account_type' = 'parent' then 'parent' else 'pending' end,
+    true
+  );
+  return new;
+end;
+$function$;
+update public.profiles set organisation_id = 'ORG-TEST-001' where organisation_id = 'ORG-JOSHEVANS';
+commit;
+```
+
+- **Expected impact:** none on auth or access (per answers 1–2). `/me`
+  would echo `ORG-TEST-001`.
+- **Verification after applying it:**
+  - all 6 profiles are `ORG-TEST-001`;
+  - `/me`, `/players`, parent-hub and a coach-* route work for
+    Management, Coach and Parent;
+  - a throwaway signup gets `ORG-TEST-001` (then delete it);
+  - the production default and trigger are unchanged;
+  - full regression passes.
+- **Promotion note:** this migration is TEST-specific and must be
+  excluded from any production promotion. The long-term Covaro design
+  (deriving the organisation at signup from the hub or tenant context
+  instead of a literal) is out of scope.
+- **Not changed:** the frontend fallback default and the test mocks.
+  Both are shared with production and non-behavioural.
+
+### NA2.2 Staffing precedence — LOCKED
+
+This applies per occurrence, after resolving staffing.
+- **Counting** staff = Lead Coach + Coach.
+- **Non-counting** = Learning Coach, unresolvable roles, and future
+  Volunteer.
+
+| Resolved roster | Requires Lead Coach | Raise | Suppress |
+|---|---|---|---|
+| Empty (0 staff of any role) | any | `session_no_coach` only | `session_understaffed`, `no_lead_coach`, `learning_coach_only` |
+| ≥1 staff, 0 counting (Learning Coach / non-counting only) | Yes | `no_lead_coach` only | `learning_coach_only` (and `session_understaffed`, which needs counting ≥1) |
+| ≥1 staff, 0 counting | No / blank | `learning_coach_only` only | `session_understaffed` (needs counting ≥1) |
+| ≥1 counting, no Lead Coach | Yes | `no_lead_coach` | — |
+| ≥1 counting, below Required Staff Count | any | `session_understaffed` | — |
+
+The descriptions of `no_lead_coach`, `learning_coach_only` and
+`session_understaffed` in the TEST catalogue now state this precedence.
+
+**Not covered by the locked decisions** (flagged, non-blocking): an
+occurrence that requires a Lead Coach, has Coach(es) but no Lead Coach,
+and has fewer counting staff than required. It currently raises **both**
+`no_lead_coach` and `session_understaffed`. These are two distinct
+actionable problems; confirm this at Slice 2 review.
+
+### NA2.3 Cover severity — LOCKED
+
+`cover_open` (ATT-041) catalogue defaults:
+- **Base: Normal** when cover is first requested.
+- **Warning:** Default Warning Threshold changed from **24 to 48**,
+  `Hours Overdue`, measured from the cover date row's created time.
+- **Urgent:** 24 `Hours Before` the occurrence start while cover is
+  still unconfirmed (unchanged).
+- **If Warning and Urgent both apply, Urgent wins.** Effective severity
+  is the highest applicable.
+
+**Known technical debt (deliberately not changed):** the Coaches Slice 9
+`unfilledSignal()` in `coach-cover/cover-workflow.ts` still flags a cover
+date as unfilled once it has been Open ≥ **24h** since creation. That is a
+cover-workflow signal, **not** the Needs Attention severity rule. The
+evaluator must use the `cover_open` catalogue thresholds and must not
+reuse `unfilledSignal()` for severity. Cover code was not altered.
+
+### NA2.4 Safeguarding — dedicated future module
+
+- `safeguarding_action_open` (ATT-030):
+  - Required Module changed from `module_players_parents` to
+    **`module_safeguarding`**. A new Required Module choice was added
+    (`selL1xeRqBpp8EtsP`).
+  - Evaluation Status stays **Planned**, Default Enabled **No**, Locked
+    Minimum **Urgent**.
+  - The description states it is not part of Players & Parents.
+- Feature Controls row `module_safeguarding` (`recwDhVDM9IubLIrM`):
+  **Enabled = No**, Audience Management, Sort 108.
+  - **Why this is safe:** it follows the same analysis as NA1.5.
+    hub-content `/settings` now returns `module_safeguarding: false`;
+    `/players` only reads `legacy_assigned_coaches`; the frontend's
+    `feature()` is never called.
+- **Activation preconditions:** the rule and module must stay inactive
+  until a safeguarding source of truth exists and permissions, restricted
+  visibility and audit requirements are designed. No safeguarding
+  workflow was built.
+
+### NA2.5 Case Key organisation scoping — contract
+
+- **Case Key stays a clean, org-free business key**, for example
+  `no_lead_coach|occurrence:recABC` (the NA1.6 grammar is unchanged).
+- **Case identity = (Organisation, Rule, Case Key).** Organisation is a
+  separate, mandatory scope:
+  - it is carried on every derived case;
+  - it is the `Organisation` link on every Settings and Exceptions row.
+- **Evaluation scope.** The evaluator resolves exactly one organisation
+  per run. It takes the caller's `profiles.organisation_id` and maps it to
+  the single Active Organisation & Branding row with that
+  `Organisation ID`. Zero or several matching rows means fail closed: no
+  cases and an explicit error, never "all orgs". It then reads only that
+  organisation's Settings and Exceptions.
+- **An exception suppresses a case only if all of these hold:**
+  - `Organisation` = the evaluated organisation;
+  - `Rule` = the case's rule;
+  - the `Rule`'s `Rule Key` equals the Case Key's first segment;
+  - `Case Key` equals the case's key exactly (string equality);
+  - `Active` = Yes;
+  - `Effective Until` is blank or in the future;
+  - the rule supports override and the organisation does not disallow
+    it.
+- Case Keys are **never** compared across organisations. Any future
+  shared store or cache must key on `(organisation record id, Case Key)`.
+  The organisation is not embedded in the Case Key, because the
+  organisation scope makes that unnecessary.
+- Not implemented yet (Slice 2).
+
+### NA2.6 Work Summary effective status — contract
+
+**Finding.** Stored `Status` is rewritten only by `applyRefresh()`
+(`coach-work-summaries/orchestrator.ts`). That runs on
+prepare/refresh/finalise paths; `readSummary`/`listSummaries` do not
+refresh. A summary can therefore sit at a stale `Not ready` after its
+pending items were resolved, or at a stale `Needs review` after a new
+pending item appeared.
+
+**Contract for the evaluator.** Recompute, and never mutate.
+Needs Attention must derive the *effective* status with the **same pure
+functions** the Work Summary code uses. They are all already exported
+from `coach-work-summaries/work-summaries.ts`:
+- `isActive`, `summaryStatus`, `summaryPeriod`;
+- `classifyAllocation`, `openStatusFor`, `ukToday`.
+
+```
+effectiveStatus(summary, allocations, occurrences, sessions, now):
+  if !isActive(summary)                → no case
+  stored = summaryStatus(summary); period = summaryPeriod(summary); if either is null → no case
+  if stored == "Finalised"             → "Finalised"
+  if stored == "Queried"               → "Queried"      // applyRefresh never moves Queried
+  today   = ukToday(now)
+  pending = allocations where classifyAllocation({allocation, occurrence, session}, coachId, period, today).kind == "pending"
+  return openStatusFor(pending.length, period, today)   // identical to applyRefresh's `next`
+```
+
+This mapping mirrors `applyRefresh()` line for line.
+- `work_summary_queried` ⇔ effective `Queried`.
+- `work_summary_ready_to_finalise` ⇔ effective `Needs review`.
+- `work_summary_blocked` ⇔ effective `Not ready` **and** `period.end <
+  today`.
+
+**Rules for the evaluator:**
+- Do not patch `Status`, `Grand Total`, lines or History.
+- Do not write a second status algorithm.
+- Following repo convention, the Slice 2 function carries a verbatim copy
+  of `work-summaries.ts` with a drift test.
+
+**One tiny, optional, no-behaviour-change refactor for Slice 2:** the
+10-line `evaluate()` loop in `orchestrator.ts` is currently private. Move
+it into `work-summaries.ts` as an exported pure helper, so the evaluator
+and `applyRefresh()` share the loop too. This needs a
+`coach-work-summaries` redeploy and byte-verification. It is **not**
+required now, and nothing was changed in this task.
+
+### NA2.7 Volunteer — prerequisite (still deferred)
+
+**Exact access gap.**
+
+1. `coach-cover/staffing.ts:166` has
+   `ROLE_RANK = { learning_coach:1, coach:2, lead_coach:3 }`. `roleRank()`
+   returns `null` for any other key, including `volunteer`.
+2. `coach-cover/orchestrator.ts:187` takes `candidateRole` from
+   `coachRoleCapabilityOnDate()`. That is the strongest ranked role the
+   candidate holds on that date, so a Volunteer-only candidate gets
+   `null`.
+3. `coach-cover/cover-workflow.ts:296` turns a `null` candidate role into
+   only the **warning** `role_capability_unknown`. A Learning Coach gets
+   the **blocker** `role_insufficient` (line 304).
+4. With `confirmWarnings: true`, confirm writes an Occurrence Staff Cover
+   row with `"Planned Role Snapshot": roleName`. That is the
+   **requester's** role (`cover-workflow.ts:500`).
+5. `hub-content/player-access.ts:545` resolves occurrence access from
+   that snapshot. `PLAYER_ACCESS_ROLE_PRIORITY` (line 383) then grants
+   Coach-level player access for that date.
+
+**Recommended smallest future fix.** Add `volunteer: 0` to `ROLE_RANK`
+(and the hand-kept test copy `tests/support/coach-cover-staffing.ts`).
+- A Volunteer candidate then has a *known* rank below Learning Coach.
+  `evaluateSuitability()` returns the hard `role_insufficient` blocker
+  for any covered role, so they can never be selected, even with
+  `confirmWarnings`.
+- No other logic changes. The rank is compared with `<`/`>` and tested
+  with `!= null`, so a value of `0` is safe.
+- A person who is Volunteer on one session but Coach on another keeps
+  their strongest role for that date. That is consistent with the
+  "different role on another session" model.
+
+This was preferred over a full role-capability engine or a change to
+the confirm path.
+
+**To add Volunteer later (one small slice):**
+- the `ROLE_RANK` change above, redeployed and byte-verified, with a
+  suitability test (Volunteer → `unsuitable`/`role_insufficient`);
+- a Coach Roles row with Role Key `volunteer` and all capability boxes
+  off;
+- a player-access test (volunteer → no access, which the allow-list
+  already guarantees);
+- optionally, `"Volunteer": 3` in parent-hub `ROLE_DISPLAY_PRIORITY`
+  (display order only).
+
+Staffing counts need no change: Volunteer is already non-counting under
+NA2.2. Volunteer has no automatic coach cost, because allocations are
+created explicitly and not derived from role.
+
+**Related pre-existing debt (not Volunteer-specific):** a candidate with
+*no* current recurring role also gets only `role_capability_unknown`.
+Once confirmed, they inherit the requester's role. This was Slice 9's
+deliberate "Management review" design. Revisit it together with the
+Volunteer slice: for example, make `role_capability_unknown` a blocker
+when the covered role grants player access.
+
+**Status: Volunteer remains deferred.** The fix touches cover code and
+needs a redeploy, which is outside this task.
+
+### NA2.8 Verification
+
+- **Catalogue (scripted).** The Slice 1 verifier was re-run against live
+  records and schema with the updated spec: **1,304 checks, 0 failures**.
+  - A spec diff shows exactly 7 intended value changes across 5 rules:
+    - descriptions of `no_lead_coach`, `learning_coach_only` and
+      `session_understaffed`;
+    - `cover_open`'s warning threshold and description;
+    - `safeguarding_action_open`'s module and description.
+  - `cover_open` Warning = 48 Hours Overdue; Urgent = 24 Hours Before.
+  - Safeguarding: Planned, Default Enabled No, `module_safeguarding`,
+    lock Urgent.
+  - Still exactly 15 Active and 15 default-enabled rules, so no rule was
+    accidentally activated.
+  - Settings and Exceptions are still empty.
+- **Feature Controls.** 8 rows. `module_safeguarding` is **disabled**,
+  and there is no `legacy_assigned_coaches` row.
+- **Live hub-content via pg_net.**
+  - `/players` (coach A) returned 200 and is **byte-identical** to the
+    Slice 1 baseline (md5 `685b11e7…`).
+  - `/settings` returned 200. The payload minus `features` is unchanged
+    (md5 `c4aa115a…`); `features` gained `module_safeguarding: false`.
+  - `/me` returned 200 for Management and Parent, still
+    `ORG-JOSHEVANS`.
+- **Supabase.** Not modified: still 6 migrations, and profiles are
+  unchanged. Production was read-only.
+- **Regression.** `node tests/run-all.js`: **56/56 files, 1,416 PASS,
+  0 FAIL**, identical check for check to the Slice 1 run.
+
+### NA2.9 Slice 2 readiness
+
+Cleared: staffing precedence (NA2.2), cover severity (NA2.3), safeguarding
+classification (NA2.4), the Case Key scoping contract (NA2.5), the Work
+Summary contract (NA2.6), and the Volunteer prerequisite, documented and
+deferred (NA2.7).
+
+**Still blocking Slice 2:** TEST organisation alignment (NA2.1). It needs
+approval to apply the single TEST-only migration above.
