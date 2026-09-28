@@ -8009,3 +8009,577 @@ snapshot rebuild.
 - resolving the session-occurrences comment drift at promotion.
 
 **Coaches backend foundation is ready to be treated as complete in TEST.**
+
+
+---
+
+## Needs Attention Foundation — Slice 1 (data foundation) — TEST only — 2026-09-28
+
+**Scope.** Data foundation only: three new TEST Airtable tables, the module
+registry rows in the existing Feature Controls table, a reconciled rule
+catalogue, the case-identity contract, organisation links, defaults and
+semantics. **No code was written or deployed in this slice.** There is no
+evaluator, Edge Function, API route, repository, exception write route,
+queue UI, Home widget, Settings UI, notification, caching or Supabase
+change. Slice 2 owns the engine.
+
+Nothing in production (Airtable `apprptFotQuVL1mhs`, Supabase
+`bkkukymqaxawnudoxdjs`) was modified. The production Needs Attention Rules
+table was *read* as the reference for the catalogue. Every write targeted
+TEST Airtable `appQktredAuGa1X7e`. TEST Supabase `dkqubldmfyeuudecxmvh`
+was not changed: still 6 migrations, and profiles are untouched.
+
+### NA1.1 Pre-change verification
+
+- Repo `coach-allocation-test`, branch `foundation/test-base-isolation`,
+  HEAD = origin = `9a48545`, clean tree.
+- The TEST base schema was byte-for-byte unchanged since the Slice 10
+  snapshot: 40 tables, with no Needs Attention tables.
+- Feature Controls had 0 rows.
+- Organisation & Branding had 1 row, `recYXqi1DTZ8ZECPQ` = `ORG-TEST-001`.
+- Coach Roles had 3 rows: lead_coach, coach and learning_coach.
+
+### NA1.2 External Airtable changes (exact)
+
+| Change | ID |
+|---|---|
+| New table **Needs Attention Rules** (24 own fields + 2 inverse links) | `tblyawQ8vSEN945Qp` |
+| New table **Needs Attention Settings** (13 fields), **0 rows** | `tblSbjGJUos0GLIyl` |
+| New table **Needs Attention Exceptions** (16 fields), **0 rows** | `tblBbsSsLR32uojsk` |
+| 38 rows seeded into Needs Attention Rules (15 Active, 23 Planned) | see NA1.7 |
+| 7 rows seeded into **Feature Controls** `tbllQe6blyK0i2ZpA` | see NA1.5 |
+| Inverse link fields auto-created by Airtable: Organisation & Branding (`Needs Attention Settings` `fldWyFKhH1GC8c31k`, `Needs Attention Exceptions` `fldlQmagiFi9YmBiT`); Sessions `fldAv1W3BD3h08I0R`; Session Occurrences `fldDYofA0rAI1kG0c`; Coaches `fldqqRW31Fql6MCUk`; Players `fldCVOWOTdrhv1iV3` (each named `Needs Attention Exceptions`) | — |
+
+No other field on any pre-existing table was added, removed, renamed or
+retyped. This was verified by script: an ID-level diff against the
+pre-change schema. None of these inverse links is written or read by any
+function: no handler returns raw record fields to clients, and they are
+empty.
+
+### NA1.3 Table definitions
+
+**Needs Attention Rules** (`tblyawQ8vSEN945Qp`) is the platform-level
+catalogue, with one row per rule. Primary field: Rule Name.
+
+- Identity fields:
+  - `Rule Name` (text)
+  - `Rule ID` (text, `ATT-###`)
+  - `Rule Key` (text, snake_case, the first segment of every Case Key)
+- `Category` (single select): Sessions & Venues, Staffing & Cover,
+  Coaches & Compliance, Players & Parents, Development,
+  Finance & Billing, Communications, System & Data.
+- `Description` (long text): the exact trigger semantics, the anchor and
+  the Case Key form.
+- Defaults:
+  - `Default Enabled` (checkbox)
+  - `Default Base Severity` (Normal / Warning / Urgent)
+- Thresholds:
+  - `Supports Warning Threshold` (checkbox), `Default Warning Threshold`
+    (integer), `Default Warning Timing`
+  - `Supports Urgent Threshold` (checkbox), `Default Urgent Threshold`
+    (integer), `Default Urgent Timing`
+  - Both timing fields offer: Hours Before, Days Before, Hours Overdue,
+    Days Overdue.
+- Behaviour:
+  - `Supports Override` (checkbox)
+  - `Locked Minimum Severity` (Normal / Warning / Urgent; blank means no
+    floor)
+  - `Action Label` (text)
+  - `Destination Area` (single select): Coaches, Schedule & Sessions,
+    Finance, Players & Parents, Development, Communications,
+    Settings & System, Needs Attention.
+  - `Client Customisable` (checkbox)
+- Gating and status:
+  - `Required Module` (single select, values equal to Feature Controls
+    Feature Keys): module_schedule, module_coaches,
+    module_players_parents, module_development, module_finance,
+    module_communications, module_system.
+  - `Evaluation Status` (Active / Planned / Retired)
+- `Sort Order` (integer; equals the ATT number), `Active` (checkbox).
+- `Created` (created time), `Last Updated` (last modified time).
+- Inverse links: `Needs Attention Settings`, `Needs Attention Exceptions`.
+
+**Needs Attention Settings** (`tblSbjGJUos0GLIyl`) holds optional
+per-organisation overrides. It is **intentionally empty**.
+
+- `Setting ID` (text)
+- `Organisation` (link to Organisation & Branding `tblKKDnM19PqQ7rtc`)
+- `Rule` (link to Needs Attention Rules)
+- `Enabled` (checkbox)
+- `Base Severity` (Normal / Warning / Urgent)
+- `Warning Threshold` (integer), `Warning Timing`
+- `Urgent Threshold` (integer), `Urgent Timing`
+- `Allow Override` (checkbox)
+- `Notes` (long text)
+- `Created`, `Last Updated`
+
+Settings was mirrored from production field-for-field: same names, types
+and options.
+
+**Needs Attention Exceptions** (`tblBbsSsLR32uojsk`) holds
+Management-approved suppressions of one specific case. It is
+**intentionally empty**; no exceptions are seeded.
+
+- `Exception ID` (text)
+- `Organisation` (link to Organisation & Branding)
+- `Rule` (link to Needs Attention Rules)
+- **`Case Key`** (text; this is the only matching key)
+- Context links:
+  - `Session` (Sessions)
+  - `Session Occurrence` (Session Occurrences)
+  - `Coach` (Coaches)
+  - `Player` (Players)
+- `Reason` (long text)
+- `Approved By User ID` (text), `Approved By Name Snapshot` (text)
+- `Approved At`, `Effective Until` (date-time, D/M/YYYY, 24h,
+  Europe/London)
+- `Active` (checkbox)
+- `Created`, `Last Updated`
+
+These are the production Exceptions fields plus `Case Key`. There is **no
+Target Type/Target ID pair**. The Case Key is the identity, and the typed
+links are for display, navigation and audit only. Case Key plus typed links
+is sufficient for every Active rule; where a subject has no typed link, its
+record id is carried in the Case Key:
+
+- cover dates (Staff Availability Requests)
+- Coach Allocations
+- Coach Work Summaries
+- Coach Document Requirements
+
+### NA1.4 Semantics (the contract Slice 2 must implement)
+
+**Cases are derived, never stored.** A case is computed at read time from
+live TEST data. There is no Cases table, and no case status is persisted.
+
+**Evaluation gate.** A rule is evaluated for an organisation only when all
+of the following hold:
+
+1. The Rule's `Active` is Yes. This means the catalogue record itself is
+   usable, for example selectable in Settings or Exceptions.
+2. `Evaluation Status` is `Active`. This says whether code should evaluate
+   the rule:
+   - `Planned`: the semantics are agreed but the data or module is not
+     ready, so it is never evaluated.
+   - `Retired`: it is never evaluated, and the row is kept only for ID
+     history.
+3. The Required Module is active. A Feature Controls row with
+   `Feature Key` = `Required Module` exists **and** `Enabled` = Yes. A
+   missing row means the module is **inactive** (fail closed).
+4. The effective Enabled is Yes. That is the Settings row's `Enabled` if
+   one exists for this Organisation + Rule; otherwise the Rule's
+   `Default Enabled`.
+
+`Active` and `Evaluation Status` are deliberately independent, and both are
+needed. A Planned rule is a usable catalogue record: an organisation can
+pre-configure a Settings row for it. An Active rule could be withdrawn
+from the catalogue (`Active` = No) without losing its evaluation history.
+They were therefore **not** simplified into one field.
+
+**Inheritance: no Settings row means use the Rule defaults.** This
+**replaces** production's "No record means the rule is off", which is
+documented on the production Settings table. Inheritance is field by
+field: a blank Settings value inherits that one Rule default.
+Additionally:
+
+- Settings overrides are ignored for rules whose `Client Customisable` is
+  No.
+- Effective base severity is never below `Locked Minimum Severity`.
+- Settings thresholds are ignored unless the Rule `Supports …Threshold`.
+- `Allow Override` on Settings can only narrow the Rule's
+  `Supports Override`, never widen it.
+
+**Severity.** Effective severity is the highest of:
+
+- the effective base severity;
+- Warning, if the Warning threshold is reached;
+- Urgent, if the Urgent threshold is reached;
+- the Locked Minimum Severity;
+- any fixed state-based severity stated in the rule's Description (for
+  example, an Expired compliance item is Urgent).
+
+The timing units anchor as follows:
+
+- **Before** means time remaining until the rule's *event anchor* (for
+  example the occurrence Start Date & Time).
+- **Overdue** means time elapsed since the rule's *outstanding-since
+  anchor* (for example the cover date row being created, or Period End).
+
+Each rule's anchor is named in its Description.
+
+**Home state.** `Clear` when there are no cases after gating and
+exceptions. Otherwise it is the highest effective severity across all cases
+(Normal < Warning < Urgent).
+
+**Exceptions.** An Exception suppresses exactly one case when all of these
+hold:
+
+- `Active` = Yes;
+- the Organisation matches;
+- the `Case Key` string equals the derived Case Key exactly;
+- the Rule equals the Case Key's rule segment;
+- the rule supports override and the organisation does not disallow it;
+- now < `Effective Until`, where blank means no expiry.
+
+Exceptions are deactivated, never deleted.
+
+### NA1.5 Module registry (Feature Controls)
+
+The existing Feature Controls table is used as the module registry. This
+was confirmed safe before seeding:
+
+- **hub-content `/players`** reads only
+  `Feature Key = legacy_assigned_coaches`. With no such row it keeps the
+  existing default (`true`). **No `legacy_assigned_coaches` row was
+  added.**
+- **hub-content `/settings`** returns every row as
+  `features[Feature Key] = Enabled`.
+- **Frontend.** `content-provider.js` merges `features` over its defaults:
+  resources, venues, coach_support, player_feedback, development_plans and
+  my_players. Its `feature()` accessor is exported but **called nowhere**.
+  The `module_*` keys cannot collide with any existing key.
+- **Production** functions read the production base, which is not
+  affected.
+
+Convention: Feature Key is snake_case with a `module_` prefix, so module
+rows can never be confused with UI feature flags. Every row has
+Audience = Management and Sort Order 101–107.
+
+| Feature Key | Enabled (TEST) | Record |
+|---|---|---|
+| `module_schedule` | Yes | `recleeUClmUlKRfJu` |
+| `module_coaches` | Yes | `recD6JSqZV7l7391m` |
+| `module_players_parents` | Yes | `rec8z5znsvpOz5ieD` |
+| `module_development` | Yes | `rec7mwdDoYx5H5RTK` |
+| `module_finance` | **No** (Finance not live in TEST) | `recI5wFXcjUfY6BXy` |
+| `module_communications` | **No** (not built) | `rec8MzGEXVAPeBiom` |
+| `module_system` | Yes | `recs4GKANVtf7iLl4` |
+
+Module gating is an *additional* safeguard on top of Default Enabled and
+Evaluation Status.
+
+### NA1.6 Case-key contract (documented only; no code)
+
+```
+<ruleKey>|<type>:<recordId>[|<type>:<recordId>...]
+e.g. no_lead_coach|occurrence:recXXXXXXXXXXXXXX
+     coach_compliance_expiry|coach:recAAA|requirement:recBBB
+     cover_open|coverdate:recCCC
+     coach_schedule_conflict|coach:recAAA|occurrence:recLOW|occurrence:recHIGH
+```
+
+- **Deterministic.** The same underlying situation always yields the same
+  string. Segment order is exactly as documented per rule. Where a rule has
+  two same-type subjects (conflict pairs), their ids are sorted ascending.
+- **Stable.** Only record ids and fixed type tokens are used. **No
+  user-facing labels**: no names, Document Type labels, dates in display
+  format or status text. This is why compliance keys use the
+  `requirement:<Coach Document Requirements id>` record rather than a
+  `doctype:FirstAid` label, which would change if the select option were
+  renamed. The one non-record segment allowed is an ISO date
+  (`date:YYYY-MM-DD`) where the subject is genuinely a date with no record
+  (Planned `expected_occurrence_missing`).
+- **Specific.** One case per actionable subject, never per group.
+- **Organisation-safe in context.** Keys are evaluated and matched only
+  within one organisation, and Exceptions also carry the Organisation
+  link. Airtable record ids are unique within this base only. For
+  multi-organisation Covaro the key must be scoped by organisation, for
+  example matched together with the Organisation link or prefixed with
+  `org:<Organisation ID>|` at storage time. Slice 2 must decide this
+  before any cross-base or shared-base deployment.
+- Type tokens in use: `occurrence`, `coach`, `requirement`, `coverdate`,
+  `allocation`, `summary`, `session`, `venue`, `player`, `claim`,
+  `request`, `playerlink`, `parentlink`, `profile`, plus Planned
+  placeholders.
+
+### NA1.7 Reconciled catalogue — 38 rules (15 Active, 23 Planned, 0 Retired rows)
+
+**Active (Evaluation Status = Active) — 15**
+
+| ID | Rule Key | Category | Required Module | Default Enabled | Base Severity | Warning | Urgent | Override | Destination / Action |
+|---|---|---|---|---|---|---|---|---|---|
+| ATT-001 | `no_lead_coach` | Staffing & Cover | module_coaches | Yes | Normal | 72 Hours Before | 24 Hours Before | Yes | Schedule & Sessions / Review Staffing |
+| ATT-002 | `learning_coach_only` | Staffing & Cover | module_coaches | Yes | Warning | — | 48 Hours Before | Yes | Schedule & Sessions / Review Staffing |
+| ATT-005 | `session_understaffed` | Staffing & Cover | module_coaches | Yes | Normal | 72 Hours Before | 24 Hours Before | Yes | Schedule & Sessions / Review Staffing |
+| ATT-011 | `coach_compliance_expiry` | Coaches & Compliance | module_coaches | Yes | Warning | — | — | Yes | Coaches / Review Compliance |
+| ATT-012 | `coach_schedule_conflict` | Staffing & Cover | module_coaches | Yes | Warning | — | 48 Hours Before | Yes | Schedule & Sessions / Review Conflict |
+| ATT-013 | `session_no_coach` | Staffing & Cover | module_coaches | Yes | Warning | — | 48 Hours Before | Yes | Schedule & Sessions / Assign Staff |
+| ATT-014 | `assigned_coach_unavailable` | Staffing & Cover | module_coaches | Yes | Warning | — | 48 Hours Before | Yes | Schedule & Sessions / Review Staffing |
+| ATT-018 | `venue_missing` | Sessions & Venues | module_schedule | Yes | Normal | 7 Days Before | 48 Hours Before | Yes | Schedule & Sessions / Assign Venue |
+| ATT-031 | `non_compliant_coach_assigned` | Coaches & Compliance | module_coaches | Yes | Warning (lock Warning) | — | 48 Hours Before | No | Coaches / Review Compliance |
+| ATT-041 | `cover_open` | Staffing & Cover | module_coaches | Yes | Normal | 24 Hours Overdue | 24 Hours Before | No | Coaches / Resolve Cover |
+| ATT-042 | `compliance_verification_pending` | Coaches & Compliance | module_coaches | Yes | Normal | — | — | No | Coaches / Review Compliance |
+| ATT-043 | `coach_outcome_pending` | Coaches & Compliance | module_coaches | Yes | Normal | 48 Hours Overdue | — | No | Coaches / Record Coach Outcome |
+| ATT-044 | `work_summary_queried` | Coaches & Compliance | module_coaches | Yes | Normal | 3 Days Overdue | — | No | Coaches / Review Query |
+| ATT-045 | `work_summary_ready_to_finalise` | Coaches & Compliance | module_coaches | Yes | Normal | 3 Days Overdue | — | No | Coaches / Finalise Summary |
+| ATT-046 | `work_summary_blocked` | Coaches & Compliance | module_coaches | Yes | Normal | 3 Days Overdue | — | No | Coaches / Resolve Pending Items |
+
+**Planned (Evaluation Status = Planned) — 23**
+
+| ID | Rule Key | Category | Required Module | Default Enabled | Base Severity | Warning | Urgent | Override | Destination / Action |
+|---|---|---|---|---|---|---|---|---|---|
+| ATT-006 | `occurrence_awaiting_confirmation` | Sessions & Venues | module_schedule | No | Normal | 24 Hours Overdue | — | Yes | Schedule & Sessions / Confirm Session |
+| ATT-008 | `coach_signup_pending` | Coaches & Compliance | module_coaches | No | Normal | 2 Days Overdue | — | Yes | Coaches / Review Coach Signup |
+| ATT-009 | `parent_claim_pending` | Players & Parents | module_players_parents | No | Normal | 2 Days Overdue | — | Yes | Players & Parents / Review Parent Claim |
+| ATT-010 | `player_session_request_pending` | Players & Parents | module_players_parents | No | Normal | 2 Days Overdue | — | Yes | Players & Parents / Review Session Request |
+| ATT-015 | `staffing_change_unconfirmed` | Staffing & Cover | module_coaches | No | Normal | 24 Hours Overdue | — | Yes | Schedule & Sessions / Confirm Staffing |
+| ATT-017 | `venue_unavailable` | Sessions & Venues | module_schedule | No | Warning | — | 48 Hours Before | Yes | Schedule & Sessions / Review Venue |
+| ATT-019 | `session_membership_issue` | Players & Parents | module_players_parents | No | Normal | — | — | Yes | Players & Parents / Review Membership |
+| ATT-020 | `register_incomplete` | Players & Parents | module_players_parents | No | Normal | 24 Hours Overdue | — | Yes | Players & Parents / Complete Register |
+| ATT-021 | `development_review_due` | Development | module_development | No | Normal | 7 Days Overdue | — | Yes | Development / Review Development |
+| ATT-022 | `communication_outstanding` | Communications | module_communications | No | Normal | — | — | Yes | Communications / Send Communication |
+| ATT-023 | `communication_failed` | Communications | module_communications | No | Warning | — | — | Yes | Communications / Review Delivery |
+| ATT-024 | `invoicing_period_ready` | Finance & Billing | module_finance | No | Normal | — | — | Yes | Finance / Review Invoicing |
+| ATT-025 | `finance_sync_failed` | Finance & Billing | module_finance | No | Warning | — | — | No | Finance / Review Finance Sync |
+| ATT-026 | `payment_revenue_mismatch` | Finance & Billing | module_finance | No | Normal | — | — | Yes | Finance / Review Payment |
+| ATT-027 | `system_sync_failed` | System & Data | module_system | No | Warning | — | — | No | Settings & System / Review System Health |
+| ATT-029 | `parent_player_access_incomplete` | Players & Parents | module_players_parents | No | Normal | — | — | Yes | Players & Parents / Review Access |
+| ATT-030 | `safeguarding_action_open` | Coaches & Compliance | module_players_parents | No | Urgent (lock Urgent) | — | — | No | Needs Attention / Review Safeguarding |
+| ATT-032 | `session_change_not_propagated` | System & Data | module_system | No | Warning | — | — | No | Settings & System / Review Sync |
+| ATT-033 | `player_information_incomplete` | Players & Parents | module_players_parents | No | Normal | — | — | Yes | Players & Parents / Review Player |
+| ATT-034 | `session_billing_setup_missing` | Finance & Billing | module_finance | No | Normal | — | — | Yes | Finance / Review Billing Setup |
+| ATT-035 | `session_over_capacity` | Sessions & Venues | module_players_parents | No | Normal | — | — | Yes | Schedule & Sessions / Review Capacity |
+| ATT-036 | `data_housekeeping_failed` | System & Data | module_system | No | Normal | — | — | No | Settings & System / Review Housekeeping |
+| ATT-038 | `expected_occurrence_missing` | System & Data | module_system | No | Warning | — | — | Yes | Schedule & Sessions / Review Session |
+
+**New rules (not in production):**
+
+- `cover_open` (ATT-041)
+- `compliance_verification_pending` (ATT-042)
+- `coach_outcome_pending` (ATT-043)
+- `work_summary_queried` (ATT-044)
+- `work_summary_ready_to_finalise` (ATT-045)
+- `work_summary_blocked` (ATT-046)
+
+**Rewritten semantics:**
+
+- `no_lead_coach`
+- `session_understaffed`
+- `session_no_coach`
+- `learning_coach_only`
+- `coach_compliance_expiry`
+- `non_compliant_coach_assigned`
+- `coach_schedule_conflict`
+- `assigned_coach_unavailable`
+- `venue_missing`
+
+These are rewritten against the real TEST resolvers (Slices 3/7/8/9). Full
+text is in each row's Description.
+
+**Production rules NOT seeded in TEST.** Their ATT numbers are reserved and
+never reused.
+
+| Prod ID | Rule Key | Why |
+|---|---|---|
+| ATT-003 | `cover_requested` | Merged into `cover_open` (one case per cover date) |
+| ATT-004 | `cover_unresolved` | Merged into `cover_open` |
+| ATT-007 | `session_change_followup` | Vague; superseded by the specific `coach_outcome_pending` |
+| ATT-016 | `coach_cost_exception` | Superseded by `work_summary_blocked` (unconfirmed/invalid cost blocks the summary); any further cost/profitability signal belongs to Finance |
+| ATT-028 | `required_setup_missing` | Vague catch-all — not activated, not seeded (no rules just for completeness) |
+| ATT-040 | `duplicate_active_record` | Vague catch-all — not seeded; specific duplicate checks (e.g. conflicting compliance records) are already covered by specific rules |
+| ATT-037 | `occurrence_during_break` | Retired — no Schedule Break concept in the TEST model (exclusions are applied by the generator) |
+| ATT-039 | `operating_period_missing` | Retired — no Operating Period concept in the TEST model |
+
+The brief said "Retire / do not seed". These were therefore **not
+seeded**, not even as `Retired` rows. The `Retired` Evaluation Status value
+exists for future retirements of rules that have been seeded. The
+verification script asserts that none of these keys or IDs is present.
+
+### NA1.8 Defaults
+
+- **Default Enabled = Yes** for all 15 Active rules: the reliable core
+  operational rules backed by live TEST data and existing resolvers.
+- **Default Enabled = No** for all 23 Planned rules. Their modules are
+  either not ready (Finance and Communications are also module-disabled)
+  or their source data is not driven yet:
+  - Confirmation State, Register State, venue availability, the
+    safeguarding log, run logs;
+  - Supabase profiles, which are blocked on the organisation-ID
+    prerequisite.
+- **Locked minimum severities** (kept from production):
+  - `non_compliant_coach_assigned` = Warning;
+  - Planned `safeguarding_action_open` = Urgent.
+- **Compliance.** `coach_compliance_expiry` has **no** Warning/Urgent
+  threshold. Review Soon comes only from each requirement's own
+  `Review Lead Days`. Severity: Review Soon = Warning; Expired = Urgent
+  (fixed, state-based).
+- **Override** is off for:
+  - `cover_open` (resolve or cancel instead);
+  - `compliance_verification_pending`;
+  - `non_compliant_coach_assigned`;
+  - `coach_outcome_pending`;
+  - the three work-summary rules.
+
+  These all need a real action, not an acceptance. Override is on for the
+  staffing, venue, schedule-conflict and unavailability rules, where
+  Management may knowingly accept a situation.
+- All other default thresholds are in the NA1.7 table. They are sensible
+  starting values, customisable per organisation via Settings.
+
+### NA1.9 Staffing, cover and look-ahead semantics
+
+- **Roles.** The session roles are Lead Coach, Coach, Learning Coach and
+  Volunteer (Volunteer is deferred; see NA1.10).
+  - **Counting staff** = active resolved roster members whose Role Key is
+    `lead_coach` or `coach`.
+  - Learning Coach does not count.
+  - A role that cannot be resolved does not count. This fails safe: it
+    can only *raise* a staffing case, never hide one.
+- **Resolved staffing.** This is the Coaches Slice 3 resolver:
+  effective-dated Session Staff applying on the occurrence Date, plus that
+  occurrence's Occurrence Staff exceptions (cover replacement, addition,
+  absence).
+- **No Lead Coach (3.1).** Raised only when the Session's
+  `Requires Lead Coach` = Yes **and** the resolved roster has ≥1 member
+  but no active `lead_coach`.
+- **Understaffing (3.2).** Based only on `Required Staff Count`, with no
+  ratios. Raised when counting staff ≥1 and < Required Staff Count. A
+  blank or 0 count means no case.
+- **Capacity vs staffing (3.3).** Capacity is separate
+  (`session_over_capacity`, Planned). **Overstaffing is allowed and never
+  raises a case.** A future profitability warning belongs to the Finance
+  module, not to Needs Attention staffing rules.
+- **Zero-staff precedence (3.5).** When the resolved roster is empty,
+  **only** `session_no_coach` is raised. `no_lead_coach`,
+  `session_understaffed` and `learning_coach_only` are suppressed for that
+  occurrence.
+- **Open question for Slice 2 review.** Outside the zero-staff case the
+  three rules are currently specified as independent. So an occurrence
+  that requires a Lead Coach and is staffed only by a Learning Coach
+  raises both `no_lead_coach` and `learning_coach_only`. The locked
+  decisions do not cover this; confirm it before implementing.
+- **Cover (3.6/3.7).** There is exactly **one** case per cover date:
+  `cover_open`, keyed on the Staff Availability Requests row with
+  `Cover Date Status` = Open. Its severity model:
+  - **Normal** when raised.
+  - **Warning** once the request has been open ≥ Warning threshold, i.e.
+    request age measured from the cover date row's created time. The
+    default is **24 hours and is PROVISIONAL**, chosen to mirror the
+    existing Slice 9 `unfilledSignal` (Open ≥ 24h since `createdTime`).
+    Review it before production.
+  - **Urgent** when the occurrence starts within the Urgent threshold
+    (default 24 **Hours Before**). This is driven by time until the
+    session, not by request age.
+
+  Cover workflow code was not changed.
+- **Look-ahead (3.8).** The default look-ahead is **14 days** for staffing
+  rules and the other forward-looking occurrence rules. The Rules model
+  has **no clean field** for this: the Warning/Urgent thresholds are
+  escalation points, not an evaluation window, and repurposing them would
+  change their meaning. So no field was added or repurposed. The 14 days
+  is documented here and in each affected rule's Description as an
+  **evaluator constant for Slice 2**. If it needs to become configurable,
+  add a dedicated field (for example `Default Look-ahead Days`) in a later
+  slice.
+
+### NA1.10 Volunteer — NOT added (deferred, reported)
+
+A `Volunteer` Coach Roles row was **not** added, and Coach Roles is
+unchanged at 3 rows. This does not trigger the brief's STOP condition,
+because the player-data path does not treat "anything not Learning Coach"
+as full access. It is still not the safe data-only extension the brief
+required:
+
+- **Player data: safe.** In `hub-content/player-access.ts`,
+  `PLAYER_ACCESS_ROLE_PRIORITY = { lead_coach, coach }` is an allow-list.
+  A `volunteer` role key would get **no** player access.
+- **Cover suitability: not safe.** `coach-cover/staffing.ts` has
+  `ROLE_RANK = { learning_coach:1, coach:2, lead_coach:3 }`, and an
+  unknown key has rank `null`. So in `evaluateSuitability`:
+  - a Volunteer candidate gets only a `role_capability_unknown`
+    **warning**;
+  - a Learning Coach gets a hard `role_insufficient` **blocker**.
+
+  With `confirmWarnings: true`, Management could therefore select a
+  Volunteer to cover a Coach or Lead Coach. The confirm step then writes an
+  Occurrence Staff Cover row with `Planned Role Snapshot` = the
+  *requester's* role (`cover-workflow.ts`). The Volunteer would then
+  **inherit Coach-level player access for that date**, contradicting
+  decision 3.4 ("no automatic player-data access").
+- **Parent display.** `parent-hub` would show a Volunteer's name after
+  the known roles. This is harmless but unplanned.
+
+Fixing the cover path means changing cover code, which was out of scope
+("do not alter cover code"). **Prerequisite before adding Volunteer:**
+cover suitability must treat `volunteer` as a hard blocker for replacing
+counting roles, for example by giving it rank 0 below Learning Coach.
+The staffing-count semantics in NA1.9 already treat an unknown or
+Volunteer role as non-counting, so the Needs Attention rules need no change
+when Volunteer is added.
+
+### NA1.11 Organisation identity
+
+- **Canonical organisation (TEST Airtable).** Organisation & Branding
+  `recYXqi1DTZ8ZECPQ`, Organisation ID **`ORG-TEST-001`**, "Josh Evans
+  Soccer School (TEST)", Europe/London. Settings and Exceptions link to
+  this record through their `Organisation` field.
+- **Known mismatch (NOT fixed in Slice 1).** All 6 TEST Supabase
+  `profiles` rows carry `organisation_id = 'ORG-JOSHEVANS'`, and the
+  frontend default is also `ORG-JOSHEVANS`. The Airtable canonical ID is
+  `ORG-TEST-001`. Supabase profile organisation IDs were deliberately not
+  modified.
+- **Prerequisite for Slice 2 organisation enforcement.** Before the
+  evaluator scopes anything by the caller's `profiles.organisation_id`,
+  the two identifiers must be reconciled: re-point TEST profiles to
+  `ORG-TEST-001`, or add an explicit mapping. Otherwise every
+  organisation-scoped lookup will find no Settings/Exceptions (fail
+  closed) or, worse, be bypassed.
+
+### NA1.12 Verification
+
+- **Schema, catalogue and isolation (scripted).** A script checked the
+  live schema (`get_table_schema`) and all 38 live rule records against the
+  seeding spec: **1,302 checks, 0 failures**. It covered:
+  - every field name and type, the exact option lists and the link
+    targets;
+  - Organisation links point to TEST `tblKKDnM19PqQ7rtc`;
+  - Exceptions date-time format and time zone;
+  - no Target Type/ID fields, and no Cases table;
+  - an ID-level diff showing pre-existing tables unchanged apart from the
+    6 inverse links;
+  - the row count (38), Rule Key and Rule ID unique, keys snake_case;
+  - every field of every row equals the spec;
+  - every Active rule has category, description, severity, destination,
+    action, module and status, and is default-enabled;
+  - no Planned rule is default-enabled, and no retired/merged key or ID is
+    present;
+  - exactly one cover rule (`cover_open`);
+  - the new Coaches-derived rules are Active;
+  - compliance has no second threshold;
+  - thresholds pair with their timings and appear only when supported;
+  - base severity ≥ locked minimum;
+  - every Description documents its Case Key form.
+- **Settings and Exceptions.** Both have 0 rows. The Case Key and audit
+  fields (`Created`, `Last Updated`, `Approved …`) are present.
+- **Feature Controls.** Exactly the 7 `module_*` rows above; no
+  `legacy_assigned_coaches` row.
+- **hub-content, live via pg_net.**
+  - `/players` (coach A JWT) returned 200 and was **byte-identical** before
+    and after: md5 `685b11e7…`, 771 bytes.
+  - `/settings` returned 200. The payload **minus `features`** was
+    identical before and after (md5 `c4aa115a…`). `features` went from `{}`
+    to the 7 `module_*` booleans, which no frontend code reads.
+- **Volunteer.** Not added; Coach Roles is still 3 rows (see NA1.10).
+- **Regression.** `node tests/run-all.js` passed **56/56 files, 1,416
+  PASS, 0 FAIL**. That is identical, check for check, to the
+  post-Coaches-handoff baseline.
+
+### NA1.13 Not built (Slice 2+)
+
+- No evaluator, Edge Function (`supabase/functions-test/needs-attention`
+  does not exist), repository, API route or exception write route.
+- No queue UI, Home widget, Settings UI or notifications.
+- No Finance, Players/Parents, Communications or Development logic.
+- No Supabase tables, storage or caching.
+
+**Prerequisites before Slice 2:**
+
+1. Resolve the organisation-ID mismatch (NA1.11).
+2. Confirm the staffing-rule co-occurrence question (NA1.9).
+3. Confirm the provisional 24h cover request-age Warning default.
+4. Decide Case Key organisation scoping for multi-org (NA1.6).
+5. Note that work-summary Status is only refreshed when a summary is read.
+   The evaluator must either recompute or accept stored-status staleness
+   for `work_summary_*`.
+6. Before adding Volunteer, apply the cover-suitability prerequisite
+   (NA1.10).
