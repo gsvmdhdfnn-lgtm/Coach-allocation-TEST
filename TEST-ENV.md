@@ -9027,3 +9027,326 @@ If a session **requires a Lead Coach**, has **at least one Coach**, has
 
 All pre-Slice-2 prerequisites are now cleared. **Slice 2 has not
 started.** No evaluator, API, UI or other change was made.
+
+
+---
+
+## Needs Attention Foundation — Slice 2 (core engine + read-only API) — TEST only — 2026-09-28
+
+**Scope.** Slice 2 builds the reusable engine and a Management-only
+read-only API. **No real domain rule is implemented**: no staffing, cover,
+compliance, availability, conflict, Work Summary, Finance, Parent/Player
+or safeguarding evaluator. It also adds no exception or Settings writes,
+UI, notifications, polling, caching or Supabase storage. Live TEST
+therefore returns **Clear**. Production is untouched.
+
+Pre-checks passed before any change:
+- HEAD = origin = `378ec8a`; clean tree.
+- All 6 profiles and the column default are `ORG-TEST-001`, with 7
+  migrations.
+- There is 1 Active organisation (`ORG-TEST-001`), 8 Feature Controls
+  rows, and empty Settings and Exceptions.
+
+### NA4.1 Architecture — `supabase/functions-test/needs-attention/`
+
+| File | Role |
+|---|---|
+| `needs-attention.ts` | **Pure engine**, no I/O. Contains: catalogue parsing and dedupe (`buildCatalogue`); organisation resolution (`resolveOrganisation`); module gating (`moduleState`); Settings scoping and inheritance (`settingsForOrganisation`, `resolveEffectiveConfig`); severity (`thresholdReached`, `computeSeverity`); case identity (`buildCaseKey`, `parseCaseKey`, `scopedCaseIdentity`); exception matching (`matchException`); the evaluator contract and registry drift check (`validateRegistry`); planning (`planEvaluation`); case building (`materialiseCases`); `summarise` and `sortCases` |
+| `repository.ts` | **Read-only** Airtable access, with no create/update/delete path. `createReader()` lists each table **at most once per request** (a memoised promise per table) and counts list operations and page requests per table. `loadConfig()` loads the 5 config tables in one wave. It has the usual 429 backoff |
+| `registry.ts` | The **code-side evaluator registry** `IMPLEMENTED_EVALUATORS`, which is **empty** in Slice 2 |
+| `orchestrator.ts` | `getCases()` runs these steps in order: role check → load config → resolve organisation (fail closed) → plan → load the union of runnable evaluators' sources → evaluate → identity, severity and exceptions → summary, ordering and payload |
+| `index.ts` | Thin HTTP layer: the TEST production-base guard, Supabase JWT → profile (`role, active, organisation_id`), Management-only, GET `/cases` only, rejection of tenant parameters |
+
+**Tests.** The hand-kept copies `tests/support/needs-attention-{engine,
+repository,registry,orchestrator}.ts` have drift checks D1 (byte-identical
+apart from import paths). The test file is
+`tests/support/needs-attention.test.ts` (99 checks), with shim
+`tests/e2e/needsattentiontest.js`. The registry drift fixture is
+`tests/support/needs-attention-catalogue.fixture.json`, a snapshot of the
+38 TEST rules.
+
+### NA4.2 Endpoint contract (deployed: `needs-attention` v1, `verify_jwt` on)
+
+| Request | Result |
+|---|---|
+| `GET /cases` | Full queue: `{engine, organisation, generatedAt, complete, summary, cases[], configIssues[]}` |
+| `GET /cases?view=summary` | `{engine, organisation, generatedAt, complete, summary}` (for Home) |
+| `GET /cases?caseKey=<key>` | `{…, caseKey, exists, suppressed, case, rule:{ruleKey, ruleId, evaluated, skipReason}, configIssues}`. Only that rule is evaluated; an unknown rule gives `skipReason: "unknown_rule"` |
+| `&debug=1` | Adds `diagnostics: {rulesInCatalogue, evaluated[], skipped[{ruleKey, ruleId, reason, detail}], sourcesLoaded, reads{lists, pages}, suppressedCases[]}` |
+| No / invalid JWT | 401 |
+| Coach / Parent / pending / inactive | 403 `Management access required` (checked before any Airtable read) |
+| `?organisation=…` (and `organisationId`, `organisation_id`, `org`, `orgId`, `tenant`, …) | **400 `tenant_param_rejected`** |
+| Invalid `caseKey` / `view` | 400 |
+| Non-GET | 405 |
+| Other routes | 404 |
+| Profile organisation matches no Active organisation / several | **409 `organisation_not_found` / `organisation_ambiguous`** |
+| Evaluator throws | 200 with `complete: false` and a `configIssues` entry `evaluator_error`; other rules' cases are still returned |
+| Config table read fails | 500. It is never a silent partial "Clear" |
+
+**Live Clear response** (`GET /cases`, Management, TEST):
+
+```json
+{"engine":"needs-attention-slice-2",
+ "organisation":{"organisationId":"ORG-TEST-001","name":"Josh Evans Soccer School (TEST)","timezone":"Europe/London"},
+ "generatedAt":"2026-09-28T14:05:27.968Z","complete":true,
+ "summary":{"state":"Clear","total":0,"counts":{"Normal":0,"Warning":0,"Urgent":0},"suppressed":0},
+ "cases":[],"configIssues":[]}
+```
+
+**Case shape** (from the synthetic test evaluator; the frontend needs no
+extra lookups):
+
+```json
+{"caseKey":"syn_alpha|occurrence:recA0000000000002","ruleId":"ATT-901","ruleKey":"syn_alpha",
+ "ruleName":"Synthetic Alpha","category":"Staffing & Cover","module":"module_alpha",
+ "severity":"Normal","severityReason":"base Normal","title":"Later","detail":"d2",
+ "actionLabel":"Review Staffing",
+ "destination":{"area":"Schedule & Sessions","route":"/schedule/occurrence","params":{"occurrenceId":"recA0000000000002"}},
+ "targetIds":{"occurrenceId":"recA0000000000002"},"relatedIds":{"coachIds":["recC0000000000001"]},
+ "anchorTime":"<ISO event anchor>","exceptionAllowed":true}
+```
+
+**Ordering:** severity (Urgent first), then rule Sort Order, then the
+earliest anchor time (cases without one last), then Case Key.
+
+### NA4.3 Organisation resolution and security
+
+- The organisation comes **only** from the authenticated caller's
+  Supabase `profiles.organisation_id`.
+- It must exactly match (no aliases, no case-folding) the
+  `Organisation ID` of **exactly one Active** Organisation & Branding row.
+  Otherwise the request returns 409 and evaluates nothing.
+- The old `ORG-JOSHEVANS` is not accepted.
+- Tenant-looking query parameters are refused outright.
+- Settings and Exceptions are considered only when they link **exactly**
+  that one organisation (and exactly one Rule).
+- Management-only means role `management` **and** `active`.
+
+### NA4.4 Settings inheritance and module gating (as built)
+
+**Effective config** (`resolveEffectiveConfig`):
+- No Settings row → the Rule's defaults.
+- A row on a **Client Customisable** rule overrides field by field. A
+  blank value inherits that Rule default.
+- A row on a non-customisable rule is ignored, with
+  `settingsIgnoredReason = rule_not_client_customisable`.
+- `Enabled` and `Allow Override` are checkboxes, so an existing row always
+  states them explicitly.
+- Thresholds exist only if the rule `Supports …Threshold`.
+- The effective override permission is `Supports Override` AND (the row's
+  `Allow Override` if a row exists, otherwise true). A row can narrow it,
+  never widen it.
+- Two rows for one rule (or a row linking several organisations or rules)
+  → ignored, the defaults apply, and a `settings_conflict` /
+  `settings_row_invalid` config issue is reported.
+
+**Gate order.** The first failing check becomes the skip reason:
+
+1. `inactive` (catalogue row not Active)
+2. `retired`
+3. `planned`
+4. `invalid_status`
+5. `not_implemented` (no registered evaluator)
+6. `registry_mismatch`
+7. `module_off` (the Feature Controls row is disabled, **missing**, or
+   conflicting)
+8. `disabled` (Default Enabled off, no Settings row)
+9. `settings_disabled`
+
+A skipped rule's domain sources are **never loaded**.
+
+### NA4.5 Case identity and exception matching
+
+- `buildCaseKey(ruleKey, subjects)` produces `ruleKey|type:id[|type:id…]`.
+  - The engine never reorders segments.
+  - Types are snake_case. Ids are record ids or ISO dates: no `|`, no
+    whitespace, no labels.
+  - An evaluator's duplicate keys are deduplicated and invalid ones
+    dropped; both are reported.
+- Organisation-scoped identity is `scopedCaseIdentity(orgRecordId,
+  ruleKey, caseKey)`. Two organisations with the same Case Key never
+  collide.
+- `matchException` suppresses a case only if **all** of these hold. Any
+  unreadable value fails safe, so the case stays visible.
+  - `Active`;
+  - exactly this organisation;
+  - exactly this rule;
+  - the Case Key's rule segment equals the rule's key;
+  - an exact Case Key string;
+  - `Effective Until` is blank or strictly after now (expiring exactly
+    now no longer suppresses);
+  - the effective override is allowed.
+- Suppressed cases are excluded from `cases` and counted in
+  `summary.suppressed`. They are listed only in `debug` diagnostics.
+- There are **no** exception writes yet.
+
+### NA4.6 Severity model (generic)
+
+Final severity is the highest of:
+- the base severity (Settings or default);
+- Warning, if the Warning threshold is reached;
+- Urgent, if the Urgent threshold is reached;
+- the evaluator's fixed `stateSeverity`;
+- the Locked Minimum.
+
+`severityReason` explains which of these applied.
+- **Before** timings compare the time remaining to `anchors.event`:
+  reached when `event − now ≤ span`.
+- **Overdue** timings compare the time elapsed since
+  `anchors.outstandingSince`: reached when `now − since ≥ span`.
+- **Boundaries are inclusive.** Days are fixed 24-hour spans.
+- A missing anchor means that threshold cannot escalate. The engine never
+  guesses.
+- The engine holds no rule-specific timing. Each evaluator supplies the
+  anchors and the Rule row supplies the thresholds.
+
+Locked rule semantics for later slices are unchanged: staffing precedence
+(NA2.2/NA3.3), cover Normal / Warning at 48h unresolved / Urgent within
+24h of the session, where Urgent wins (NA2.3; `unfilledSignal()` is **not**
+the severity engine), safeguarding (NA2.4), Volunteer (NA2.7) and Work
+Summary recomputation (NA2.6).
+
+### NA4.7 Evaluator registry and drift protection
+
+An evaluator registration is
+`{ruleKey, ruleId, sources: [Airtable table names], evaluate(ctx) → CandidateCase[]}`.
+The context `ctx` holds `now`, `organisation` (record id, ID, name,
+timezone) and the frozen `sources` it declared. A `CandidateCase` holds:
+- `subjects` (these build the Case Key);
+- `title` and `detail`;
+- `anchors` (`event` / `outstandingSince`), `anchorTime` and
+  `stateSeverity`;
+- `destination` (`route` and `params`; the area comes from the Rule);
+- `targetIds` and `relatedIds`.
+
+`validateRegistry` reports:
+- duplicate registrations;
+- an evaluator with no catalogue row;
+- a wrong Rule ID;
+- an invalid key.
+
+It runs at request time, reported as `registry_*` config issues, with the
+rule skipped as `registry_mismatch`. It also runs in unit tests against
+the fixture. Active catalogue rules with **no** evaluator are expected:
+they are skipped as `not_implemented`.
+
+### NA4.8 Performance and read model
+
+- **Per request:** the 5 config tables are listed exactly once each, in
+  one parallel wave. After that, the union of runnable evaluators'
+  sources is loaded once each, in waves of at most 5.
+- **Live TEST (debug):** 5 list operations and 5 page requests (one per
+  config table). The catalogue has 38 rules, of which 23 are `planned`
+  and 15 `not_implemented`. **0 domain sources** were loaded and 0
+  evaluators ran.
+- **Unit-proven:**
+  - config tables are listed once (paging counted separately);
+  - a source shared by two evaluators is listed once;
+  - a module-off evaluator's source is never read;
+  - list operations = 5 + distinct runnable sources, so there are no
+    per-rule queries;
+  - Coach, Parent and inactive callers cause 0 reads;
+  - an organisation failure evaluates nothing and loads no source.
+- There is no caching and no Supabase storage.
+- The Exceptions table is read whole on each request. That is fine at
+  TEST scale. A later slice may filter it server-side; link fields render
+  as names in `filterByFormula`, so the filter would need to be on
+  `Case Key` or a lookup.
+
+### NA4.9 Verification
+
+- **Unit tests:** `needs-attention.test.ts` has 99/99 checks. They cover:
+  - defaults and inheritance (1–10);
+  - modules (11–14);
+  - Evaluation Status (15–21);
+  - registry drift (22–28);
+  - severity, including inclusive boundaries, Urgent winning and locked
+    minimums (29–42);
+  - exceptions (43–54);
+  - summary (55–58);
+  - identity (59–63);
+  - organisation and security (64–70);
+  - the API contract (71–82);
+  - a TEST-catalogue equivalent returning Clear (83–85);
+  - performance (86–90);
+  - drift and read-only checks (D1–D6).
+
+  A mutation check (three injected bugs: inclusive boundary, expiry
+  boundary, module conflict) produced 5 failures, confirming the suite
+  catches regressions. A strict `tsc` typecheck is clean.
+- **Full regression:** `node tests/run-all.js` gives **57/57 files, 1,515
+  PASS, 0 FAIL**: the previous 56 files / 1,416 plus the new file / 99.
+  Every earlier check still passes.
+- **Deployment:** `needs-attention` **v1** in TEST, `verify_jwt` on. All 5
+  deployed files are **byte-identical** to the repo.
+- **Live checks** (pg_net, real password logins):
+  - Management `/cases` → 200 Clear, `complete: true`, `ORG-TEST-001`,
+    no config issues.
+  - `view=summary` → 200 Clear.
+  - `debug=1` → 38 skipped (23 planned, 15 not_implemented), 0 sources,
+    5 lists and 5 pages.
+  - A `caseKey` of `no_lead_coach|occurrence:…` → `exists: false`,
+    `skipReason: not_implemented`.
+  - Coach and Parent → 403. No auth → 401. An invalid bearer → 401
+    (gateway).
+  - `?organisation=ORG-JOSHEVANS` and `?organisationId=X` → 400
+    `tenant_param_rejected`.
+  - POST → 405. A bad `caseKey` → 400. `/exceptions` → 404.
+  - **Fail-closed.** The TEST manager's `organisation_id` was temporarily
+    set to `ORG-FAILCLOSED-PROBE`: `/cases` → **409
+    `organisation_not_found`**. It was restored immediately to
+    `ORG-TEST-001`, and all 6 profiles were then confirmed as
+    `ORG-TEST-001`, with `/cases` Clear again.
+  - **Existing functions still healthy:** `/me` (Management and Parent,
+    `ORG-TEST-001`) returned 200. hub-content `/players` (coach A)
+    returned 200 and is **byte-identical** to the baseline. coach-cover
+    `/manage`, coach-compliance `/summary` and coach-work-summaries
+    `/summaries` all returned 200.
+
+### NA4.10 Not implemented, and the Slice 3 handoff
+
+**Not implemented:** every real rule evaluator. Also exception POST and
+revoke, Settings editing, UI, Home widget, notifications, polling,
+caching, Supabase case storage, Volunteer and safeguarding.
+
+**Slice 3 handoff (staffing rules first):**
+
+1. Add evaluators for `no_lead_coach`, `learning_coach_only`,
+   `session_understaffed` and `session_no_coach` to `registry.ts`,
+   **with the exact Rule IDs** (ATT-001, ATT-002, ATT-005, ATT-013).
+   Declare their shared `sources`:
+   - Session Occurrences, Sessions, Session Staff, Occurrence Staff and
+     Coach Roles;
+   - these are loaded once and shared.
+2. Implement the locked precedence **as one staffing pass per
+   occurrence**, so suppression across the four rules is decided in one
+   place. Two ways to do this:
+   - one shared pure helper that each evaluator calls;
+   - a shared memoised per-request staffing computation.
+
+   Precedence (NA2.2 / NA3.3):
+   - zero staff → `session_no_coach` only;
+   - Learning Coach only + Lead required → `no_lead_coach` only;
+   - Learning Coach only + no Lead required → `learning_coach_only`;
+   - Coach(es), Lead required, no Lead, below Required Staff Count →
+     both `no_lead_coach` and `session_understaffed`.
+3. Reuse the Coaches Slice 3 roster resolver **verbatim**, with a drift
+   test, as every other function does.
+4. Use `anchors.event` = the occurrence start, a 14-day look-ahead, the
+   `Europe/London` organisation timezone, and a Case Key of
+   `<rule>|occurrence:<id>`.
+5. Update `needs-attention-catalogue.fixture.json` only if the catalogue
+   changes.
+6. Later slices: `cover_open` (48h Warning / 24h Urgent anchors; do not
+   reuse `unfilledSignal()`), compliance, availability and conflicts,
+   then Work Summaries (recompute per NA2.6).
+7. Exception write routes must record the Organisation link, the Rule
+   link, the exact Case Key and the approver.
+
+**Remaining risks for later slices:**
+- Airtable rate limits once several domain tables load per request.
+  Waves of 5 and 429 backoff exist, but real-rule latency should be
+  measured in Slice 3.
+- The Exceptions table is read whole on every request.
+- `configIssues` is visible to Management; a future UI must decide how to
+  present it.

@@ -1,0 +1,309 @@
+{
+ "_comment": "Snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e tblyawQ8vSEN945Qp) after the pre-Slice-2 corrections - used by the registry drift tests. Update it whenever the catalogue gains/changes a rule.",
+ "rules": [
+  {
+   "ruleId": "ATT-001",
+   "ruleKey": "no_lead_coach",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-002",
+   "ruleKey": "learning_coach_only",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-005",
+   "ruleKey": "session_understaffed",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-006",
+   "ruleKey": "occurrence_awaiting_confirmation",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_schedule",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-008",
+   "ruleKey": "coach_signup_pending",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-009",
+   "ruleKey": "parent_claim_pending",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_players_parents",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-010",
+   "ruleKey": "player_session_request_pending",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_players_parents",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-011",
+   "ruleKey": "coach_compliance_expiry",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-012",
+   "ruleKey": "coach_schedule_conflict",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-013",
+   "ruleKey": "session_no_coach",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-014",
+   "ruleKey": "assigned_coach_unavailable",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-015",
+   "ruleKey": "staffing_change_unconfirmed",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-017",
+   "ruleKey": "venue_unavailable",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_schedule",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-018",
+   "ruleKey": "venue_missing",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_schedule",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-019",
+   "ruleKey": "session_membership_issue",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_players_parents",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-020",
+   "ruleKey": "register_incomplete",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_players_parents",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-021",
+   "ruleKey": "development_review_due",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_development",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-022",
+   "ruleKey": "communication_outstanding",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_communications",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-023",
+   "ruleKey": "communication_failed",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_communications",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-024",
+   "ruleKey": "invoicing_period_ready",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_finance",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-025",
+   "ruleKey": "finance_sync_failed",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_finance",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-026",
+   "ruleKey": "payment_revenue_mismatch",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_finance",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-027",
+   "ruleKey": "system_sync_failed",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_system",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-029",
+   "ruleKey": "parent_player_access_incomplete",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_players_parents",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-030",
+   "ruleKey": "safeguarding_action_open",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_safeguarding",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-031",
+   "ruleKey": "non_compliant_coach_assigned",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-032",
+   "ruleKey": "session_change_not_propagated",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_system",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-033",
+   "ruleKey": "player_information_incomplete",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_players_parents",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-034",
+   "ruleKey": "session_billing_setup_missing",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_finance",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-035",
+   "ruleKey": "session_over_capacity",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_players_parents",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-036",
+   "ruleKey": "data_housekeeping_failed",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_system",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-038",
+   "ruleKey": "expected_occurrence_missing",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_system",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-041",
+   "ruleKey": "cover_open",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-042",
+   "ruleKey": "compliance_verification_pending",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-043",
+   "ruleKey": "coach_outcome_pending",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-044",
+   "ruleKey": "work_summary_queried",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-045",
+   "ruleKey": "work_summary_ready_to_finalise",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-046",
+   "ruleKey": "work_summary_blocked",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_coaches",
+   "defaultEnabled": true,
+   "active": true
+  }
+ ]
+}
