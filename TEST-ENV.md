@@ -10684,3 +10684,327 @@ Afterwards Exceptions and Settings hold 0 rows,
   - UI and notifications;
   - the production promotion, which must add the 4 revoke fields,
     `Case Key` and the lock table.
+
+## Needs Attention Foundation — Slice 6 (coach compliance rules) — TEST only — 2026-09-28
+
+**Scope.** Three catalogue rules are now evaluated, reusing the existing
+Coaches Slice 8 compliance domain without redesigning it:
+
+| Rule Key | Rule ID | Management-facing name |
+|---|---|---|
+| `coach_compliance_expiry` | ATT-011 | Coach compliance expiring or expired |
+| `compliance_verification_pending` | ATT-042 | **Compliance needs Management review** |
+| `non_compliant_coach_assigned` | ATT-031 | Non-compliant coach assigned |
+
+`compliance_verification_pending` is the stable machine key. Its current
+Management-facing meaning is **"Compliance needs Management review"**: it
+covers every existing Needs Review reason, not only submitted-but-unverified
+documents, and the exact reason travels in the payload.
+
+**Not in scope:** availability, schedule conflicts, Work Summary, the
+Settings editor, Finance, Parent/Player, Development, communications, the
+safeguarding workflow (`safeguarding_action_open` stays Planned), Volunteer,
+UI, notifications, caching, the Supabase migration, broad exception scopes
+and production. Slice 7 has not been started.
+
+**Pre-checks passed:**
+- HEAD = origin = `ed4dd5e`, clean tree;
+- deployed needs-attention v6 was byte-identical to the repo (9 files);
+- the live queue was Clear (5 evaluated, 13 lists, 0 config issues);
+- the compliance domain was unchanged since Coaches Slice 8 (`1c652bb`).
+
+**Stop and approval.** The brief's narrower reading of "verification
+pending" and its assumption of non-expiring qualifications did not match
+the existing domain. Work stopped before any code was written, a mapping
+was reported, and these decisions were approved:
+
+1. ATT-042 covers **all** existing Needs Review reasons, keyed per coach +
+   requirement, with the exact reason in the payload.
+2. **No separate Missing-document rule.** Missing compliance only becomes a
+   Needs Attention case through ATT-031, when the coach has eligible
+   upcoming work.
+3. **No non-expiring semantics.** A verified document with no Expiry /
+   Review Date stays Needs Review (`missing_expiry_date`), exactly as the
+   domain already resolves it. Explicit non-expiring requirements are
+   future compliance / Settings work.
+4. Identities: ATT-011 and ATT-042 per coach + requirement; ATT-031 per
+   occurrence + coach, listing all failing requirements in one case.
+5. ATT-011 stays overridable (Supports Override = Yes, unchanged).
+6. ATT-031 stays minimum Warning and escalates to Urgent within 48 hours
+   of the occurrence. Missing / Expired are **not** automatically Urgent
+   outside that timing.
+7. **Rejected does not exist** in the verification workflow (Management can
+   only verify). It is documented here only; no workflow was invented.
+
+No catalogue row, Supports Override flag or Settings row was changed.
+
+### NA9.1 Files
+
+| File | Change |
+|---|---|
+| `needs-attention/compliance.ts` | **New.** The three evaluators, one shared compliance pass, case shaping. Pure (no I/O) |
+| `needs-attention/registry.ts` | Registers `COMPLIANCE_EVALUATORS` after staffing and cover |
+| `needs-attention/needs-attention.ts` | `ENGINE_VERSION` = `needs-attention-slice-6` (nothing else) |
+| `tests/support/needs-attention-compliance.ts` | Hand-kept copy (generated like the other copies; D1 drift-checked) |
+| `tests/support/needs-attention-compliance.test.ts` + `tests/e2e/needsattentioncompliancetest.js` | **New**, 80 checks |
+| `tests/support/needs-attention.test.ts` | Registry / engine-version / reads / drift checks evolved for Slice 6 |
+| other `tests/support/needs-attention-*.ts` copies | Header line only (lists `compliance`) |
+
+`coach-compliance` and `coach-cover` were **not** changed or redeployed.
+The repository, orchestrator, exceptions, lock client and index are
+unchanged.
+
+### NA9.2 One interpretation of compliance
+
+`compliance.ts` carries a block **copied verbatim** from
+`coach-compliance/coach-compliance.ts`: the requirement resolver, the
+verification reader, the status precedence (`resolveDocumentType`) and
+`summarizeCompliance`. The test DR1 asserts every chunk still appears
+byte-for-byte in the canonical file; DR2 asserts the same against
+coach-cover's copy. Nothing below the block re-derives a status; it only
+maps the resolved status of each **required** item to a rule.
+
+| Resolved status (reason) | Coach-level rule | Assignment rule (ATT-031) |
+|---|---|---|
+| Current (`verified_and_in_date`) | none | not blocking |
+| Review Soon (`within_review_lead_days`) | ATT-011, state severity **Warning** | not blocking (as in coach-cover) |
+| Expired (`expiry_date_passed`) | ATT-011, state severity **Urgent** | blocking |
+| Needs Review: `not_verified`, `incomplete_verification`, `conflicting_active_records`, `invalid_requirement_config`, `malformed_dates`, `issue_date_after_expiry`, `manual_review_flag`, `missing_expiry_date` | ATT-042 (Normal), reason in payload | blocking |
+| Missing (`no_active_record`) | **none** (decision 2) | blocking |
+
+- The blocking set is the exact line coach-cover's `evaluateSuitability`
+  uses (`BLOCKING_COMPLIANCE`, drift test DR3).
+- Only **Required**, Active, organisation-level requirement rows count
+  (domain rule). School-scoped rows are not evaluated and are reported as
+  the config issue `compliance_school_requirements_not_evaluated`.
+- Only coaches whose Coach record is **Active** are evaluated. Historical
+  (inactive) documents are never current and never raise a case.
+- Coach-level rules resolve compliance **as of today** (Europe/London, the
+  same `ukToday` as the coach-compliance endpoint).
+- ATT-031 resolves compliance **as of the occurrence date**, exactly as
+  coach-cover's suitability check does (`summarizeCompliance(..., dateIso)`).
+  A document that is Review Soon today but will have expired by the
+  session therefore already blocks that session.
+- An unknown status (none exist today) would be reported as
+  `compliance_status_unmapped`, never forced into a rule.
+
+### NA9.3 Case identity
+
+| Rule | Case Key |
+|---|---|
+| ATT-011 | `coach_compliance_expiry\|coach:<Coach id>\|requirement:<Coach Document Requirements id>` |
+| ATT-042 | `compliance_verification_pending\|coach:<Coach id>\|requirement:<Coach Document Requirements id>` |
+| ATT-031 | `non_compliant_coach_assigned\|occurrence:<Session Occurrence id>\|coach:<Coach id>` |
+
+- Keys use the catalogue forms.
+- When several active required rows exist for one Document Type, the key
+  uses the **lowest record id** (deterministic); all ids are in
+  `relatedIds.requirementIds`. Adding a new row with a lower id for the
+  same type would re-key that type's cases; that is acceptable and noted.
+- Keys never contain a document id, so replacing, superseding or verifying
+  a document keeps the same case identity (test I4).
+- An item has exactly one status, so ATT-011 and ATT-042 never both fire
+  for the same coach + requirement. ATT-031 coexists with them by design
+  (different subject: the assignment).
+
+### NA9.4 Severity (catalogue-driven; unchanged engine)
+
+- **ATT-011:** base Warning; fixed state severity Review Soon = Warning,
+  Expired = Urgent. No thresholds, so no second timing system on top of
+  Review Lead Days.
+- **ATT-042:** base Normal; no escalation.
+- **ATT-031:** base Warning, Locked Minimum Warning, Urgent 48 Hours
+  Before (anchor = occurrence start). A Settings Base Severity of Normal
+  cannot lower it (A14). No state severity.
+
+### NA9.5 Payload and destinations
+
+- **ATT-011 / ATT-042 context:** coachId, coachName, documentType,
+  requirementId, complianceStatus, reviewReason + reviewReasonText,
+  documentId, issueDate, expiryDate, daysUntilExpiry, reviewLeadDays,
+  verificationState (`verified` / `not_verified` / `incomplete` / null),
+  verifiedAt, conflictingRecords, historicalRecords, complianceAsOf.
+- **ATT-031 context:** coachId, coachName, coachRole, assignedVia
+  (Session Staff / Occurrence Staff), session, occurrence, date,
+  start/end, startLocal, complianceAsOf (the session date),
+  failingRequirements, missing / expired / needsReview counts, and
+  failingSummary. `relatedIds` carries failingRequirementIds and
+  failingDocumentIds.
+- **No attachment data** (URL, filename or presence flag) and no document
+  contents ever enter a case (test P1).
+- **Destination:** area "Coaches" and action "Review Compliance" (from the
+  catalogue). The route **`coaches/compliance`** is a **placeholder**:
+  there is no Management compliance screen yet. Its params are coachId +
+  requirementId + documentType (+ documentId), or coachId + occurrenceId +
+  sessionId for ATT-031.
+
+### NA9.6 Who is "assigned" (ATT-031)
+
+- Assignment comes **only** from the shared staffing pass (`staffing.ts`,
+  one pass per request):
+  - Session Staff effective dates;
+  - the Occurrence Staff merge, including Cover replacement and Absent
+    rows;
+  - eligible occurrences only: Scheduled, not superseded, Active session,
+    inside the 14-day window.
+- Inactive coaches are excluded, as are missing Coach records (already a
+  staffing config issue).
+- An **active coach with an unrecognised role** is still physically
+  assigned, so is still checked (A16). The staffing rules ignore that
+  person for counting, but compliance does not.
+
+### NA9.7 Exceptions / override
+
+- ATT-011 supports override: an exact-case exception suppresses that coach
+  + requirement case. The exception row links the Coach (server-derived).
+- ATT-042 and ATT-031 do not support override: create returns 403
+  `override_not_supported` and nothing is written.
+- An excepted ATT-011 case never hides the coach's ATT-031 assignment
+  cases (E2, and verified live).
+
+### NA9.8 Gating, reads and performance
+
+- `module_coaches` off → no compliance rule runs and **no domain table is
+  read** (config tables only; G1, and verified live).
+- The coach-level rules read Coach Documents, Coach Document Requirements
+  and Coaches. ATT-031 adds the staffing tables. The engine loads the
+  union **once each**: a full request is **15 lists** (13 before + Coach
+  Documents + Coach Document Requirements).
+- Disabling all three rules drops the two compliance tables (G2). A
+  caseKey lookup of an ATT-011 case reads 8 tables (G4).
+- One compliance pass and one staffing pass per request (R1, R3).
+  Per-coach summaries are memoised per (coach, date) in memory. There are
+  no per-coach, per-document or per-occurrence queries, no caching across
+  requests, and no concurrency change (still 5).
+- **Latency** (function edge logs, `execution_time_ms`):
+
+  | State | Timings |
+  |---|---|
+  | First call after deploy (cold) | 4.95 s |
+  | Warm, with probe compliance data (9–14 cases) | 1.44 / 1.78 / 1.36 / 1.41 / 1.39 s (`debug=1`: 1.74) |
+  | Warm, Clear after cleanup | 1.49 / 1.35 s (`debug=1`: 1.62) |
+  | `view=summary` | 1.79 s |
+  | caseKey lookup (8 lists) | 1.56 s |
+  | Module off (5 lists) | 1.06 s |
+  | Exception create 201 / refused 403 | 2.69 s / ~1.6 s |
+
+  Two extra lists stay within the 1.3–1.7 s Slice 5 baseline. There was
+  no caching and no concurrency change.
+
+### NA9.9 Separation for the later Supabase migration
+
+`compliance.ts` is pure: the resolver block plus mapping and shaping, over
+plain row objects. It uses no fetch, Deno or writes (DR4). A Supabase
+repository only needs to supply the same three row sets.
+
+### NA9.10 Verification
+
+**Unit** (`needs-attention-compliance.test.ts`, **80 checks**, real
+orchestrator and registry):
+- M1–M6 mapping;
+- X1–X11 expiry / review soon: boundaries, today = valid, inactive coach,
+  history, Europe/London date;
+- V1–V10 review reasons: all eight reasons, and verification clears the
+  case;
+- CI1–CI6 config issues;
+- A1–A16 assignment: one case per occurrence × coach; 48h inclusive
+  Urgent; Missing only via assignment; as-of the occurrence date; inactive,
+  effective-dated, window, cancelled and past excluded; cover replacement;
+  Occurrence Staff add; Absent; locked minimum vs Settings; unknown role;
+- I1–I6 identity;
+- O1–O2 overlap;
+- G1–G4 gating;
+- E1–E5 exceptions;
+- P1–P3 payload privacy;
+- R1–R3 reads;
+- U1–U2 and DR1–DR5 drift / purity;
+- SG1 safeguarding boundary.
+
+`needs-attention.test.ts` was evolved: checks 27, 71, 84, 85, D1, D4 and
+D6 now cover the compliance files, with 1 extra D1 check, giving 107.
+
+**Deliberate-failure check:** 14 mutations were injected into the copy,
+and **all 14 are caught**:
+- Missing mapped to review;
+- Expired made Warning;
+- assignment resolved as of today;
+- inactive coaches included;
+- the highest requirement id used for the key;
+- Review Soon made blocking;
+- inactive coaches evaluated;
+- unknown-role coaches excluded;
+- a per-requirement ATT-031 key;
+- an attachment flag leaked;
+- a state-Urgent on ATT-031;
+- no shared pass;
+- the UTC date used for today;
+- coach-level issues not reported. That last one was initially missed; it
+  is now caught by CI6.
+
+**Full suite:** 61 files / **1,835 PASS / 0 FAIL**. The baseline was 60 /
+1,754; the delta is the new 80-check file plus 1 extra D1 check.
+
+**Deploy:** `needs-attention` **v7** (`verify_jwt` true, **10 files**).
+- `ezbr_sha256` `cc1fa6d87ee19560ec2b13d9df8b6e1697501d387e8cc04a4ed4463a82aeceec`.
+- Every deployed file is byte-identical to the repo (sha256 per file).
+- No other function was redeployed.
+
+**Live** (prefix `NA-S6-PROBE`, real routes via pg_net; documents were
+submitted and verified through the real coach-compliance `/submit` and
+`/verify`). "Today" was 2026-09-28 (Europe/London).
+
+| Step | Action | Result |
+|---|---|---|
+| 0 | Baseline on v7 | Clear; 8 evaluated; **15 lists**, each once; 0 config issues |
+| 1 | 2 requirement rows (Enhanced DBS 30 lead days, First Aid 14); 3 probe coaches (Pat, Quinn active; Rae inactive); no documents | **No coach-level case** for anyone: Missing is not a coach-level case. **6 ATT-031 cases** for the real TEST coaches Alex and Sam on real TEST-A / TEST-B occurrences in the window ("Enhanced DBS: Missing; First Aid: Missing"), Warning. Probe coaches are unassigned, so they get nothing |
+| 2 | Submit Pat DBS (expiry +10d) and Pat First Aid; Quinn DBS (expired yesterday); Rae DBS (expired). Verify Pat DBS and Quinn DBS | ATT-011 Pat DBS **Warning** ("expires on 2026-10-08 (in 10 days)", `base Warning; state Warning`). ATT-011 Quinn DBS **Urgent** (`state Urgent`). ATT-042 Pat First Aid **Normal**, `not_verified`, "submitted and awaiting Management verification". Rae is inactive, so no case. Quinn First Aid is Missing and unassigned, so no case |
+| 3 | Probe session with OB (+34h), OA (+5d) and OC (+12d); Session Staff Quinn + Rae; Occurrence Staff Pat on OA and OC | ATT-031: Quinn × OB **Urgent** (48h), Quinn × OA / OC Warning (Expired + Missing, 2 items). Pat × OA Warning (First Aid Needs Review; Occurrence Staff). Pat × OC Warning with **DBS Expired as of 2026-10-10** plus First Aid. Rae (inactive) → none. No staffing cases. Quinn's ATT-011 and ATT-031 coexist |
+| 4 | Exceptions | ATT-011 Quinn DBS → **201**, suppressed, row links Coach = Quinn. ATT-042 → **403** `override_not_supported`. ATT-031 → **403** |
+| 5 | Verify Pat First Aid through `/verify` | ATT-042 case **gone**. Pat × OA **gone**. Pat × OC remains with only "Enhanced DBS: Expired". Quinn's ATT-011 is suppressed while Quinn's ATT-031 cases stay visible |
+| 6 | `module_coaches` Enabled off (then restored) | Clear; all 8 rules `module_off`; **only the 5 config tables read** |
+| 7 | Security and lookup | Coach and Parent on `/cases` → 403; Coach `POST /exceptions` → 403. caseKey lookup of an ATT-011 case → exists, **8 lists**. `view=summary` → Urgent, 11 cases, 1 suppressed |
+
+**Cleanup** by exact ID, **21 records**:
+- 1 exception;
+- 2 Occurrence Staff and 2 Session Staff rows;
+- 3 occurrences and 1 session;
+- 4 Coach Documents and 2 requirement rows;
+- 3 coaches.
+
+`module_coaches` was restored to Enabled, `needs_attention_exception_locks`
+is empty, and `/cases` → **Clear**, 8 evaluated, 15 lists (each once),
+0 config issues.
+
+**Regression after cleanup:** all returned 200:
+- `/me` for Management, Coach and Parent;
+- hub-content `/players`, **md5 `685b11e7…` unchanged**;
+- parent-hub `/me` and `/claims/pending`;
+- coach-compliance `/summary`;
+- coach-cover `/manage`.
+
+### NA9.11 Deferred, flagged, and what Slice 7 still needs
+
+- **Missing on an unassigned active coach raises nothing** (decision 2).
+  It surfaces only through ATT-031 once the coach is assigned in the
+  window.
+- **Non-expiring requirements do not exist.** A verified no-expiry
+  document is Needs Review (ATT-042) and blocks assignment (ATT-031).
+  Future compliance / Settings work.
+- **No Rejected state** in the verification workflow (documented only).
+- **School-scoped requirements** are not evaluated. This is the same as
+  the coach-compliance endpoint, and is reported as a config issue.
+- **`coaches/compliance`** is a placeholder route; there is no UI.
+- **Relative wording in ATT-031:** failingSummary phrases ("expired on
+  2026-09-27 (3 days ago)") are relative to the **session date**. The
+  detail text says so ("as of the session date").
+- **Requirement key choice:** the lowest record id per Document Type (see
+  NA9.3).
+- **Still carried:** exact-case exceptions only; tables read whole (fine
+  at TEST scale); Volunteer deferred.
+- **Slice 7 has not been started.** Remaining work includes:
+  - availability, schedule conflicts, outcome, Work Summary and venue rules;
+  - Settings editing;
+  - UI and notifications;
+  - the production promotion. Production must carry the compliance
+    requirement data model (Coach Document Requirements already exists
+    there) plus everything NA8.11 lists.

@@ -1,7 +1,7 @@
 /**
  * Test-suite copy of the canonical needs-attention/needs-attention.ts, kept in sync
  * by hand exactly like every other deployed copy. Only import paths adjusted:
- * ./needs-attention|repository|registry|staffing|cover|exceptions|lock-client.ts become needs-attention-*.ts.
+ * ./needs-attention|repository|registry|staffing|cover|compliance|exceptions|lock-client.ts become needs-attention-*.ts.
  */
 /**
  * Needs Attention Slice 2 - the pure engine (see TEST-ENV.md "Needs
@@ -41,7 +41,7 @@ export const TIMINGS = ["Hours Before", "Days Before", "Hours Overdue", "Days Ov
 export type Timing = (typeof TIMINGS)[number];
 export const EVALUATION_STATUSES = ["Active", "Planned", "Retired"] as const;
 
-export const ENGINE_VERSION = "needs-attention-slice-5";
+export const ENGINE_VERSION = "needs-attention-slice-6";
 export const RULE_KEY_RE = /^[a-z][a-z0-9_]*$/;
 export const SUBJECT_TYPE_RE = /^[a-z][a-z0-9_]*$/;
 /** A subject id may be a record id or an ISO date - never a label: no '|', no whitespace. */

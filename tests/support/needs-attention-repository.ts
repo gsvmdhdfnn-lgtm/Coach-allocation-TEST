@@ -1,7 +1,7 @@
 /**
  * Test-suite copy of the canonical needs-attention/repository.ts, kept in sync
  * by hand exactly like every other deployed copy. Only import paths adjusted:
- * ./needs-attention|repository|registry|staffing|cover|exceptions|lock-client.ts become needs-attention-*.ts.
+ * ./needs-attention|repository|registry|staffing|cover|compliance|exceptions|lock-client.ts become needs-attention-*.ts.
  */
 /**
  * Airtable repository layer for Needs Attention (see TEST-ENV.md "Needs

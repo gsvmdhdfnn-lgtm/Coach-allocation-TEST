@@ -13,8 +13,12 @@
  * memoised staffing pass (staffing.ts). Slice 4 adds cover_open
  * (cover.ts): one case per open cover date. Its sources overlap the
  * staffing ones (Session Occurrences / Sessions / Coaches), and the engine
- * loads the union of runnable sources once each. Later slices append their
- * own registrations; gated-off rules never cause any domain read.
+ * loads the union of runnable sources once each. Slice 6 adds the three
+ * compliance rules (compliance.ts): coach_compliance_expiry and
+ * compliance_verification_pending share one memoised compliance pass;
+ * non_compliant_coach_assigned combines that pass with the shared staffing
+ * pass. Later slices append their own registrations; gated-off rules never
+ * cause any domain read.
  *
  * Drift protection: validateRegistry() (needs-attention.ts) reports
  * duplicate registrations, registrations with no catalogue row, and Rule
@@ -24,5 +28,6 @@
 import type { EvaluatorRegistration } from "./needs-attention.ts";
 import { STAFFING_EVALUATORS } from "./staffing.ts";
 import { COVER_EVALUATOR } from "./cover.ts";
+import { COMPLIANCE_EVALUATORS } from "./compliance.ts";
 
-export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS, COVER_EVALUATOR];
+export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS, COVER_EVALUATOR, ...COMPLIANCE_EVALUATORS];
