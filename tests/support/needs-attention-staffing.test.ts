@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import type { AirtableRecord } from "./needs-attention-engine.ts";
 import { getCases, type Caller, type Deps } from "./needs-attention-orchestrator.ts";
 import { IMPLEMENTED_EVALUATORS } from "./needs-attention-registry.ts";
+import { STAFFING_EVALUATORS } from "./needs-attention-staffing.ts";
 import { CONFIG_TABLES, RETRY_DELAYS_MS } from "./needs-attention-repository.ts";
 import {
   STAFFING_SOURCES,
@@ -132,7 +133,8 @@ function world(o: { sessions: AirtableRecord[]; occurrences: AirtableRecord[]; s
   requests = [];
 }
 const MGMT: Caller = { userId: "u", role: "management", active: true, organisationId: "ORG-TEST-001" };
-const deps: Deps = { airtable: { baseId: "appTESTTESTTEST01", token: "t" }, registry: IMPLEMENTED_EVALUATORS };
+// The staffing evaluators on their own (the deployed registry also carries Slice 4's cover_open - covered by needs-attention-cover.test.ts).
+const deps: Deps = { airtable: { baseId: "appTESTTESTTEST01", token: "t" }, registry: STAFFING_EVALUATORS };
 const run = (query: any = {}, now = NOW) => getCases(deps, MGMT, query, now) as Promise<any>;
 const keysFor = (body: any, occId: string) => body.cases.filter((c: any) => c.targetIds.occurrenceId === occId).map((c: any) => c.ruleKey).sort();
 
@@ -443,9 +445,9 @@ async function main() {
     ck("DR1. Every chunk of needs-attention/staffing.ts's copied resolver appears verbatim in hub-content/player-access.ts", chunks.length >= 10 && missing.length === 0, missing.map((m) => m.slice(0, 60)).join(" | "));
     ck("DR2. The copied resolver block is byte-identical to coach-cover/staffing.ts's copy (one interpretation of staffing)", block === blockOf(cc) && block.length > 3000);
     const fixture = JSON.parse(readFileSync(join(HERE, "needs-attention-catalogue.fixture.json"), "utf8")).rules as any[];
-    const reg = IMPLEMENTED_EVALUATORS.map((e) => `${e.ruleKey}=${e.ruleId}`).sort().join(",");
-    ck("DR3. Registry = the four staffing rules with the TEST catalogue's exact Rule IDs, all Active in the catalogue", reg === "learning_coach_only=ATT-002,no_lead_coach=ATT-001,session_no_coach=ATT-013,session_understaffed=ATT-005" && IMPLEMENTED_EVALUATORS.every((e) => fixture.find((f) => f.ruleKey === e.ruleKey)?.ruleId === e.ruleId && fixture.find((f) => f.ruleKey === e.ruleKey)?.evaluationStatus === "Active"));
-    ck("DR4. All four declare the identical shared source list (so each table loads once)", IMPLEMENTED_EVALUATORS.every((e) => e.sources === STAFFING_SOURCES) && STAFFING_SOURCES.join(",") === "Session Occurrences,Sessions,Session Staff,Occurrence Staff,Coach Roles,Coaches");
+    const reg = STAFFING_EVALUATORS.map((e) => `${e.ruleKey}=${e.ruleId}`).sort().join(",");
+    ck("DR3. The four staffing rules carry the TEST catalogue's exact Rule IDs, are all Active in the catalogue, and are all in the deployed registry", reg === "learning_coach_only=ATT-002,no_lead_coach=ATT-001,session_no_coach=ATT-013,session_understaffed=ATT-005" && STAFFING_EVALUATORS.every((e) => fixture.find((f) => f.ruleKey === e.ruleKey)?.ruleId === e.ruleId && fixture.find((f) => f.ruleKey === e.ruleKey)?.evaluationStatus === "Active" && IMPLEMENTED_EVALUATORS.includes(e)));
+    ck("DR4. All four declare the identical shared source list (so each table loads once)", STAFFING_EVALUATORS.every((e) => e.sources === STAFFING_SOURCES) && STAFFING_SOURCES.join(",") === "Session Occurrences,Sessions,Session Staff,Occurrence Staff,Coach Roles,Coaches");
     ck("DR5. No Volunteer role introduced; window is the fixed 14-day default (no Settings field)", !/volunteer/i.test(na.replace(/\/\*[\s\S]*?\*\//g, "")) && STAFFING_WINDOW_DAYS === 14);
   }
 

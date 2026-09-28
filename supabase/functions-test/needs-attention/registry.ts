@@ -10,8 +10,11 @@
  * (session_no_coach, no_lead_coach, learning_coach_only,
  * session_understaffed). They declare identical `sources`, so the engine
  * loads each staffing table once per request, and they share one
- * memoised staffing pass (staffing.ts). Later slices append their own
- * registrations; gated-off rules never cause any domain read.
+ * memoised staffing pass (staffing.ts). Slice 4 adds cover_open
+ * (cover.ts): one case per open cover date. Its sources overlap the
+ * staffing ones (Session Occurrences / Sessions / Coaches), and the engine
+ * loads the union of runnable sources once each. Later slices append their
+ * own registrations; gated-off rules never cause any domain read.
  *
  * Drift protection: validateRegistry() (needs-attention.ts) reports
  * duplicate registrations, registrations with no catalogue row, and Rule
@@ -20,5 +23,6 @@
  */
 import type { EvaluatorRegistration } from "./needs-attention.ts";
 import { STAFFING_EVALUATORS } from "./staffing.ts";
+import { COVER_EVALUATOR } from "./cover.ts";
 
-export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS];
+export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS, COVER_EVALUATOR];

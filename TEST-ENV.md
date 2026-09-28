@@ -9929,3 +9929,346 @@ first. Afterwards:
   implied by `total > 0 && qualifying === 0`. It is kept explicit for
   readability (mutation M7 is equivalent).
 - Slice 4 has not been started.
+
+## Needs Attention Foundation — Slice 4 (`cover_open`, one case per cover date) — TEST only — 2026-09-28
+
+**Scope.** Exactly one new rule, `cover_open` (ATT-041). It replaces
+production's `cover_requested` + `cover_unresolved` pair, so no
+requested/unresolved duplicate can exist. There is no exception POST or
+revoke, no compliance, non-compliant-coach, availability, conflict, Work
+Summary, Settings, Finance, Players/Parents, Development, safeguarding or
+Volunteer rule. There is no notification, UI, caching or Supabase case
+storage, and no production change.
+
+**The cover workflow (`coach-cover`) is untouched.** It was not edited or
+redeployed.
+
+Pre-checks passed:
+- HEAD = origin = `b39a97c`;
+- deployed `needs-attention` v4 was byte-identical to the repo;
+- the ATT-041 catalogue row held the NA2.3 values.
+
+### NA7.1 What changed (files)
+
+| File | Change |
+|---|---|
+| `needs-attention/cover.ts` | **New.** The `cover_open` evaluator and one shared cover analysis pass. It contains one COPIED block (`COVER_DATE_STATUSES` + `deriveGroupStatus`, verbatim from `coach-cover/cover-workflow.ts`, drift-tested) |
+| `needs-attention/registry.ts` | `IMPLEMENTED_EVALUATORS = [...STAFFING_EVALUATORS, COVER_EVALUATOR]` |
+| `needs-attention/needs-attention.ts` | `ENGINE_VERSION = "needs-attention-slice-4"` (only change) |
+| `index.ts`, `orchestrator.ts`, `repository.ts`, `staffing.ts` | Unchanged. The generic engine already loads the union of runnable sources once each |
+
+Tests:
+- New `tests/support/needs-attention-cover.test.ts` (56 checks) with its
+  shim `tests/e2e/needsattentioncovertest.js`, plus the hand-kept copy
+  `tests/support/needs-attention-cover.ts`.
+- The engine test (103 checks) and the staffing test (100 checks) were
+  updated. The staffing test now registers `STAFFING_EVALUATORS` only, so
+  its read counts stay staffing-only.
+
+### NA7.2 Source of truth, and what "needs attention" means
+
+- **The cover date** is one **Staff Availability Requests** row, created
+  by `coach-cover POST /requests`, one per requested occurrence. A
+  multi-date request is one **Cover Request Groups** row plus N date rows.
+- **A case exists while that row's own `Cover Date Status` is `Open`.**
+  This is the same test the workflow applies before it accepts a
+  response, a selection or a cancellation. Needs Attention never
+  re-derives cover state from anything else.
+- **Terminal states:**
+  - `Filled` (Management selected a cover coach: `/select` writes the
+    Cover Occurrence Staff row, then sets Filled + Replacement Coach);
+  - `Cancelled` (`/cancel`);
+  - `Resolved Without Cover`.
+
+  Each terminal state makes the case disappear on the next evaluation.
+  There is **no** dismiss or complete action; the case resolves only
+  through the real workflow.
+- **What does NOT resolve a case:**
+  - A coach's `Accept` (Response Status `Yes`) is only willingness; the
+    workflow never treats it as cover, so the case stays.
+  - The same applies to `Decline`, `Invited` or `Withdrawn`, and to
+    inactive responses (`Active` unchecked is ignored entirely).
+- **`Resolved Without Cover`** is a valid workflow state (it is in
+  `COVER_DATE_STATUSES`), but **no `coach-cover` route writes it today**.
+  It is set in Airtable directly. Needs Attention honours it; adding a
+  route for it is workflow work, not Needs Attention work.
+- **An Open date that can no longer be acted on gives no case:**
+  - its occurrence is `Cancelled` or `Postponed`;
+  - or the occurrence has already started (`Start <= now`);
+  - or, for a date-only occurrence, its Date is before today in
+    Europe/London.
+
+  This follows the catalogue's "not Cancelled/Postponed", and the
+  workflow refuses to act on a past date.
+- **Fail visible:**
+  - An Open date whose occurrence link is missing or unreadable still
+    gives a case (it cannot escalate on session time), plus the config
+    issue `cover_occurrence_missing`.
+  - An occurrence with no Start time gives a case that cannot go Urgent,
+    plus `cover_occurrence_untimed`.
+  - A row with no created time gives `cover_request_time_unknown`.
+
+  These use the existing `configIssues` mechanism (`reportIssue`); none
+  creates an extra case.
+- **No look-ahead window.** Unlike staffing (14 days), every Open
+  future-or-today date is a case, however far out.
+
+### NA7.3 One case per date, grouping, key
+
+- **Case Key:** `cover_open|coverdate:<Staff Availability Requests record id>`.
+  - It is the dedicated per-date record, so it is stable while the date
+    is unresolved.
+  - It contains no names, titles or dates.
+  - The organisation is a separate scope, as in every other rule.
+  - A lookup with `?caseKey=` works as for staffing.
+- **Grouping** (the shared parent is the Cover Request Group link):
+  - `targetIds.coverRequestGroupId`, `context.coverRequestGroupId`
+    and `destination.params.groupId`;
+  - `context.groupStatus` is derived from **all** sibling date statuses
+    with the copied `deriveGroupStatus`. Live verification saw "Partially
+    Filled" with dates A Filled / B Open / C Cancelled / D Resolved
+    Without Cover;
+  - `context.siblingDates` / `siblingOpenDates` (excluding itself) and
+    `relatedIds.siblingRequestDateIds`.
+
+  A UI can group by `coverRequestGroupId` and still show one row per
+  date.
+- **The Cover Request Groups table is deliberately not read.**
+  - The group ID comes from the date row's own link.
+  - Status is derived from the sibling date rows, which are already
+    loaded.
+  - The group's `Reason` / notes are personal data that Needs Attention
+    does not need.
+
+### NA7.4 Severity (catalogue-driven; the engine computes it)
+
+The catalogue row ATT-041 (set in NA2.3, unchanged here):
+- base **Normal**;
+- **Warning** = 48 Hours Overdue;
+- **Urgent** = 24 Hours Before;
+- the highest level wins, so Urgent beats Warning.
+
+The evaluator only supplies two anchors:
+- `anchors.outstandingSince` = the date row's Airtable `createdTime`.
+  This is the **request age**; Warning applies when `now - created >= 48h`.
+- `anchors.event` = the occurrence `Start Date & Time`. This is the
+  **session time**; Urgent applies when `start - now <= 24h`.
+
+They are two independent clocks:
+- A request made 3 weeks ahead turns Warning after 2 days, then Urgent
+  on the day before.
+- A request made 10 hours before the session is **Urgent immediately**,
+  and the reason says so. Live verification confirmed this:
+  `base Normal; Urgent threshold reached (24h before event)`.
+
+Boundary tests (fixed "now"):
+- start = now + 24h + 1ms → not Urgent; exactly 24h → Urgent;
+- created = now − 48h + 1ms → not Warning; exactly 48h → Warning;
+- both conditions → Urgent (Urgent wins);
+- untimed occurrence → never Urgent, still Warning by age.
+
+Times are formatted in Europe/London, e.g. `Sun 4 Oct 2026, 11:00`.
+
+**`unfilledSignal()` status.**
+- `coach-cover/cover-workflow.ts` `unfilledSignal(status, createdTime,
+  now)` returns `Open && now - createdTime >= 24h`.
+- It is used **only** by `coach-cover`'s `dateView`, which feeds `GET
+  /manage` fields `unfilledOver24h` and `unfilledOver24hCount`.
+- No frontend file references it (checked by repo grep).
+- Needs Attention **does not call it and does not use its 24h
+  threshold**. The cover drift test CV2 asserts this, and CV4 asserts
+  coach-cover still has its own 24h flag unchanged.
+- The two can differ on purpose. `/manage`'s flag is a legacy list
+  hint; Needs Attention severity is the locked 48h/24h model.
+- Retiring or aligning `unfilledSignal` is a separate decision; it was
+  not changed.
+
+### NA7.5 Payload and destination
+
+Each case carries:
+- **Identity:** `ruleKey`, `ruleId`, `caseKey`, `module` =
+  `module_coaches`, and `category`.
+- **`severity`, `severityReason`** and `anchorTime`.
+- **`title`:** `Cover needed - <Session name>`.
+- **`detail`:** when, who requested, request age, how many accepted or
+  declined, and the multi-date note.
+- **`targetIds`:** `requestDateId`, `occurrenceId`, `sessionId` and
+  `coverRequestGroupId`.
+- **`relatedIds`:** `requesterCoachIds`, `acceptedCoachIds` and
+  `siblingRequestDateIds`.
+- **`context`:**
+  - status: `coverDateStatus`, `requestId`, `coverRequestGroupId`,
+    `groupStatus`, `siblingDates` and `siblingOpenDates`;
+  - requester and responses: `requesterCoachId`, `requesterName`,
+    `requestedAt`, `openForMinutes`, `openForHours`,
+    `acceptedResponses`, `declinedResponses`, and `selectedCoachId`
+    (always null while Open);
+  - occurrence: `occurrenceId`, `occurrenceName`, `occurrenceStatus`,
+    `sessionId`, `sessionName`, `date`, `start`, `end` and
+    `startLocal`.
+- **`actionLabel`:** "Resolve Cover" (catalogue).
+- **`destination`:**
+  `{ area: "Coaches", route: "coaches/cover-request-date", params: { requestDateId, groupId, occurrenceId } }`.
+
+**The destination is a placeholder logical route.** There is no
+Management cover UI yet. The route names the exact date; the UI slice
+maps it to a screen, e.g. `coach-cover GET /manage/detail?requestDateId=`.
+
+**Not exposed:**
+- the cover reason;
+- handover or coach notes;
+- response notes;
+- rates;
+- the names of accepting coaches (IDs only);
+- any contact data.
+
+### NA7.6 Reads and performance
+
+- **One shared cover pass per request** (memoised). Each of the five cover
+  tables is indexed once, and there are no per-date queries.
+  `Session Occurrences`, `Sessions` and `Coaches` are **shared with
+  staffing** and loaded once.
+- **Final read count with every rule on: 13 list reads.**
+  - 5 config: Organisation & Branding, Feature Controls, Rules,
+    Settings, Exceptions;
+  - 6 staffing: Session Occurrences, Sessions, Session Staff,
+    Occurrence Staff, Coach Roles, Coaches;
+  - 2 cover-only: Staff Availability Requests, Cover Responses.
+
+  Every table is read once (13 pages live). This was 11 before Slice 4.
+  The domain tables still load in 2 waves of 5.
+- **Module off** (`module_coaches` disabled): no cover or staffing table
+  is read (test G1).
+- **Cover disabled in Settings:** the two cover-only tables are not read
+  (G2).
+- **A `caseKey` lookup** reads only that rule's sources: 10 lists, and no
+  staffing-only tables (G3).
+
+Live latency (`function_edge_logs` `execution_time_ms`; logs are sampled):
+
+| Call | Latency |
+|---|---|
+| Cold, first call after deploy | 5.14 s |
+| Warm full `/cases?debug=1` with 7 live cases | 1.41–1.52 s |
+| Warm `?caseKey=` lookups | 1.30–1.57 s |
+| Warm `view=summary` | 1.61 s |
+| Warm **Clear** after cleanup | 1.59–1.76 s |
+
+Three calls fired in parallel ran 1.73–1.96 s each. The Slice 3.1
+baseline was a warm Clear of 1.46–1.55 s with 11 lists, so the two extra
+lists cost about 0.1–0.2 s.
+
+### NA7.7 Staffing interaction (both rules stand alone)
+
+Cover and staffing are separate concerns, and neither suppresses the
+other.
+
+- **While a date is Open,** the requester still staffs the occurrence.
+  The workflow only swaps staff at selection, so staffing sees the same
+  truth as before.
+- **If staffing is also wrong,** both cases coexist. Live, an inactive
+  requester on a Required-1 session gave `cover_open` **and**
+  `session_no_coach`.
+- **After selection,** the Cover Occurrence Staff row puts the
+  replacement on the occurrence. On the next evaluation `cover_open`
+  disappears because the date is Filled, and `session_no_coach` also
+  disappears because the replacement is valid staff. Neither rule knows
+  about the other.
+- **Disabling `cover_open`** leaves staffing cases intact (I4).
+
+### NA7.8 Verification
+
+**Unit tests** (`needs-attention-cover.test.ts`, 56 checks):
+- E1–E6 eligibility;
+- V1–V11 severity boundaries;
+- L1–L6 lifecycle: accepted only → stays; Filled / Cancelled /
+  Resolved Without Cover → gone; inactive response ignored;
+- M1–M8 multi-date mixed outcomes and grouping;
+- K1–K3 identity;
+- P1–P4 payload and privacy;
+- F1–F2 fail visible;
+- R1–R4 reads;
+- G1–G3 gating;
+- I1–I4 staffing interaction;
+- CV1–CV5 drift, no `unfilledSignal` use, catalogue fixture = ATT-041,
+  and read-only.
+
+**Full suite:** 59 files / **1,675 PASS / 0 FAIL**. The baseline was 58 /
+1,618 / 0.
+
+**Deploy:** `needs-attention` **v5** (`verify_jwt` true, 7 files).
+- `ezbr_sha256` `c08ae0f41ca7df0cb07b9601d843151a8e7e788048c056ca61c729db55d0479a`.
+- Every deployed file is byte-identical to the repo (sha256 per file).
+- `coach-cover` was not redeployed.
+
+**Live end-to-end** (prefix `NA-S4-PROBE`, through the real
+`coach-cover` routes via pg_net). The probe set was:
+- one inactive probe coach;
+- 3 sessions, all Required 1 and Lead not required;
+- 6 occurrences at 07:00 BST, so they avoid real sessions;
+- 3 Session Staff rows.
+
+| Step | Action | Result |
+|---|---|---|
+| 0 | Baseline | Clear; 5 evaluated; 13 lists |
+| 1 | Management `POST /requests` for the inactive coach (O1), and Alex `POST /requests` for 4 dates A–D. Alex also requested one date **~13h ahead** (U) | **6 `cover_open` cases, one per date**. O1 also has `session_no_coach` (coexist). U is **Urgent** ("24h before event"); the rest are Normal. 4 cases share `coverRequestGroupId`, each "Part of a 4-date request (3 other dates still open)". 13 lists |
+| 2 | Sam `POST /respond` Accept on O1 and A, Decline on B | All still present. The detail reads "1 coach accepted - choose the cover coach" and "No coach has accepted yet (1 declined)"; `acceptedCoachIds` = [Sam] |
+| 3 | Management `POST /select` (confirmWarnings) on O1 and A; Alex `POST /cancel` on C; D set to `Resolved Without Cover` in Airtable | O1, A, C and D cases gone. **`session_no_coach` on O1 gone as well** (Sam's Cover OS row). Only B remains (group "Partially Filled", 0 other open) and U (Urgent). `caseKey` lookup of O1 → `exists: false`. `/manage` agrees on all 6 statuses; stored group status = derived |
+| 4 | `view=summary` | Urgent, total 2 (1 Normal, 1 Urgent) |
+| 5 | Coach or Parent on `/cases` | 403 |
+
+**Warning (48h request age) was not produced live.** Airtable sets
+`createdTime` itself, so a 48h-old request cannot be made on demand. It
+is covered by the V-series unit boundaries instead.
+
+**Cleanup:** all 27 probe records were deleted by exact ID:
+- 3 Cover Responses, 2 Cover Occurrence Staff rows, 6 date rows and 3
+  groups;
+- 3 Session Staff rows, 6 occurrences, 3 sessions and 1 coach.
+
+The workflow writes only groups, dates, responses and Occurrence Staff
+(verified in code). `cover_date_locks` is empty.
+
+`/cases` → **Clear**, 0 config issues, 13 lists.
+
+**Other functions after cleanup:**
+- `/me` returned 200 for Management, Coach and Parent.
+- hub-content `/players` (coach A) returned 200, **md5 `685b11e7…`,
+  unchanged**; `session-participants` returned 200.
+- coach-cover `/manage` returned 200 (0 dates) and `/mine` returned 200.
+  Coach on `/manage` got 403.
+- coach-compliance `/summary` and coach-work-summaries (Management and
+  Coach) returned 200.
+- parent-hub `/claims/pending` returned 200, and `/feedback` returned
+  the expected 400.
+- The no-param validation 400s were unchanged.
+- parent-hub `/me` returned 500 **once**. That burst of 23 parallel calls
+  hit an Airtable `429 RATE_LIMIT_REACHED` (function log). Alone, it
+  returned 200. This is not a regression.
+
+### NA7.9 Flagged, deferred, and what Slice 5 still needs
+
+- **Destination is still a logical placeholder route**
+  (`coaches/cover-request-date`), because there is no Management cover
+  UI.
+- **Nothing in the workflow writes `Resolved Without Cover`.** It is
+  honoured, but only set by hand.
+- **`unfilledSignal()` / `/manage unfilledOver24h` (24h) is not aligned
+  with the Needs Attention 48h Warning.** It was left unchanged by
+  design (NA7.4).
+- **Warning by request age depends on Airtable `createdTime`.** An
+  imported or back-filled date row would start its clock at import
+  time.
+- **A cover date whose occurrence has started drops out even while
+  Open.** This is the workflow's own past-date rule; the workflow cannot
+  act on it either.
+- **Still carried from NA6.7:**
+  - the non-Active-session occurrence exclusion (staffing only);
+  - Volunteer is deferred;
+  - the Exceptions table is read whole.
+- **Slice 5 has not been started.** Remaining catalogue rules (not
+  implemented, reported as `skipped: not_implemented`/`planned`) include
+  `compliance_verification_pending`, `non_compliant_coach_assigned`,
+  `coach_schedule_conflict`, `coach_outcome_pending`,
+  `work_summary_ready_to_finalise` and `venue_missing`. Exception
+  POST/revoke, the UI and notifications also remain.
