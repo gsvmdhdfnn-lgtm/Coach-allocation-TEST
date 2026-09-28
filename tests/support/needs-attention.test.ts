@@ -232,7 +232,7 @@ async function main() {
     const rr = await run([synEval("syn_b", "ATT-999", [], () => one(["recB0000000000001"]))], { debug: true });
     ck("26. Runtime: a registration whose Rule ID disagrees with the catalogue is skipped (registry_mismatch) and reported", !evalCalls.syn_b && rr.body.diagnostics.skipped[0].reason === "registry_mismatch" && rr.body.configIssues.some((i: any) => i.code === "registry_rule_id_mismatch"));
     const fixture = JSON.parse(readFileSync(join(HERE, "needs-attention-catalogue.fixture.json"), "utf8")).rules as any[];
-    ck("27. Deployed registry is empty in Slice 2 (no real domain rule implemented)", IMPLEMENTED_EVALUATORS.length === 0);
+    ck("27. Deployed registry = exactly the four Slice 3 staffing rules (nothing else registered)", IMPLEMENTED_EVALUATORS.map((e) => e.ruleKey).sort().join(",") === "learning_coach_only,no_lead_coach,session_no_coach,session_understaffed");
     ck("28. Deployed registry validates cleanly against the TEST catalogue fixture (38 rules, unique keys/IDs)", validateRegistry(IMPLEMENTED_EVALUATORS, fixture).length === 0 && fixture.length === 38 && new Set(fixture.map((r) => r.ruleKey)).size === 38 && new Set(fixture.map((r) => r.ruleId)).size === 38);
   }
 
@@ -369,9 +369,9 @@ async function main() {
     world({ rules: [A, B], extra: { "Domain A": [{ id: id("DomA1"), fields: {} }] } });
     const full = await run(reg);
     const b = full.body;
-    ck("71. Full payload: engine, organisation (ORG-TEST-001), generatedAt, complete, summary, cases, configIssues", b.engine === "needs-attention-slice-2" && b.organisation.organisationId === "ORG-TEST-001" && b.generatedAt === NOW.toISOString() && b.complete === true && b.summary && Array.isArray(b.cases) && Array.isArray(b.configIssues) && !("diagnostics" in b));
+    ck("71. Full payload: engine, organisation (ORG-TEST-001), generatedAt, complete, summary, cases, configIssues", b.engine === "needs-attention-slice-3" && b.organisation.organisationId === "ORG-TEST-001" && b.generatedAt === NOW.toISOString() && b.complete === true && b.summary && Array.isArray(b.cases) && Array.isArray(b.configIssues) && !("diagnostics" in b));
     const c0 = b.cases.find((c: any) => c.caseKey === "syn_alpha|occurrence:recA0000000000002");
-    const REQUIRED = ["caseKey", "ruleId", "ruleKey", "ruleName", "category", "module", "severity", "severityReason", "title", "detail", "actionLabel", "destination", "targetIds", "relatedIds", "anchorTime", "exceptionAllowed"];
+    const REQUIRED = ["caseKey", "ruleId", "ruleKey", "ruleName", "category", "module", "severity", "severityReason", "title", "detail", "actionLabel", "destination", "targetIds", "relatedIds", "context", "anchorTime", "exceptionAllowed"];
     ck("72. Every case carries the full display contract (no client-side joins needed)", b.cases.every((c: any) => REQUIRED.every((k) => k in c)) && c0.ruleName === "Synthetic Alpha" && c0.actionLabel === "Review Staffing" && c0.destination.area === "Schedule & Sessions" && c0.destination.route === "/schedule/occurrence" && c0.destination.params.occurrenceId === "recA0000000000002" && c0.targetIds.occurrenceId === "recA0000000000002" && c0.relatedIds.coachIds[0] === "recC0000000000001" && c0.anchorTime === iso(3 * D) && c0.module === "module_alpha");
     ck("73. Ordering: Urgent first, then rule Sort Order, then earliest anchor, then Case Key", b.cases.map((c: any) => c.caseKey).join(",") === ["syn_beta|occurrence:recB0000000000001", "syn_alpha|occurrence:recA0000000000001", "syn_alpha|occurrence:recA0000000000003", "syn_alpha|occurrence:recA0000000000002"].join(","), b.cases.map((c: any) => c.caseKey + ":" + c.severity).join(","));
     ck("74. Summary state/counts match the cases", b.summary.state === "Urgent" && b.summary.total === 4 && b.summary.counts.Urgent === 1 && b.summary.counts.Warning === 1 && b.summary.counts.Normal === 2);
@@ -410,10 +410,10 @@ async function main() {
     const live = await run([...IMPLEMENTED_EVALUATORS], { debug: true });
     const reasons: Record<string, number> = {};
     for (const s of live.body.diagnostics.skipped) reasons[s.reason] = (reasons[s.reason] ?? 0) + 1;
-    ck("83. TEST catalogue + deployed registry -> Clear, 0 cases, complete, no config issues", live.body.summary.state === "Clear" && live.body.cases.length === 0 && live.body.complete === true && live.body.configIssues.length === 0);
-    ck("84. ...all 38 rules skipped with explicit reasons: 15 not_implemented, 23 planned", live.body.diagnostics.skipped.length === 38 && reasons.not_implemented === 15 && reasons.planned === 23, JSON.stringify(reasons));
+    ck("83. TEST catalogue + deployed registry + empty schedule -> Clear, 0 cases, complete, no config issues", live.body.summary.state === "Clear" && live.body.cases.length === 0 && live.body.complete === true && live.body.configIssues.length === 0);
+    ck("84. ...the 4 staffing rules are evaluated; the other 34 are skipped: 11 not_implemented, 23 planned", live.body.diagnostics.evaluated.length === 4 && live.body.diagnostics.skipped.length === 34 && reasons.not_implemented === 11 && reasons.planned === 23, JSON.stringify(reasons));
     const nonConfig = requests.filter((t) => !Object.values(CONFIG_TABLES).includes(t as any));
-    ck("85. ...and NO domain table is read at all (only the 5 config tables, each listed once)", nonConfig.length === 0 && Object.values(CONFIG_TABLES).every((t) => live.body.diagnostics.reads.lists[t] === 1));
+    ck("85. ...reads = 5 config tables + the 5 shared staffing tables, each listed exactly once", nonConfig.length === 5 && Object.keys(live.body.diagnostics.reads.lists).length === 10 && Object.values(live.body.diagnostics.reads.lists).every((n: any) => n === 1));
   }
 
   // ===== Performance / read model =====
@@ -446,18 +446,19 @@ async function main() {
   // ===== Code / deployment drift checks =====
   {
     const canon = (f: string) => readFileSync(join(CANON, f), "utf8");
-    const sub = (s: string) => s.replace(/"\.\/needs-attention\.ts"/g, '"./needs-attention-engine.ts"').replace(/"\.\/repository\.ts"/g, '"./needs-attention-repository.ts"').replace(/"\.\/registry\.ts"/g, '"./needs-attention-registry.ts"');
-    for (const [src, dst] of [["needs-attention", "needs-attention-engine"], ["repository", "needs-attention-repository"], ["registry", "needs-attention-registry"], ["orchestrator", "needs-attention-orchestrator"]]) {
+    const sub = (s: string) => s.replace(/"\.\/needs-attention\.ts"/g, '"./needs-attention-engine.ts"').replace(/"\.\/repository\.ts"/g, '"./needs-attention-repository.ts"').replace(/"\.\/registry\.ts"/g, '"./needs-attention-registry.ts"').replace(/"\.\/staffing\.ts"/g, '"./needs-attention-staffing.ts"');
+    for (const [src, dst] of [["needs-attention", "needs-attention-engine"], ["repository", "needs-attention-repository"], ["registry", "needs-attention-registry"], ["orchestrator", "needs-attention-orchestrator"], ["staffing", "needs-attention-staffing"]]) {
       const mirror = readFileSync(join(HERE, `${dst}.ts`), "utf8").split("\n").slice(5).join("\n");
       ck(`D1. tests/support/${dst}.ts == canonical needs-attention/${src}.ts (only import paths adjusted)`, mirror === sub(canon(`${src}.ts`)));
     }
     const idx = canon("index.ts");
     ck("D2. index.ts carries the TEST deployment guard for both production bases", idx.includes("apprptFotQuVL1mhs") && idx.includes("app6ex6UHY2RRO2Ak") && idx.includes("TEST function refusing to start"));
     ck("D3. index.ts is GET-only on /cases, Management-only, and rejects tenant parameters", /route !== "cases"/.test(idx) && /req\.method !== "GET"/.test(idx) && /caller\.role !== "management"/.test(idx) && idx.includes("tenant_param_rejected") && idx.includes('"organisation"'));
-    const all = ["index.ts", "orchestrator.ts", "needs-attention.ts", "repository.ts", "registry.ts"].map(canon).join("\n");
-    ck("D4. Read-only: no Airtable write methods and no Supabase table writes anywhere in the function", !/method:\s*"(POST|PATCH|PUT|DELETE)"/.test(all) && !/\.(insert|update|upsert|delete)\(/.test(all) && !/service_role|SERVICE_ROLE/.test(all));
+    const all = ["index.ts", "orchestrator.ts", "needs-attention.ts", "repository.ts", "registry.ts", "staffing.ts"].map(canon).join("\n");
+    ck("D4. Read-only: no Airtable write methods and no Supabase table writes anywhere in the function", !/method:\s*"(POST|PATCH|PUT|DELETE)"/.test(all) && !/\.(insert|update|upsert|delete)\(/.test(all.replace(/roster\.delete\(/g, "") /* Map.delete in the copied resolver, not a write */) && !/service_role|SERVICE_ROLE/.test(all));
     ck("D5. Organisation comes from the profile only (orchestrator never reads a tenant from the query)", !/searchParams|query\.organisation/.test(canon("orchestrator.ts")) && idx.includes('.select("role, active, organisation_id")'));
-    ck("D6. No real domain rule implemented (no rule keys of the Slice 3+ catalogue appear in registry.ts)", !/no_lead_coach|session_understaffed|session_no_coach|learning_coach_only|cover_open|compliance|work_summary/.test(canon("registry.ts").replace(/\/\*[\s\S]*?\*\//, "")));
+    const regCode = canon("registry.ts").replace(/\/\*[\s\S]*?\*\//, "") + canon("staffing.ts");
+    ck("D6. No later-slice rule is implemented (no cover / compliance / availability / conflict / work summary evaluator anywhere)", !/cover_open|compliance_|non_compliant|coach_schedule_conflict|assigned_coach_unavailable|work_summary|venue_missing|coach_outcome_pending/.test(regCode));
   }
 
   for (const [s, n, e] of R) console.log(`${s}  ${n}${e && s === "FAIL" ? `  [${e}]` : ""}`);

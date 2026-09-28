@@ -9350,3 +9350,303 @@ caching, Supabase case storage, Volunteer and safeguarding.
 - The Exceptions table is read whole on every request.
 - `configIssues` is visible to Management; a future UI must decide how to
   present it.
+
+## Needs Attention Foundation — Slice 3 (occurrence staffing rules) — TEST only — 2026-09-28
+
+**Scope.** Slice 3 implements exactly four evaluators: `session_no_coach`
+(ATT-013), `no_lead_coach` (ATT-001), `learning_coach_only` (ATT-002) and
+`session_understaffed` (ATT-005). It adds none of the following:
+- cover, compliance, availability or conflict rules;
+- Work Summary, exception writes, Settings, UI or notifications;
+- Finance, Players/Parents, Development or safeguarding;
+- Volunteer, ratios, profitability, Supabase storage or caching.
+
+Production is untouched. `player-access` behaviour is unchanged: the
+resolver is **copied** with a drift test, not edited.
+
+Pre-checks passed before any change:
+- HEAD = origin = `dafce41` on `foundation/test-base-isolation`;
+- `needs-attention` v1 is live and returns Clear;
+- the catalogue holds 38 rules (15 Active, 23 Planned);
+- all 6 profiles are `ORG-TEST-001`.
+
+### NA5.1 Architecture
+
+| File | Change |
+|---|---|
+| `needs-attention/staffing.ts` | **New.** (1) A byte-identical COPIED block of the roster resolver (`resolveOccurrenceStaffing` and helpers), from `hub-content/player-access.ts` via `coach-cover/staffing.ts`. (2) The Needs Attention staffing analysis: eligibility, 14-day window, role counting, `staffingFindings()` precedence, the memoised shared pass, case building. (3) `STAFFING_EVALUATORS`: the 4 registrations |
+| `needs-attention/registry.ts` | `IMPLEMENTED_EVALUATORS = [...STAFFING_EVALUATORS]`. Exactly 4 rules |
+| `needs-attention/needs-attention.ts` | `ENGINE_VERSION = "needs-attention-slice-3"`. A generic optional `context` object on `CandidateCase`, passed through to every case (`{}` when absent). No rule-specific logic |
+| `index.ts`, `orchestrator.ts`, `repository.ts` | Unchanged (byte-identical to v1) |
+
+**One shared staffing pass.**
+- All four registrations declare the same `sources`: Session
+  Occurrences, Sessions, Session Staff, Occurrence Staff and Coach Roles.
+  The engine therefore lists each table **once** per request.
+- Each evaluator calls `sharedStaffingPass(ctx)`. This is memoised per
+  request (a WeakMap keyed on the loaded occurrences array), so the
+  indexing and per-occurrence analysis run **once**.
+- `staffingFindings(analysis)` decides every rule for an occurrence in
+  one place. Each evaluator then keeps only the findings for its own key.
+- There are no per-rule or per-occurrence queries.
+
+### NA5.2 Locked precedence (as implemented)
+
+`staffingFindings()` runs once per eligible occurrence. Counting staff is
+Lead Coach + Coach; Learning Coach never counts.
+
+| Roster on the occurrence | Requires Lead Coach | Raised |
+|---|---|---|
+| Nobody (0 staff) | any | `session_no_coach` **only** |
+| Learning Coach(es) only | Yes | `no_lead_coach` **only** |
+| Learning Coach(es) only | No | `learning_coach_only` |
+| ≥1 Coach, no Lead, counting < Required Staff Count | Yes | `no_lead_coach` **and** `session_understaffed` |
+| ≥1 Coach, no Lead, counting ≥ Required, or Required blank | Yes | `no_lead_coach` |
+| Lead present, counting < Required | any | `session_understaffed` |
+| Counting ≥ Required, or Required blank, with Lead where required | — | nothing |
+| Counting > Required (overstaffed) | — | nothing (allowed) |
+
+Rules:
+- `no_lead_coach` is raised only when Requires Lead Coach = Yes and there
+  are 0 Lead Coaches (and the roster is not empty).
+- `learning_coach_only` is raised only when counting staff = 0 and Lead
+  is not required.
+- `session_understaffed` is raised only when counting staff ≥ 1 and
+  counting staff < Required Staff Count. With 0 counting staff, the
+  higher-precedence rule already covers the gap.
+
+**Role counting.**
+- A roster member's role comes from the resolver's role capabilities, via
+  its `Role Key`, taken from an **active** Coach Roles row:
+  - `lead_coach` → Lead Coach;
+  - `coach` → Coach;
+  - `learning_coach` → Learning Coach.
+- A missing or inactive role, or an unrecognised key, is "unrecognised".
+  It is listed in the summary and **never counts**. Fail-safe consequence:
+  a roster of only unrecognised roles, with Lead not required, raises
+  `learning_coach_only` ("no counting coach"). This is unit-tested (P13
+  and P14) and flagged for review.
+- **Volunteer is not introduced.** No role key, count or wording
+  references it (drift test DR5).
+
+**Required Staff Count.**
+- Only integers ≥ 0 are accepted.
+- Blank, or any non-integer value, means **no requirement**, so
+  `session_understaffed` is never raised.
+- 0 is a real value, and it is never understaffed.
+- No ratios are used.
+
+### NA5.3 Timing, eligibility and resolution
+
+**Horizon.** A fixed `STAFFING_WINDOW_DAYS = 14` constant. There is no
+Settings field, and it uses the organisation timezone (`Europe/London`
+in TEST).
+
+**Window test:**
+- If the occurrence has a usable `Start Date & Time`, it is eligible when
+  `now < start ≤ now + 14×24h`.
+- Otherwise it falls back to `Date`, which must be between the local
+  today and local today + 14 days.
+- Past or already-started occurrences are excluded, as are those beyond
+  the horizon.
+- Undated occurrences are excluded.
+
+**Eligibility.** This follows the real Schedule model and is checked in
+order. The first failure excludes the occurrence:
+1. Occurrence `Status` must be `Scheduled`. Cancelled, Postponed and
+   Completed are excluded.
+2. It must have no outgoing `Replacement Occurrence` link. An occurrence
+   that has been superseded is excluded even if its Status was not
+   updated; the **replacement** occurrence is evaluated normally.
+3. It must be linked to a Session.
+4. The Session's `Session Lifecycle Status` must be `Active`. This is the
+   same rule the occurrence generator uses. As a result, lingering
+   Scheduled occurrences of a Draft or Inactive session do not alert.
+   Flagged for review.
+5. It must fall inside the window.
+
+**Resolution** uses the copied resolver:
+- **Session Staff** apply if the row is `Active` and the occurrence date
+  is within Effective From and Until (inclusive). This gives the handover
+  boundary.
+- **Occurrence Staff** override per occurrence:
+  - an `Absent` row is ignored;
+  - a `Cover` row with a `Session Staff Source` replaces that source
+    coach **on that occurrence only**;
+  - other rows add a coach;
+  - the role comes from Actual, then Planned Role Snapshot (by name),
+    then the source row's Role.
+
+The Coach record's own `Active` flag is not consulted, consistent with
+the resolver.
+
+### NA5.4 Case contract
+
+- **Case Key:** `<ruleKey>|occurrence:<occurrenceRecordId>`, for example
+  `no_lead_coach|occurrence:recRu1tEFQqD783iY`. When one occurrence
+  raises two rules, it has two distinct keys.
+- **Anchors:** `anchors.event` is the occurrence start, so the generic
+  Slice 2 severity engine applies the catalogue thresholds unchanged.
+
+  | Rule | Base | Warning | Urgent |
+  |---|---|---|---|
+  | `session_no_coach` | Warning | — | 48h before |
+  | `no_lead_coach` | Normal | 72h before | 24h before |
+  | `learning_coach_only` | Warning | — | 48h before |
+  | `session_understaffed` | Normal | 72h before | 24h before |
+
+**Payload.** The frontend needs no extra lookups:
+
+- `title` is `"<Rule title> - <Session name>"`.
+- `detail` is `"<Tue 6 Oct 2026, 10:00> - <reason> Staff: <summary>."`.
+- `destination` is `{area: "Schedule & Sessions", route:
+  "schedule/occurrence-staffing", params: {occurrenceId, sessionId}}`.
+  This is a logical route for the future UI.
+- `targetIds` is `{occurrenceId, sessionId, venueId?}`. The venue comes
+  from the occurrence Venue, else the Session Venue.
+- `relatedIds.coachIds` lists the resolved roster.
+- `context` contains:
+  - `sessionName`, `occurrenceName`;
+  - `date`, `start`, `end`, `startLocal`;
+  - `staffingSummary` (e.g. "1 Lead Coach, 1 Learning Coach");
+  - `totalStaff`, `leadCoaches`, `coaches`, `learningCoaches`,
+    `unrecognisedRoles` and `countingStaff`;
+  - `requiredStaffCount` (`null` when blank) and `requiresLeadCoach`.
+
+`startLocal` uses the runtime ICU `en-GB` short month. The Deno edge
+runtime prints September as "Sept", for example "Tue 29 Sept 2026, 10:00".
+This is cosmetic only.
+
+### NA5.5 Reads and performance
+
+- **Per request:**
+  - 5 config tables, each listed once;
+  - 5 staffing tables, each listed once;
+  - **10 list operations** in total, with no duplicates.
+
+  In live TEST each list was 1 page, so there were 10 page requests.
+- **Gated off:** if `module_coaches` is off, or the rules are disabled or
+  planned, the staffing tables are **not read** (unit G1). Coach, Parent
+  and inactive callers still cause 0 reads.
+- **Live latency** (`function_edge_logs.execution_time_ms`, `needs-attention` v2):
+
+  | Call | State | Time |
+  |---|---|---|
+  | First call after deploy (cold start) | Clear | 2,438 ms |
+  | Warm call | 11 cases | 1,195 ms |
+  | Warm call | Clear | 1,350 ms |
+
+  - For comparison, the Slice 2 warm Clear with 5 reads was about
+    1,030 ms. The 5 extra staffing lists add roughly 0.2–0.3 s. The
+    cases themselves add nothing measurable.
+  - Log ingestion is sampled, so only these three calls have timing rows.
+
+### NA5.6 Verification
+
+**Unit tests.**
+- `needs-attention-staffing.test.ts` is **70/70**. It covers:
+  - precedence P1–P14, counting R1–R2, window W1–W7 and eligibility
+    E1–E4;
+  - end-to-end scenarios S1–S18, where one mocked request gives 7 cases,
+    one pass and 10 reads, and the payload is checked;
+  - severity V1–V3, override/absent/additional O1–O3 and handover H1–H3;
+  - cancelled / postponed / replacement / window / inactive C1–C8;
+  - gating G1–G3;
+  - drift DR1–DR5: the resolver chunks match `player-access.ts`, the
+    block is identical to `coach-cover`, registry IDs match the fixture,
+    the sources are shared, there is no Volunteer, and the window is 14.
+- `needs-attention.test.ts` is **100/100**. It was updated so that:
+  - the registry is exactly the 4 staffing rules;
+  - the engine is slice-3;
+  - `context` is required on cases;
+  - the TEST-equivalent run evaluates 4 and skips 34 (11
+    not_implemented, 23 planned), with 10 list operations.
+- Mutation checks: all 5 injected bugs were caught.
+- Strict `tsc` is clean.
+
+**Full regression.** `node tests/run-all.js` gives **58/58 files, 1,586
+PASS, 0 FAIL**. That is the previous 57 / 1,515, plus the new staffing
+file (70) and one new check in the engine file.
+
+**Deployment.** `needs-attention` **v2** is in TEST, with `verify_jwt` on.
+All 6 deployed files are **byte-identical** to the repo (sha256
+verified). No other function was deployed.
+
+**Live verification** used real HTTP via `pg_net`, a Management JWT and
+**throwaway** records prefixed `NA-S3-PROBE`:
+- 13 Sessions and 16 Session Staff rows;
+- 22 Session Occurrences and 1 Occurrence Staff row.
+
+The live queue was Clear before creating them. It then returned **exactly
+the 11 predicted cases** (`Urgent`, 1 Urgent / 5 Warning / 5 Normal),
+with `complete: true` and no config issues:
+
+| Probe | Setup | Live result |
+|---|---|---|
+| 01 zero staff | Lead req, Required 2, nobody; tomorrow 10:00 | `session_no_coach` only, **Urgent** (48h threshold) |
+| 02 LC only + Lead req | 1 Learning Coach | `no_lead_coach` only, Warning (72h) — `?caseKey=learning_coach_only|occurrence:…` → `exists:false` |
+| 03 LC only, no Lead req | 1 Learning Coach | `learning_coach_only` only |
+| 04 Coach + Lead req + under | 1 Coach, Required 2 | `no_lead_coach` **and** `session_understaffed` |
+| 05 fully staffed | Lead + Coach, Required 2 | nothing (`?caseKey=session_understaffed|…` → `exists:false`) |
+| 06 understaffed | Lead only, Required 2 | `session_understaffed` only |
+| 07 LC not counted | Lead + Learning Coach, Required 2 | `session_understaffed` (counting 1) |
+| 08 blank Required | 1 Coach, Required blank | nothing |
+| 09 overstaffed | Lead + 2 Coaches, Required 1 | nothing |
+| 10 Occurrence Staff override | Lead Alex + Coach Sam; on 4 Oct a Cover row (Morgan, Actual Role "Coach", source = Alex's row) | 3 Oct: nothing. 4 Oct only: `no_lead_coach` (2 Coaches, roster Sam + Morgan) |
+| 11 Session Staff handover | Alex until 5 Oct, Sam from 7 Oct | 5 Oct nothing, **6 Oct `session_no_coach`**, 7 Oct nothing |
+| 12 eligibility (zero staff) | past (today 12:00Z), inside (+14d, 12 Oct 13:00Z), beyond (12 Oct 22:00Z), Cancelled, Postponed, Scheduled-with-Replacement-link → replacement 6 Oct | only **inside** and **replacement** raised `session_no_coach` |
+| 13 Draft Session | zero staff, Scheduled occurrence | nothing |
+
+Endpoint checks:
+- `?view=summary` → Urgent, 11.
+- `?caseKey=no_lead_coach|occurrence:<O04>` → `exists: true`.
+- `debug=1` → 4 evaluated (3 / 4 / 3 / 1 candidates), 34 skipped, 10
+  lists and 10 pages.
+- Coach and Parent → 403. `?organisation=ORG-JOSHEVANS` → 400
+  `tenant_param_rejected`.
+
+**Cleanup.** All **52 probe records were deleted by exact ID**, children
+first. Afterwards:
+- 0 `NA-S3-PROBE` occurrences remain;
+- Sessions = TEST-A and TEST-B only;
+- Session Staff = the original 3 rows;
+- Occurrence Staff = 0;
+- the TEST base has no automations, so no side effects fired.
+
+`/cases` returned **Clear** again with 10 lists.
+
+**Other functions** were re-checked live after cleanup:
+- `/me` returned 200 for Management and Parent (`ORG-TEST-001`).
+- hub-content `/players` (coach A) returned 200 and is
+  **byte-identical** to the baseline (md5 `685b11e7…`, 771 bytes).
+- parent-hub `/me` returned 200.
+- coach-cover `/manage` returned 200.
+- coach-compliance `/summary?coachId=` returned 200.
+- coach-work-summaries `/summaries` returned 200.
+
+### NA5.7 Deferred, flagged, and Slice 4 remaining
+
+**Flagged for review:**
+- A roster of only unrecognised roles raises `learning_coach_only`
+  (fail-safe).
+- Occurrences of non-Active sessions are excluded, following the
+  generator's rule.
+- The Coach record's `Active` flag is not consulted (resolver parity).
+- Destination routes are logical routes. The UI does not exist yet.
+
+**Deferred:**
+- **Volunteer** is not introduced (NA1.10 / NA2.7 unchanged).
+- The Exceptions table is still read whole on each request.
+
+**Slice 4 remaining** (not started):
+- `cover_open`, with 48h Warning / 24h Urgent anchors per NA2.3; do not
+  reuse `unfilledSignal()`;
+- compliance (`coach_compliance_expiry`,
+  `compliance_verification_pending`, `non_compliant_coach_assigned`);
+- `assigned_coach_unavailable` and `coach_schedule_conflict`;
+- Work Summary rules (NA2.6);
+- `coach_outcome_pending` and `venue_missing`;
+- exception write and revoke routes, Settings editing, UI.
+
+Each later slice appends its registrations. Staffing sources are already
+loaded once, so later rules that share them add no reads.

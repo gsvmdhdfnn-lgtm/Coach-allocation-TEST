@@ -36,7 +36,7 @@ export const TIMINGS = ["Hours Before", "Days Before", "Hours Overdue", "Days Ov
 export type Timing = (typeof TIMINGS)[number];
 export const EVALUATION_STATUSES = ["Active", "Planned", "Retired"] as const;
 
-export const ENGINE_VERSION = "needs-attention-slice-2";
+export const ENGINE_VERSION = "needs-attention-slice-3";
 export const RULE_KEY_RE = /^[a-z][a-z0-9_]*$/;
 export const SUBJECT_TYPE_RE = /^[a-z][a-z0-9_]*$/;
 /** A subject id may be a record id or an ISO date - never a label: no '|', no whitespace. */
@@ -523,6 +523,8 @@ export interface CandidateCase {
   destination?: { route?: string | null; params?: Record<string, string> };
   targetIds?: Record<string, string>;
   relatedIds?: Record<string, string[]>;
+  /** Display-ready, rule-specific facts (names, dates, counts) so the UI needs no follow-up lookups. Scalars only; never player data. */
+  context?: Record<string, string | number | boolean | null>;
 }
 
 export interface EvaluatorContext {
@@ -649,6 +651,7 @@ export interface NeedsAttentionCase {
   destination: { area: string | null; route: string | null; params: Record<string, string> };
   targetIds: Record<string, string>;
   relatedIds: Record<string, string[]>;
+  context: Record<string, string | number | boolean | null>;
   anchorTime: string | null;
   exceptionAllowed: boolean;
 }
@@ -701,6 +704,7 @@ export function materialiseCases(
       destination: { area: rule.destinationArea, route: c.destination?.route ?? null, params: { ...(c.destination?.params ?? {}) } },
       targetIds: { ...(c.targetIds ?? {}) },
       relatedIds: { ...(c.relatedIds ?? {}) },
+      context: { ...(c.context ?? {}) },
       anchorTime: c.anchorTime ?? c.anchors?.event ?? c.anchors?.outstandingSince ?? null,
       exceptionAllowed: entry.config.overrideAllowed,
     };
