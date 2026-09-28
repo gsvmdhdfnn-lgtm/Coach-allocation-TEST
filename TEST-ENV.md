@@ -7426,3 +7426,586 @@ All writes went to TEST base `appQktredAuGa1X7e` / TEST project
 `dkqubldmfyeuudecxmvh`.
 
 **Coaches Slice 10 work summaries are ready for the final Coaches foundation regression and handoff.**
+
+## Coaches Foundation — Final Regression, Audit & Handoff — 2026-09-28
+
+This is audit, verification, cleanup and documentation only. **No code, schema,
+Supabase or deployment change was made in this checkpoint.** No genuine regression
+or contradiction inside the Coaches foundation was found, so no fix was needed.
+
+### A. Source-of-truth ownership (verified against the code's write map)
+
+Every Coaches table has exactly one owning writer in the TEST backend. No new
+duplicate source of truth exists.
+
+| Truth | Table(s) | Only writer in TEST backend | Readers |
+|---|---|---|---|
+| Coach identity/profile | Coaches | none in Coaches slices (existing admin/approve flows) | all |
+| Capability catalogue | Coach Roles | none (config) | hub-content, parent-hub, coach-cover |
+| Recurring, date-ranged staffing | Session Staff | none in the backend (Management data entry); **cover never writes it** | hub-content, parent-hub, coach-cover |
+| One-date exceptions / cover | Occurrence Staff | coach-cover `/select` only | hub-content, parent-hub, coach-cover |
+| Recurring availability | Coach Availability | none (declaration data) | coach-availability, coach-cover |
+| Date-specific availability | Coach Availability Exceptions | none (declaration data) | coach-availability, coach-cover |
+| Compliance records | Coach Documents | coach-compliance `/submit` + `/verify` only | coach-compliance, coach-cover |
+| Organisation requirements | Coach Document Requirements | none (config) | coach-compliance, coach-cover |
+| Dated normal rates | Coach Rate Profiles | none (config) | coach-allocations, coach-cover (preview only) |
+| **Historical financial truth** | Coach Allocations | coach-allocations `/allocate` (create) + occurrence-financial-outcomes `/coach-outcome` (outcome fields only) | work summaries, outcomes |
+| Parent/venue outcome intent | Occurrence Financial Outcomes | occurrence-financial-outcomes only | same |
+| Cover workflow | Cover Request Groups / Staff Availability Requests / Cover Responses | coach-cover only | coach-cover |
+| Period work summary | Coach Work Summaries / Work Summary Lines / Work Summary History | coach-work-summaries only | coach-work-summaries |
+
+Other facts confirmed:
+- `Rate Amount Snapshot` is written only at allocation creation
+  (`coach-allocations/repository.ts`). Work Summary Lines copy it; nothing
+  recomputes it from a live rate.
+- `parent-hub` writes only Parents & Guardians, Parent–Player Links and
+  requests, never a Coach table.
+- `hub-content` still contains write helpers but has **no live call sites**
+  (they were left behind by the retired Sheets sync).
+
+### B. Legacy contradiction audit
+
+**1. Contradictions inside the new Coaches foundation: none found.**
+- No free-text coach identity grants access. Every Coaches-slice path keys on
+  Coaches record ids and on `profiles.airtable_person_id`.
+- No Google Sheets data feeds player access. `CHANGES_CSV_URL` and the cover
+  tier are gone (Slice 4).
+- No global `Coach.Role` is used by any Coaches-slice path. Capabilities come
+  from the Session Staff / Occurrence Staff role link.
+- Staff Role Overrides has zero code references.
+- Session Staff `Active` + Effective From/Until is applied in hub-content,
+  parent-hub and coach-cover (the verbatim copied resolver block is
+  drift-tested).
+- Occurrence Staff is the only one-date mechanism, and cover writes only
+  Occurrence Staff. Session Staff is never changed by cover.
+- Learning Coach is denied player data by `Can View Players` = false plus the
+  role-priority gate.
+- No current rate rewrites a historical allocation cost.
+- An attachment is never treated as verification. `Verified By/At` come only
+  from the Management caller and the server clock, and a coach submission
+  carrying verification fields is rejected.
+- Coaches, Parents and anon cannot write allocations, financial outcomes,
+  compliance verification or work-summary values. All of those are
+  Management-only; the coach query changes workflow fields only.
+- No automatic 5-hour, weather or auto-pay logic exists anywhere (grep-verified).
+
+**2. Known legacy paths (dormant, deliberately kept, not breaking the
+foundation):**
+- **hub-content `legacy_assigned_coaches` fallback.** Gated by a Feature
+  Control. It reads `Assigned Coaches` / `Active` / `Coach Role` by
+  pre-rename names that are now `LEGACY —`, so it returns nothing. It is
+  record-link based (not free text) and still requires `Can View Players`.
+  Retire it with the legacy frontend migration.
+- **`SESSIONS_CSV_URL`.** Unused constant left over from the retired
+  Sessions-from-Sheet sync.
+- **`FINANCIALS_CSV_URL`.** Management-only session participant counts read
+  from the Finance sheet. This is not coach access; it belongs to future
+  Finance work.
+- **Production-side copies in `supabase/functions/`** (production hub-content
+  and player-feedback) still contain the old Sheets / free-text
+  `coachIdentityKeys` logic. They are untouched by design and are replaced
+  at promotion.
+
+**3. Known deferred former-player snapshot debt:**
+- `eligibleCoachIdsForSessionSnapshot()` still matches coach names against
+  the Sessions Google Sheet via `coachIdentityKeys()`. It is exported from
+  `hub-content/player-access.ts` but **not called by any TEST function**.
+- The 28-day former-coach window reads the frozen
+  `LEGACY — Coaches At End` record-id snapshot.
+- There is no non-legacy replacement for writing that snapshot yet. It should
+  be rebuilt from Session Staff / Occurrence Staff as future work.
+
+**4. Future commercial / multi-org work:** one organisation per Airtable base
+today. `profiles.organisation_id` exists but no Coaches function scopes by it.
+
+### C–J. Behavioural regression (all green, see M for counts)
+
+- **C. Staffing** (`accessresolutiontest` 74, `sessionaccesstest` 28,
+  `sessioncoachestest` 22) covers:
+  - Active + Effective From/Until with inclusive boundaries;
+  - the Danny→Tom→Joe handover;
+  - overlap / co-coaching;
+  - inactive assignment suppression;
+  - Lead Coach / Coach access;
+  - Learning Coach denial;
+  - Occurrence Staff additive vs replacement;
+  - one-date isolation, with surrounding occurrences back on recurring truth;
+  - role snapshot precedence.
+- **D. Player access:**
+  - no Sheets fallback;
+  - no alias-only grant;
+  - Occurrence Staff grants date-specific access;
+  - a replaced coach loses that date;
+  - Learning Coach excluded;
+  - Parent Hub display (`parenthubtest` 44, `parentdisplaytest` 32) stays
+    separate from player-access permissions.
+  - The former-player snapshot debt is as described in B.3.
+- **E. Rates + allocations** (`coachallocationstest` 25):
+  - rate resolved by work date, with inclusive boundaries;
+  - ambiguous → fails safe (422); inactive rates ignored;
+  - snapshots never recalculated;
+  - an override keeps the normal snapshot;
+  - one allocation per (Coach, Occurrence);
+  - Management-only.
+- **F. Financial outcomes** (`occurrencefinancialoutcomestest` 37):
+  - Coach Paid / Unpaid / Partial, Parent Credit / Refund / None, Venue Paid /
+    Credit / None, all explicit Management decisions;
+  - no automatic weather/5-hour logic;
+  - original and replacement occurrences are separate;
+  - Partial keeps the rate snapshot;
+  - concurrent Parent/Venue writes → exactly one row;
+  - `occurrence_outcome_locks` currently has 0 rows;
+  - Coach/Parent → 403.
+- **G. Availability** (`coachavailabilitytest` 85):
+  - available / unavailable / unknown / ambiguous;
+  - full containment with inclusive boundaries;
+  - multiple windows;
+  - separate Different Hours windows;
+  - Unavailable overrides; positive exceptions;
+  - inclusive date ranges; conflicts → ambiguous;
+  - Europe/London clock;
+  - "availability ≠ free" (never consults staffing).
+- **H. Compliance** (`coachcompliancetest` 87):
+  - verification works without an attachment, and an attachment is not
+    verification;
+  - verification comes from Management/server only;
+  - a coach submits own documents only, cannot self-verify and cannot edit
+    another coach's document;
+  - a material coach edit creates a new unverified version;
+  - Current / Review Soon / Needs Review / Expired / Missing;
+  - Review Soon uses the configured Review Lead Days only;
+  - a document is valid through its expiry date and expired the next day;
+  - duplicate or conflicting current records → fail safe;
+  - attachment URLs are never returned.
+- **I. Cover** (`coachcovertest` 88):
+  - a coach may request cover for their own assignment only; Management may
+    raise requests;
+  - each date is independent;
+  - several coaches can Accept, and Accept ≠ assignment;
+  - Management selection writes Occurrence Staff and replaces the requester
+    for that occurrence only;
+  - unsuitable candidates are flagged: unavailable, ambiguous, conflicting,
+    compliance Missing/Expired/Needs Review, role mismatch;
+  - Review Soon behaves as documented;
+  - the cost preview comes from rates; a missing/ambiguous rate is not
+    guessed;
+  - cancellation rules; the 24h unfilled signal;
+  - one winner under concurrency;
+  - the lock is server-only.
+- **J. Work summaries** (`coachworksummariestest` 62): the full Slice 10 list.
+  The three Slice 10 product decisions are **recorded as accepted**:
+  1. Re-finalising updates lines in place, with History recording old and new
+     values.
+  2. Lines that stop qualifying are unlinked, not deleted.
+  3. Overlapping active periods for the same coach are refused, to prevent
+     double-counting.
+
+### K. Supabase security checkpoint (live, TEST project `dkqubldmfyeuudecxmvh`)
+
+Privileges were checked live:
+
+| Object | anon | authenticated | service_role | RLS | Rows now |
+|---|---|---|---|---|---|
+| `acquire_/release_generation_lock` | no | no | yes | - | - |
+| `acquire_/release_occurrence_outcome_lock` | no | no | yes | - | - |
+| `acquire_/release_cover_date_lock` | no | no | yes | - | - |
+| `acquire_/release_work_summary_lock` (Slice 10) | no | no | yes | - | - |
+| `validate_cron_secret` | no | no | yes | - | - |
+| `generation_locks` / `occurrence_outcome_locks` / `cover_date_locks` / `work_summary_locks` | no | no | yes | on | **0 / 0 / 0 / 0** |
+| `cron_auth_secrets` | no | no | yes | on, **0 policies (deny-all)** | - |
+
+Over real HTTP in Slice 10, anon and coach JWTs got `42501` on the
+work-summary lock RPCs and table. The legitimate server flow works: live
+concurrent finalisation used the lock and released it.
+
+Deployed code was re-verified byte-for-byte against the repo:
+- me v2, parent-hub v11, hub-content v9, coach-allocations v1,
+  occurrence-financial-outcomes v2, coach-availability v2,
+  coach-compliance v2, coach-cover v3 and coach-work-summaries v1 are all
+  **identical**.
+- session-occurrences v9 (Schedule foundation, not Coaches) differs in
+  **comments only**: `repository.ts` has one comment re-wrapped, and
+  `daily-top-up.ts` has one doc paragraph present in the deployed copy and
+  absent in the repo. There is no behavioural difference. It was left as-is;
+  promote from the repo.
+
+All TEST functions have `verify_jwt = true`.
+
+**Remaining Supabase security debt** (reported, not fixed — none is required
+for Coaches correctness):
+- `handle_new_user()` is SECURITY DEFINER and still EXECUTE-able by
+  anon/authenticated.
+- Auth leaked-password protection is disabled.
+- The `public` schema's default privileges still grant new objects to
+  anon/authenticated. Every new table/RPC must explicitly revoke, as all
+  Coaches migrations did.
+- **Production** `hub-content`, `player-feedback`, `player-feedback-trial` and
+  `register-interest` run with `verify_jwt = false` (pre-existing,
+  production-side). Promotion should deploy the TEST versions with
+  `verify_jwt = true` where they authenticate.
+
+### L. Data integrity (live TEST base `appQktredAuGa1X7e`)
+
+| Table | Rows | State |
+|---|---|---|
+| Coaches | 3 | baseline (Morgan Manager, Alex Test, Sam Sample) |
+| Coach Roles | 3 | Lead Coach / Coach / Learning Coach |
+| Session Staff | 3 | `SS-TEST-A1`, `SS-TEST-B1` plus the documented, deliberately kept `SS-TEST-A2-VERIFY` (Alex as Learning Coach on TEST-B, the Learning-Coach-denial fixture) |
+| Occurrence Staff | 0 | clean |
+| Coach Rate Profiles / Coach Allocations | 0 / 0 | clean |
+| Coach Documents / Coach Document Requirements | 0 / 0 | clean |
+| Coach Availability / Exceptions | 0 / 0 | clean |
+| Occurrence Financial Outcomes | 0 | clean (so no duplicates) |
+| Cover Request Groups / Staff Availability Requests / Cover Responses | 0 / 0 / 0 | clean |
+| Coach Work Summaries / Lines / History | 0 / 0 / 0 | clean |
+| Sessions | 2 | TEST-A, TEST-B, both Active, unchanged |
+| Session Occurrences | 27 | all linked to TEST-A/TEST-B, no orphans (the Cancelled 28 Sep / Postponed 5 Oct TEST-A rows are Schedule-foundation fixtures) |
+
+Supabase profiles are as intended:
+- `coach.a` → Alex Test `recYZyiLVud7yoNZS`;
+- `coach.b` → Sam Sample `rectpAbJCttFzN4XA`;
+- `manager` → Morgan Manager;
+- the parents are unchanged.
+
+All lock tables are empty. **No debris was found and nothing was deleted in
+this checkpoint.**
+
+### M. Full regression
+
+`node tests/run-all.js`: **56/56 test files passed; 1,421 counted checks, 0
+FAIL lines.** (`buttonaligntest` passes but prints no count.)
+
+| Area | File | Checks |
+|---|---|---|
+| Session Staff effective dating / Occurrence Staff / player access | `accessresolutiontest.js` | 74/74 |
+| | `sessionaccesstest.js` | 28/28 |
+| | `sessioncoachestest.js` | 22/22 |
+| | `coachparticipantstest.js` | 27/27 |
+| | `playerfeedbacktest.js` | 64/64 |
+| Rates / allocations | `coachallocationstest.js` | 25/25 |
+| Financial outcomes | `occurrencefinancialoutcomestest.js` | 37/37 |
+| Availability | `coachavailabilitytest.js` | 85/85 |
+| Compliance | `coachcompliancetest.js` | 87/87 |
+| Cover | `coachcovertest.js` | 88/88 |
+| Work summaries | `coachworksummariestest.js` | 62/62 |
+| Parent Hub | `parenthubtest.js` | 44/44 |
+| | `parenthubshelltest.js` | 65/65 |
+| | `parentdisplaytest.js` | 32/32 |
+| | `parentlinkstatustest.js` | 15/15 |
+| Schedule foundation | `sessiongeneratortest.js` | 37/37 |
+| | `sessionrepositorytest.js` | 19/19 |
+| | `propagationtest.js` | 43/43 |
+| | `nextoccurrencetest.js` | 19/19 |
+| | `dailytopuptest.js` | 7/7 |
+| Production guard | `baseguardtest.js` | 30/30 |
+
+### N. Runtime / Airtable fan-out note (documentation only)
+
+All Coaches functions fetch whole Airtable tables and filter in code. This is
+deliberate: `filterByFormula` renders links as display names, so it could
+match the wrong coach by name. Cost therefore grows with table size, not with
+the size of the question asked.
+
+| Workflow | Reads per request | Writes | Batching/retry today |
+|---|---|---|---|
+| **coach-cover** | `/mine`, `/respond`, `/manage/detail`, `/select`: all **15 tables**, 3 waves of 5. Create: 7 tables. Cancel: 2. Manage list: 5. | 1–4 single-record writes | waves of 5 + 429 backoff (1/2/4/8/16s); per-cover-date lock |
+| **coach-work-summaries** | 1 GET (to pick the lock) + **7 tables**, 2 waves, per mutating op; reads: 7; list: 2 | finalise writes **one request per line** (N lines ⇒ N POSTs), then summary + History | waves of 5 + 429 backoff; per-coach lock; line writes **not** batched (Airtable allows 10/request) |
+| **coach-compliance** | 2 whole tables (Documents + Requirements) in parallel, plus coach lookups | 1 | no 429 retry |
+| **coach-availability** | 1 GET (coach) + 2 whole tables in parallel | none | no 429 retry |
+| **coach-allocations** | 2 GETs + 2 whole tables (Allocations, Rate Profiles) | 1 | no 429 retry |
+| **occurrence-financial-outcomes** | 1–2 GETs + 1–2 whole tables | 1 | per-occurrence lock; no 429 retry |
+| **hub-content `/players`** | **9 whole tables in parallel** on every coach page load | none | no retry |
+
+Watchpoints for a future Supabase operational migration, in line with the
+standing rule that high-frequency, latency- or concurrency-sensitive truth
+moves to Supabase:
+1. **Cover workflow state and candidate evaluation.** It has the largest
+   fan-out, is concurrency-sensitive and is already lock-guarded in Supabase.
+2. **hub-content player access.** It is per-page-load and high-frequency, and
+   has no retry.
+3. **Staffing resolution** (Session Staff + Occurrence Staff), read by three
+   functions.
+4. **Work-summary finalisation line writes.** Batch them 10 per request
+   before a production-size month.
+5. Adding 429 retry to compliance, availability, allocations and outcomes is
+   a cheap stop-gap if Airtable stays the runtime source.
+
+### O. Production isolation (reconfirmed)
+
+- **Production Airtable `apprptFotQuVL1mhs`:** schema read only, during Slices
+  1, 6, 8, 9 and 10 and this checkpoint. No record read, nothing written.
+- **Production Supabase `bkkukymqaxawnudoxdjs`:** only read-only listings in
+  this checkpoint. The latest migration is `20260919072006
+  auto_activate_parent_signups`. The latest function deploy was 2026-09-26
+  11:34 UTC (parent-hub v6), before Coaches Slice 1. It has none of the
+  Coaches lock tables or functions.
+- **Frontend:** `git log cdec215^..HEAD` touches no frontend file and nothing
+  in `supabase/functions/`.
+- **Google Sheets, Stripe, Xero, live Finance:** untouched.
+- **Notifications:** no real emails or notifications sent (none are
+  implemented).
+
+### P. Production promotion manifest (NOT executed)
+
+Promotion is a **schema reconciliation**, not table creation. Production
+already has every Coaches table except Occurrence Financial Outcomes.
+
+**1. Git commits** (branch `foundation/test-base-isolation`), in order:
+
+| Commit | Change |
+|---|---|
+| `cdec215a438d984f29be00025f684b6eba046c71` | Slice 1 schema baseline |
+| `fd7a91db2634e6318f4329ae0e2bfcfa9b3afc5b` | Slice 2 effective dating |
+| `1bb9ad73eb1575eabc47c9fbae28e2fd4229d370` | Slice 3 Occurrence Staff |
+| `2cb97079d246f9ed01076b7a6e8d13b21a32cd4a` | Slice 4 Sheets cover retired |
+| `0e832677ab433a6f386ea3a03056b43f6c93d104` | Slice 5 rates/allocations |
+| `0a813b473b496225f63116d1f525502a80684448` | Slice 6 outcomes |
+| `8dfa20cd0ad6c9c2277974a974945df94e6fac64` | Slice 6 concurrency hardening |
+| `b73557c60c0f5570cfbcb68dfb95870fbb8c56ce` | Slice 7 availability |
+| `735875281a3991cc03853c98af679f9793ca7b3d` | Different Hours clarification |
+| `1c652bb54be875149c9c9ca257e4e8578f837f89` | Slice 8 compliance |
+| `630a40007095038f3a8152db809369e1fe1f3de5` | Slice 9 cover |
+| `edaa90c78e104c2d0962a3447fe0333a97180fa2` | post-Slice-9 security hardening |
+| `b3199e4d3e6f6c64b3563fbc1aa405a2e7d904dd` | Slice 10 work summaries |
+
+The Coaches foundation depends on the earlier Schedule foundation commits
+(through `43971a7`) being promoted first or together.
+
+**2. Airtable schema additions/changes for production** (a live diff of
+production vs TEST):
+- **Sessions:** add `Required Staff Count` (number) and `Requires Lead Coach`
+  (checkbox). `Session Dates` and `Session History` come with the Schedule
+  foundation promotion.
+- **Session Occurrences:** `Occurrence Key` and `Time Overridden` come with
+  the Schedule foundation promotion. `Occurrence Financial Outcomes` is an
+  inverse link created with that table.
+- **Coach Allocations:** add `Coach Outcome` (Paid/Unpaid/Partial), `Coach
+  Outcome Decided By User ID`, `Coach Outcome Decided By Name Snapshot` and
+  `Coach Outcome Decided At`.
+- **Coach Documents:** add `Verified By User ID`, `Verified By Name Snapshot`
+  and `Verified At`.
+- **New table:** `Occurrence Financial Outcomes` (Outcome ID, Session
+  Occurrence, Parent/Venue Outcome + Amount + Reason + Decided By User ID /
+  Name Snapshot / At, Created, Last Updated).
+- **No change needed** (already identical to production): Coach Roles, Session
+  Staff, Coach Availability(+Exceptions), Coach Rate Profiles, Coach Work
+  Summaries / Lines / History.
+
+**3. Fields needing production decisions:**
+- **Production-only fields TEST lacks** — decide whether the code should use
+  them:
+  - `Occurrence Staff.Covering` / `From field: Covering` (a self-link),
+    compared with the TEST cover model, which uses Cover Staff Mode;
+  - `Occurrence Staff.Coach Allocations` ↔ `Coach Allocations.Occurrence
+    Staff` (a staffing↔cost link; TEST deliberately keeps staffing and
+    allocation separate);
+  - `Coach Documents.Applies To Schools` and `Coach Document
+    Requirements.Client / School` (school-specific compliance — future work,
+    not used by the TEST code);
+  - `Staff Availability Requests.Session`, `Coach Notified`, and the `LEGACY —
+    Standalone Reason / Generic Status` fields.
+- **Values:** the Occurrence Financial Outcomes table and the Coach Outcome
+  fields are TEST-only proposals needing Finance/Management sign-off. The
+  Coach Documents verification fields were proposed in Slice 1.
+
+**4. Supabase migrations for production.** Apply in this order, after
+re-reading production grants:
+
+| Migration | Contents |
+|---|---|
+| `test_generation_locks` | Schedule |
+| `occurrence_outcome_locks` | `occurrence_outcome_locks` table + acquire/release RPCs |
+| `slice9_cover_date_locks` | `cover_date_locks` table + RPCs |
+| `slice10_work_summary_locks` | `work_summary_locks` table + RPCs |
+| `post_slice9_security_hardening` | RLS + revokes; cron secret RPC lock-down if the Schedule cron is promoted |
+
+Every lock table and RPC must be service_role-only, with RLS on and explicit
+revokes from public/anon/authenticated.
+
+**5. Edge Functions to deploy** (from `supabase/functions-test/*`, dropping
+only the TEST deployment guard's TEST-only assumptions):
+
+| Function | Routes |
+|---|---|
+| `coach-allocations` | `resolve-rate`, `allocate`, `allocation` |
+| `occurrence-financial-outcomes` | `coach-outcome`, `parent-outcome`, `venue-outcome`, `outcomes` |
+| `coach-availability` | `resolve` |
+| `coach-compliance` | `summary`, `verify`, `submit` |
+| `coach-cover` | `requests`, `mine`, `respond`, `cancel`, `manage`, `manage/detail`, `select` |
+| `coach-work-summaries` | `summaries`, `summary`, `prepare`, `refresh`, `query`, `finalise`, `reopen` |
+
+Also replace the production `hub-content` and `parent-hub` with the TEST
+versions, which carry the Slice 2–4 staffing/access logic. All must have
+`verify_jwt = true`.
+
+**6. Secrets/config:**
+- `AIRTABLE_TOKEN` (production PAT scoped to the production base);
+- `AIRTABLE_BASE_ID = apprptFotQuVL1mhs`;
+- `SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY`
+  (platform-provided);
+- optional `FINANCIALS_CSV_URL`;
+- the production cron secret, if the Schedule cron is promoted.
+
+The TEST guard refuses `apprptFotQuVL1mhs` by design, so production copies
+need an explicit production variant of that guard (e.g. refuse the TEST base
+instead).
+
+**7. Production data backfill/migration:**
+- Session Staff rows need correct `Active` / Effective From / Until.
+  Occurrence Staff is needed for existing cover.
+- Coach Roles need `Can View Players` set correctly.
+- Rate Profiles need to be dated, one Active per Coach / Rate Type / date
+  (ambiguity fails closed).
+- Existing Coach Allocations need `Cost Status` reviewed before any work
+  summary.
+- Compliance: existing Coach Documents are **unverified** until Management
+  verifies them; Requirements need `Review Lead Days`.
+- Profiles need `airtable_person_id` → the Coaches record for every coach.
+- Players need migrating onto Player Session Links before the
+  legacy_assigned_coaches flag can be turned off.
+
+**8. Legacy fields/tables to keep as deprecated vs retire later:**
+
+Keep as deprecated for now:
+- `Coaches.Role`
+- `Coaches.LEGACY — Coach Role`
+- the whole `Staff Role Overrides` table
+- `Players.LEGACY — Assigned Coaches` / `LEGACY — Active`
+- `Player Session Links.LEGACY — Coaches At End` / `LEGACY — End Date`
+- `Staff Availability Requests.LEGACY — *`
+- `Sessions.LEGACY — *`
+
+Retire only after the legacy frontend migration and the former-player
+snapshot rebuild.
+
+**9. Security hardening that must accompany promotion:**
+- service_role-only lock RPCs and tables;
+- RLS on `cron_auth_secrets`;
+- `verify_jwt = true` on every function;
+- revoke `handle_new_user()` EXECUTE from anon/authenticated (check it still
+  runs as a trigger);
+- enable leaked-password protection;
+- alter the `public` default privileges (or keep explicit revokes);
+- confirm Management-only routes with real Coach/Parent JWTs.
+
+**10. Known risks:**
+- Airtable fan-out and rate limits at production data sizes (see N).
+- Schema reconciliation mismatches, especially the production-only Covering /
+  Occurrence Staff↔Allocations links.
+- Data quality: undated or ambiguous rates fail closed, so allocations get
+  blocked until the data is fixed.
+- A coach losing access if Session Staff or profile links are incomplete (the
+  foundation fails closed).
+- The former-player snapshot debt.
+- The legacy frontend still calls production hub-content assumptions.
+
+**11. Rollback points:**
+- Airtable additions are additive: leave the fields in place and redeploy the
+  previous functions.
+- Production function versions before promotion:
+
+  | Function | Version |
+  |---|---|
+  | hub-content | v27 |
+  | parent-hub | v6 |
+  | player-feedback | v10 |
+  | player-sessions | v4 |
+  | approve-coach | v2 |
+  | me | v2 |
+  | register-interest | v2 |
+
+- New functions can be deleted or disabled independently.
+- Lock migrations are additive (drop the table + RPCs to roll back).
+- The git tag point is `b3199e4`.
+
+**12. Post-deploy verification checklist:**
+1. Every function boots against the production base (guard variant correct).
+2. `verify_jwt = true` on all functions.
+3. anon/authenticated get `42501` on every lock RPC and table.
+4. Lock tables have 0 rows after a smoke test.
+5. A coach sees players only via Session Staff / Occurrence Staff; Learning
+   Coach gets none.
+6. Rate resolve on a known coach/date → resolved; an ambiguous fixture → 422.
+7. Allocation create is idempotent.
+8. Coach/Parent → 403 on financial routes.
+9. Compliance summary shows no attachment URLs; a coach cannot verify.
+10. Cover request → Accept → select writes exactly one Occurrence Staff row;
+    Session Staff is unchanged.
+11. Work summary prepare/finalise on a closed past period gives Grand Total =
+    Σ lines, reads are stable, and query/reopen writes History.
+12. Parent Hub coach display is unchanged for real families.
+13. No emails are sent.
+
+### Q. Remaining Coaches work after the foundation
+
+**Foundation complete (TEST):**
+- identity and role capabilities;
+- effective-dated staffing and one-date Occurrence Staff;
+- player-access gating;
+- rates and historical allocations;
+- cancellation/reschedule outcomes;
+- availability;
+- compliance status, submission and verification;
+- cover workflow;
+- work summaries;
+- lock infrastructure and security hardening.
+
+**Still needed — Management Coach UI:**
+- staffing editor (Session Staff / Occurrence Staff);
+- rate profile management;
+- allocation creation/review;
+- cancellation outcome screens;
+- cover management board (24h signal, candidate suitability, final
+  selection);
+- **compliance verification UI**;
+- work-summary prepare / finalise / reopen UI;
+- coach directory/profile admin.
+
+**Still needed — Coach Hub UI:**
+- **coach self-service profile/onboarding**;
+- availability declaration and exceptions;
+- **compliance upload UI**;
+- cover request/respond;
+- my assignments;
+- **work-summary Coach UI** (read / query), with **PDF later**.
+
+**Still needed — Communications/notifications:**
+- **branded cover emails/notifications** (the event names are already
+  defined: `cover_requested`, `cover_response_received`, `cover_confirmed`,
+  `cover_cancelled`, `cover_unfilled_escalation`);
+- **compliance expiry reminders**;
+- work-summary ready/queried notices.
+
+**Still needed — Settings & Configuration:**
+- **org-configurable coach visibility**;
+- **coach rates visibility setting**;
+- Review Lead Days / requirement management UI;
+- **school-specific compliance requirements** (production already has
+  `Applies To Schools` / `Client / School`);
+- **compliance reverification interval/date** for qualifications with no
+  true expiry. Do not fake expiry dates; model a separate re-verify date or
+  interval.
+
+**Still needed — Finance:**
+- export of Confirmed allocations and finalised summaries to Finance;
+- Parent credit/refund execution (Stripe);
+- venue settlement;
+- Xero;
+- sign-off of the Occurrence Financial Outcomes model.
+
+**Legacy frontend migration:**
+- move `coach.js` / `management.js` off the production hub-content
+  assumptions;
+- retire the `legacy_assigned_coaches` fallback, `SESSIONS_CSV_URL` and the
+  deprecated fields listed in P.8.
+
+**Known future work:**
+- **former-player snapshot legacy name-matching debt** (rebuild "Coaches At
+  End" from Session Staff / Occurrence Staff);
+- **multi-org scoping** by `organisation_id`;
+- **Airtable→Supabase runtime migration watchpoints** (N.1–N.5);
+- batching work-summary line writes;
+- 429 retry for the older Coaches functions;
+- resolving the session-occurrences comment drift at promotion.
+
+**Coaches backend foundation is ready to be treated as complete in TEST.**
