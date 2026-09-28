@@ -10272,3 +10272,415 @@ The workflow writes only groups, dates, responses and Occurrence Staff
   `coach_schedule_conflict`, `coach_outcome_pending`,
   `work_summary_ready_to_finalise` and `venue_missing`. Exception
   POST/revoke, the UI and notifications also remain.
+
+## Needs Attention Foundation — Slice 5 (Management exception write path) — TEST only — 2026-09-28
+
+**Scope.** Management can approve an **exact-case** exception for a real,
+currently derived Needs Attention case, and can revoke it later.
+
+An exception means "Management deliberately accepted this exact situation
+for this reason". It is **not**:
+- a delete;
+- a "mark complete" or "dismiss";
+- a source-data change;
+- a rule switch-off;
+- an unaudited hide.
+
+The rule and its source truth are untouched. The evaluator simply
+suppresses the matching case while the exception is in force.
+
+**Not in scope:** Settings editing, broad or session-wide scopes, new rules
+(compliance, availability, conflicts, Work Summary), Finance,
+Players/Parents, safeguarding, Volunteer, notifications, UI, case
+assignment, dismiss/complete, the Supabase migration, caching and
+production.
+
+**Pre-checks passed:**
+- HEAD = origin = `8e3f59c`;
+- deployed v5 was byte-identical to the repo;
+- the live queue was Clear;
+- Needs Attention Exceptions held 0 rows;
+- no exception-write code existed (GET-only index).
+
+**Stop and approval.** Proper revoke audit could not be achieved with the
+existing schema: there were no revoke fields in TEST or production. Work
+stopped, the smallest schema improvement was proposed, and it was approved
+before any change.
+
+### NA8.1 Schema and migration changes (TEST only)
+
+**Airtable Needs Attention Exceptions** (`tblBbsSsLR32uojsk`) gains **4
+additive fields**. Nothing was removed or renamed.
+
+| Field | Type | ID |
+|---|---|---|
+| `Revoked At` | dateTime, D/M/YYYY 24h, Europe/London (same format as `Approved At`) | `fldk7PBqx6jpz4DLc` |
+| `Revoked By User ID` | singleLineText | `fld7E8B1DCNJVdsM9` |
+| `Revoked By Name Snapshot` | singleLineText | `fldli8SEkX9kICHBG` |
+| `Revoke Reason` | multilineText | `fld9ikRX6a08AoYFi` |
+
+**Promotion note:** production's Exceptions table needs the same 4
+fields, plus `Case Key` (NA1.3).
+
+**Supabase migration `na_slice5_needs_attention_exception_locks`**
+(TEST project `dkqubldmfyeuudecxmvh`) is the same shape as
+`cover_date_locks`:
+- Table `public.needs_attention_exception_locks`:
+  - `exception_key text primary key`, `lock_token uuid`, `locked_at timestamptz`;
+  - RLS enabled;
+  - privileges revoked from public/anon/authenticated and granted to
+    `service_role`.
+- Functions `acquire_needs_attention_exception_lock(p_exception_key)` and
+  `release_needs_attention_exception_lock(p_exception_key, p_lock_token)`:
+  - SECURITY DEFINER, `search_path=public`;
+  - insert-on-conflict-do-nothing, token-owned release, 5-minute self-heal;
+  - EXECUTE for `service_role` only. The ACL checked out as
+    `postgres=X/postgres,service_role=X/postgres`, identical to the cover
+    lock.
+
+This is not a generic lock framework: one narrow table for one purpose.
+
+### NA8.2 Files
+
+| File | Change |
+|---|---|
+| `needs-attention/exceptions.ts` | **New. Pure policy, no I/O:** body validation, create decision, storage-neutral field sets, owned-exception lookup, API view |
+| `needs-attention/lock-client.ts` | **New.** coach-cover's lock client, copied, with only the RPC names changed (drift test Z2) |
+| `needs-attention/orchestrator.ts` | `evaluate()` extracted, so GET and the write routes share one evaluation. Adds `createException` / `revokeException` (per-case `withLock`) |
+| `needs-attention/repository.ts` | Adds the only write path: `createExceptionRecord` / `updateExceptionRecord`, hard-wired to the Exceptions table. Reads unchanged |
+| `needs-attention/index.ts` | Routes `POST /exceptions` and `POST /exceptions/revoke`. Profile adds `display_name` + auth email (audit snapshot only). Lock client uses the service-role key |
+| `needs-attention/needs-attention.ts` | `ExceptionRow` also parses the approver id and the 4 revoke fields. **Matching unchanged.** `ENGINE_VERSION = needs-attention-slice-5` |
+| `registry.ts`, `staffing.ts`, `cover.ts` | Unchanged |
+
+Tests:
+- **New:** `tests/support/needs-attention-exceptions.test.ts` (76 checks),
+  its shim `tests/e2e/needsattentionexceptionstest.js`, and copies
+  `needs-attention-exceptions.ts` / `needs-attention-lock-client.ts`.
+- `needs-attention.test.ts` (now 106 checks) evolves the drift checks:
+  - D3: GET on /cases and POST only on the two exception routes;
+  - D4: Airtable writes only in repository.ts, only to Exceptions, no
+    DELETE anywhere;
+  - D4b: the service-role key is used only by the lock client;
+  - D5: `display_name` is selected.
+
+### NA8.3 Exception lifecycle
+
+**Create — `POST /exceptions`**, Management only.
+
+Body: `{ caseKey, reason, effectiveUntil? }` and **nothing else**.
+- Any tenant key (`organisation`, `org`, `tenant`, …) → 400
+  `tenant_param_rejected`, as does a tenant query parameter.
+- Any other key (`rule`, `ruleKey`, `approvedBy`, `approvedAt`,
+  `sessionId`, `active`, …) → 400 `unexpected_field`. Such values are
+  refused, not silently ignored.
+
+Steps:
+1. Authenticate Management. Coach, Parent, pending or inactive → 403; no
+   or invalid token → 401.
+2. Validate the body:
+   - `caseKey` must parse;
+   - `reason` must be non-empty after trimming and at most 2000 characters;
+   - `effectiveUntil`, if present, must be an ISO date-time **with an
+     explicit `Z` or offset**. Bare dates and zone-less times are
+     ambiguous, so they are refused. It must also be strictly in the
+     future, and is normalised to UTC.
+3. Take the lock on `<profile organisation id>|<Case Key>`. The Case Key
+   starts with the rule key, so this is Organisation + Rule + Case Key.
+4. Inside the lock, **re-evaluate the case's rule for the caller's
+   organisation**, using the same `evaluate()` as GET.
+5. `decideCreate` then applies, in order:
+   - rule unknown or not evaluated (module off, disabled, planned…) → 404
+     `case_not_found`;
+   - an exception already in force for this org + key (the case is
+     suppressed, or an Active, unexpired row exists) → 409
+     `exception_exists`, returning that exception;
+   - case not currently derived → 404 `case_not_found` (guessed keys, or
+     a problem already resolved at source). If the rule's evaluator
+     failed → 409 `evaluation_incomplete`;
+   - Rule `Supports Override` off → 403 `override_not_supported`;
+   - effective `Allow Override` off (Settings) → 403
+     `override_disabled_by_settings`.
+6. Write **one** row. Every value is server-derived:
+   - `Exception ID` = `NAEX-<UTC yyyymmddhhmmss>-<first 8 of the owned
+     lock token>`;
+   - `Organisation` = the caller's resolved org record;
+   - `Rule` = the case's rule record;
+   - `Case Key`;
+   - `Session` / `Session Occurrence` / `Coach` / `Player` links from the
+     **real case's** `targetIds`, well-formed record ids only;
+   - `Reason` (trimmed);
+   - `Approved By User ID` = auth user id;
+   - `Approved By Name Snapshot` = profile `display_name`, else email,
+     else user id;
+   - `Approved At` = server now;
+   - `Effective Until`;
+   - `Active` = true.
+7. Respond 201 with the exception view and the case's suppression state.
+   That state is computed by running the **same `matchException`** the
+   queue uses against the written row. The response also carries the read
+   counts and `writes: 1`.
+
+**Exact-case scope.**
+- Suppression still needs the Slice 2 match: exactly one org link = the
+  org, exactly one rule link = the rule, the exact Case Key string, the
+  key's rule segment = the rule, Active, unexpired, and override allowed.
+- Typed links are context and audit only. A Session link never
+  suppresses other occurrences, other sessions or other rules. A
+  session-level key such as `no_lead_coach|session:…` is refused as
+  `case_not_found`.
+- Broader scopes are deferred.
+
+**Revoke — `POST /exceptions/revoke`**, Management only.
+
+Body: `{ exceptionId, reason }`. `exceptionId` accepts the Exception ID or
+the record id; a revoke reason is required.
+1. Read Organisation & Branding + Exceptions (2 lists) and locate the row
+   **owned by the caller's organisation**: exactly one org link equal to
+   the caller's. Anything else → 404 `exception_not_found`, whether it
+   belongs to another org or doesn't exist.
+2. Under the same per-case lock, re-read Exceptions (1 list). An inactive
+   row → 409 `already_revoked`, with nothing changed.
+3. PATCH **only**:
+   - `Active` = false;
+   - `Revoked At` = server now;
+   - `Revoked By User ID` and `Revoked By Name Snapshot` from the profile;
+   - `Revoke Reason`.
+
+   Approval fields are never rewritten, and nothing is deleted. There is
+   no delete route.
+4. Outside the lock, re-evaluate the rule and report `case.visibleAgain`
+   with a reason: `problem_still_present`, `problem_no_longer_present`, or
+   `another_exception_in_force`.
+
+**Expiry** is read-time only. The matcher already treats `Effective Until
+<= now` as not in force, so the case reappears at the exact instant; the
+unit boundary is `until - 1ms` suppressed, `until` visible. No job flips
+`Active`, and the stored row is never touched. An expired row is not "in
+force", so a new exception can be approved afterwards.
+
+**Re-approval** after a revoke or expiry creates a **new** row; the old one
+stays as history.
+
+### NA8.4 Duplicate and concurrency protection
+
+- Airtable has no unique constraint, and a check-then-write inside one
+  request would race.
+- Create and revoke are therefore serialised per `<org>|<Case Key>` by the
+  Supabase lock. The duplicate check (engine suppression + `inForceFor`)
+  runs **inside** the lock, on a fresh read.
+- A second simultaneous request waits (100 x 100 ms budget), then sees the
+  first row → 409 `exception_exists`. After the budget it gets 409
+  `lock_busy`.
+- Different cases never block each other.
+- Unit control test U4: with a lock that always grants, the same race
+  **does** write two rows. The lock is what prevents it.
+- Live: two simultaneous POSTs gave exactly one 201 and one 409 (the 409
+  returned the winner's exception), and one row was stored.
+
+### NA8.5 Override rules
+
+- Rule `Supports Override` (catalogue, platform-level) AND the effective
+  organisation `Allow Override` (Settings; it can only narrow) must both
+  be on.
+- Locked or safety rules cannot be excepted merely because the caller is
+  Management.
+- No severity, Locked Minimum or rule protection changed.
+- In the TEST catalogue:
+  - the staffing rules are overrideable;
+  - **`cover_open` (ATT-041) is not**, and the server refuses it (live
+    403). The cover date stays Open and the cover workflow is untouched.
+- The read side is unchanged: if `Allow Override` is later switched off,
+  existing exceptions stop suppressing (unit O4).
+
+### NA8.6 Audit (permanently retained)
+
+- Every exception row is kept forever. Revoke sets `Active` false and
+  fills the four revoke fields.
+- Approval audit:
+  - Exception ID, Organisation, Rule, Case Key, context links;
+  - Reason;
+  - Approved By User ID and Name Snapshot;
+  - Approved At, Effective Until.
+
+  It is written once and never edited: names are snapshots, not links to
+  a changing profile.
+- Revoke audit: Revoked At, Revoked By User ID and Name Snapshot, Revoke
+  Reason.
+- Airtable `Created` / `Last Updated` remain as metadata.
+- Approver and revoker identity come only from the authenticated
+  profile. Client-sent names are refused (`unexpected_field`).
+- Responses carry only the audit identity (user id + name snapshot). No
+  email, contact data or case payload is exposed beyond the existing GET
+  contract.
+
+### NA8.7 Security summary
+
+- Coach, Parent, pending and inactive users → 403 on both routes. No auth
+  → 401.
+- The organisation comes from the profile only. A tenant key in the body
+  or query → 400.
+- A client-supplied rule, approver, timestamps or target ids → 400.
+- Guessed or non-existent Case Keys → 404.
+- Another organisation's exception cannot be seen or revoked (404).
+- An exception written by another organisation's Management links only
+  that organisation and never suppresses ours (unit S5–S7).
+- Domain data is one tenant per Airtable base in TEST, so cross-org
+  isolation is enforced at the exception layer: write link, read match,
+  owned lookup.
+- The service-role key is used only for the two lock RPCs.
+
+### NA8.8 Later Supabase migration notes
+
+- `exceptions.ts` is **pure** (drift check Z1): validation, decisions and
+  storage-neutral field sets, keyed by logical field names.
+- The orchestrator only composes. The Airtable-specific pieces a Supabase
+  repository must replace are:
+  1. `repository.ts` `createExceptionRecord` / `updateExceptionRecord`
+     (Airtable REST POST/PATCH) and the list reader;
+  2. `parseException` field-name mapping (Airtable field names, link
+     arrays, absent-when-false checkboxes);
+  3. record-id formats (`rec…`) used by `contextLinksFromCase` and
+     `updateExceptionRecord`;
+  4. Airtable `createdTime` / `lastModifiedTime` as metadata;
+  5. the per-request whole-table reads of Exceptions (fine at TEST
+     scale).
+- With Postgres, the lock table can become a **partial unique index** on
+  `(organisation_id, rule_id, case_key) where active`, plus a transaction
+  that first deactivates that key's already-expired rows. The deactivation
+  is needed because a partial index cannot reference `now()`, so expiry
+  cannot live in the index predicate. The duplicate rule stays identical;
+  only the enforcement moves into the database.
+
+### NA8.9 Performance
+
+| Operation | Reads (lists) | Writes | Lock RPCs | Live latency (sampled edge logs) |
+|---|---|---|---|---|
+| GET `/cases` (unchanged) | 13 | 0 | 0 | warm Clear **1.34–1.37 s** (Slice 4: 1.59–1.76 s; no regression) |
+| POST `/exceptions` (staffing rule) | 11: 5 config + 6 staffing sources, the case's rule only. A cover case would be 10 | 1 POST | 2 (acquire + release) | 201 in **1.93 s / 1.99 s** |
+| POST `/exceptions/revoke` | 14: 2 locate + 1 fresh Exceptions read under the lock + 11 re-evaluation | 1 PATCH | 2 | 200 in **2.30 s**, including the "visible again" re-evaluation |
+| Rejections before any read (validation, auth, role) | 0 | 0 | 0 | 0.18–0.40 s |
+| Rejections needing an evaluation (guessed key, override refused) | 11 | 0 | 2 | 1.44–1.65 s |
+
+The write routes reuse `evaluate()` unchanged. There is no caching and no
+per-rule query. Only the case's own rule's sources are read, via the
+`onlyRuleKey` plan.
+
+### NA8.10 Verification
+
+**Unit** (`needs-attention-exceptions.test.ts`, 76 checks, real
+orchestrator and registry):
+- P1–P16 pure policy: body validation, reason, expiry and timezone
+  handling, tenant, rule and approver fields refused, ID format, context
+  links, revoke field set, owned lookup, in-force.
+- C0–C14 valid create:
+  - server-derived identity and audit;
+  - exactly one POST to Exceptions and no other write;
+  - source data unchanged;
+  - exact suppression, with the same rule on another occurrence of the
+    same session, another session, and another rule on the same
+    occurrence all still visible;
+  - lookup and debug; lock key and release.
+- U1–U5 duplicates and concurrency: 409 plus existing; simultaneous
+  creates give exactly 1 + 1; different cases in parallel; the
+  broken-lock control writes 2; `lock_busy`.
+- R1–R12 revoke:
+  - audit fields and approval snapshot untouched, a single PATCH;
+  - the case returns; `already_revoked`; re-approval creates a new row;
+  - revoke by record id; foreign or unknown → 404;
+  - fixed source → `visibleAgain` false.
+- X1–X5 expiry: stored as a UTC instant; `until - 1ms` suppressed;
+  exactly `until` visible; no cleanup write; re-approval after expiry.
+- E1–E6 genuineness: guessed key, unknown rule, session-level key,
+  already fixed at source, module off, evaluator failure.
+- O0–O4 overrides: `cover_open` refused with the source untouched;
+  Settings Allow Override off refused; Allow Override on allowed; the
+  read side ignores exceptions once override is off.
+- S1–S7 permissions and organisation: coach, parent, pending and inactive
+  → 403; no org → 409; unknown org → 409; another org's exception links
+  only its org, doesn't suppress ours, and can't be revoked by us.
+- M1 created rows match via the unchanged Slice 2 matcher; Z1–Z4 drift:
+  pure module, lock client = cover's, both routes locked, no delete path.
+
+**Deliberate-failure check:** 14 mutations were injected into the
+copies, and all 14 are caught (the suite exits non-zero):
+- the Supports Override, Allow Override, duplicate and case-exists checks;
+- a per-call lock key;
+- a past expiry accepted;
+- revoke rewriting Approved At, or ignoring already-inactive rows;
+- any body key accepted;
+- an inclusive expiry boundary;
+- the owned lookup across orgs, and a foreign record id;
+- a client approver id;
+- dropped context links.
+
+**Full suite:** 60 files / **1,754 PASS / 0 FAIL**. The baseline was 59 /
+1,675; the delta is the new 76-check file plus 3 evolved engine drift
+checks.
+
+**Deploy:** `needs-attention` **v6** (`verify_jwt` true, 9 files).
+- `ezbr_sha256` `630c039070a9272c92189b493b34302629b5b2be3c795bd0ddba30c04973ba9c`.
+- Every deployed file is byte-identical to the repo (sha256 per file).
+- No other function was redeployed.
+
+**Live lifecycle** (prefix `NA-S5-PROBE`, real routes via pg_net). The
+probe set was two sessions, one requiring a Lead Coach with Alex staffed
+as Coach, and three occurrences.
+
+| Step | Result |
+|---|---|
+| Baseline | `no_lead_coach` on O1 and O2, plus `cover_open` on OC (Alex requested cover through coach-cover) |
+| Security battery | Parent / Coach create → 403. Coach revoke → 403. No auth → 401. Body `organisation` → 400 `tenant_param_rejected`. Body `ruleKey` → 400 `unexpected_field`. Query `?organisation=` → 400. Guessed key → 404. Blank reason, past expiry, zone-less expiry → 400. GET on `/exceptions` → 405. Unknown revoke id → 404. Nothing was written |
+| Cover exception | 403 `override_not_supported`. The cover date stayed Open |
+| **Create** O1 | 201 `NAEX-20260928182947-445C0D9F`. Org, rule, Session and Occurrence links all server-derived. Approver "Morgan Manager" from the profile. `case.suppressed` true |
+| **Suppressed** | Queue: O1 gone; O2 and cover still visible; `summary.suppressed` = 1; lookup `exists:false, suppressed:true`. Source Session Staff unchanged (still Coach) |
+| **Race** on O2 | Two simultaneous POSTs → one 201 + one 409 `exception_exists` returning the same exception; one row stored. `effectiveUntil "2026-09-28T19:36:00+01:00"` was stored as `18:36:00.000Z` |
+| **Revoke** O1 | 200. Active off. Revoked At / By / Name / Reason stored. Approval fields unchanged. `visibleAgain: true` (`problem_still_present`) |
+| **Case returns** | Lookup `exists:true, suppressed:false`. A repeat revoke → 409 `already_revoked` |
+| Settings | A temporary `no_lead_coach` Settings row with Allow Override off → create 403 `override_disabled_by_settings`. The row was deleted straight away |
+| **Expiry** | 18:31:51 O2 still suppressed. At 18:36:16 O2 was visible with `suppressed` = 0 and no write: the row was still Active with Last Updated unchanged since creation |
+| **Actual fix** | SS01 role set to Lead Coach → both `no_lead_coach` cases disappeared legitimately; only the unrelated probe `cover_open` remained |
+| Timing probe | A second create (201) and revoke (200, `visibleAgain: true`) on a throwaway occurrence, for latency |
+
+**Cleanup** by exact ID, 16 records:
+- 3 exceptions and 1 Settings row;
+- 1 cover date and 1 cover group;
+- 3 Session Staff rows, 4 occurrences and 3 sessions.
+
+Afterwards Exceptions and Settings hold 0 rows,
+`needs_attention_exception_locks` and `cover_date_locks` are empty, and
+`/cases` → **Clear**, 0 config issues, 13 lists.
+
+**Regression after cleanup:**
+- `/me` returned 200 for Management, Coach and Parent.
+- hub-content `/players` returned 200, **md5 `685b11e7…`, unchanged**.
+- parent-hub `/me` and `/claims/pending` returned 200.
+- coach-compliance `/summary`, coach-cover `/manage` and
+  coach-work-summaries all returned 200.
+- session-occurrences `/generate {}` returned 400 (validation,
+  unchanged).
+- needs-attention as Coach or Parent returned 403; `view=summary`
+  returned 200; a tenant parameter returned 400.
+
+### NA8.11 Deferred, flagged, and what Slice 6 still needs
+
+- **Exact-case only.** Broader scopes (session-wide, coach-wide, "until
+  the end of term") are deliberately deferred. They would need a scope
+  field and matcher change, not just links.
+- **No inactive-Management live probe.** No inactive Management user
+  exists in TEST. It is covered by unit S1 and by the same `index.ts`
+  guard that the Coach and Parent 403s exercised live.
+- **Revoke re-evaluation cost.** Revoke re-evaluates the rule to report
+  `visibleAgain` (about +1.3 s). The revoke itself is complete before
+  that step, and a failure there never undoes it.
+- **Prior rows are not updated.** If an organisation later turns Allow
+  Override off, existing rows remain Active but stop suppressing (by
+  design, read side).
+- **Still carried:** logical destination routes; no UI; Exceptions and
+  Settings tables read whole (fine at TEST scale); Volunteer deferred.
+- **Slice 6 has not been started.** Remaining work includes:
+  - the next rule families (compliance / non-compliant coach /
+    availability / conflicts / outcome / Work Summary / venue);
+  - Settings editing;
+  - UI and notifications;
+  - the production promotion, which must add the 4 revoke fields,
+    `Case Key` and the lock table.

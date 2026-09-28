@@ -1,12 +1,15 @@
 /**
  * Test-suite copy of the canonical needs-attention/repository.ts, kept in sync
  * by hand exactly like every other deployed copy. Only import paths adjusted:
- * ./needs-attention|repository|registry|staffing|cover.ts become needs-attention-*.ts.
+ * ./needs-attention|repository|registry|staffing|cover|exceptions|lock-client.ts become needs-attention-*.ts.
  */
 /**
  * Airtable repository layer for Needs Attention (see TEST-ENV.md "Needs
- * Attention Foundation - Slice 2"). READ-ONLY: this module has no create,
- * update or delete path at all. Portable on purpose (no Deno.* calls,
+ * Attention Foundation - Slice 2" and "- Slice 5"). Reads are unchanged.
+ * The ONLY write path (Slice 5) is the narrow exception writer at the end
+ * of this file: create one row in, or patch one row of, the "Needs
+ * Attention Exceptions" table - no other table can be written, and
+ * nothing is ever deleted. Portable on purpose (no Deno.* calls,
  * only fetch() with an explicitly-passed AirtableConfig) so it runs the
  * same under Node (unit tests, mocked global fetch) and Deno. Same 429
  * retry/backoff as the other TEST repositories (copied, not shared).
@@ -134,4 +137,34 @@ export async function loadConfig(reader: Reader): Promise<ConfigSnapshot> {
   const t = CONFIG_TABLES;
   const r = await reader.listMany([t.rules, t.settings, t.exceptions, t.features, t.organisations]);
   return { rules: r[t.rules], settings: r[t.settings], exceptions: r[t.exceptions], features: r[t.features], organisations: r[t.organisations] };
+}
+
+// ---------------------------------------------------------------------
+// Exception writer (Slice 5) - the only write path in this function.
+// The table name is fixed here; callers cannot point it anywhere else.
+// ---------------------------------------------------------------------
+
+async function writeException(config: AirtableConfig, method: "POST" | "PATCH", path: string, fields: Record<string, unknown>): Promise<AirtableRecord> {
+  const response = await airtableFetch(`${tableUrl(config, CONFIG_TABLES.exceptions)}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ fields }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Airtable ${method} error for ${CONFIG_TABLES.exceptions}: ${response.status} ${message}`);
+  }
+  const r = await response.json();
+  return { id: r.id, fields: r.fields || {}, createdTime: r.createdTime };
+}
+
+/** Create one Needs Attention Exceptions row (a 429 means "not processed", so the shared retry is safe). */
+export function createExceptionRecord(config: AirtableConfig, fields: Record<string, unknown>): Promise<AirtableRecord> {
+  return writeException(config, "POST", "", fields);
+}
+
+/** Patch one Needs Attention Exceptions row by record id (revoke). */
+export function updateExceptionRecord(config: AirtableConfig, recordId: string, fields: Record<string, unknown>): Promise<AirtableRecord> {
+  if (!/^rec[A-Za-z0-9]{14}$/.test(recordId)) throw new Error(`Invalid exception record id: ${recordId}`);
+  return writeException(config, "PATCH", `/${recordId}`, fields);
 }

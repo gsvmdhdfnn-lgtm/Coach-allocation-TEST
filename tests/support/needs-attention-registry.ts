@@ -1,7 +1,7 @@
 /**
  * Test-suite copy of the canonical needs-attention/registry.ts, kept in sync
  * by hand exactly like every other deployed copy. Only import paths adjusted:
- * ./needs-attention|repository|registry|staffing|cover.ts become needs-attention-*.ts.
+ * ./needs-attention|repository|registry|staffing|cover|exceptions|lock-client.ts become needs-attention-*.ts.
  */
 /**
  * Needs Attention - the code-side evaluator registry (see TEST-ENV.md

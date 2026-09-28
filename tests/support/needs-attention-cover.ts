@@ -1,7 +1,7 @@
 /**
  * Test-suite copy of the canonical needs-attention/cover.ts, kept in sync
  * by hand exactly like every other deployed copy. Only import paths adjusted:
- * ./needs-attention|repository|registry|staffing|cover.ts become needs-attention-*.ts.
+ * ./needs-attention|repository|registry|staffing|cover|exceptions|lock-client.ts become needs-attention-*.ts.
  */
 /**
  * Cover evaluator for Needs Attention Slice 4 (see TEST-ENV.md "Needs
