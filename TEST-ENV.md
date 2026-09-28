@@ -8520,7 +8520,8 @@ when Volunteer is added.
   the two identifiers must be reconciled: re-point TEST profiles to
   `ORG-TEST-001`, or add an explicit mapping. Otherwise every
   organisation-scoped lookup will find no Settings/Exceptions (fail
-  closed) or, worse, be bypassed. *The audit and outcome are in NA2.1.*
+  closed) or, worse, be bypassed. *The audit is in NA2.1. The profiles
+  were aligned to `ORG-TEST-001` in NA3.*
 
 ### NA1.12 Verification
 
@@ -8594,7 +8595,7 @@ names. Those items are marked in place in the Slice 1 section.
 - The 7 `module_*` Feature Controls rows are present.
 - Settings and Exceptions are empty.
 
-### NA2.1 Organisation identity — audit and outcome (NOT aligned; one approval needed)
+### NA2.1 Organisation identity — audit and outcome (APPLIED later; see NA3)
 
 **Where `organisation_id` / `ORG-JOSHEVANS` / `ORG-TEST-001` are used in
 TEST:**
@@ -8643,8 +8644,9 @@ permitted "profile organisation IDs only", and the brief requires a STOP
 for auth-path changes. No workaround or dual-ID compatibility logic was
 added.
 
-**Smallest prerequisite plan: one TEST-only migration, awaiting
-approval.** It is not applied.
+**Smallest prerequisite plan: one TEST-only migration.** It was
+subsequently **approved and applied** as migration
+`test_org_id_alignment_org_test_001`; see NA3.
 
 ```sql
 -- TEST ONLY (dkqubldmfyeuudecxmvh). NEVER apply to production (bkkukymqaxawnudoxdjs),
@@ -8703,11 +8705,11 @@ This applies per occurrence, after resolving staffing.
 The descriptions of `no_lead_coach`, `learning_coach_only` and
 `session_understaffed` in the TEST catalogue now state this precedence.
 
-**Not covered by the locked decisions** (flagged, non-blocking): an
-occurrence that requires a Lead Coach, has Coach(es) but no Lead Coach,
-and has fewer counting staff than required. It currently raises **both**
-`no_lead_coach` and `session_understaffed`. These are two distinct
-actionable problems; confirm this at Slice 2 review.
+**LOCKED (confirmed after NA2):** if a session requires a Lead Coach, has
+at least one Coach, has no Lead Coach, **and** is below Required Staff
+Count, raise **both** `no_lead_coach` and `session_understaffed`. These
+are two distinct actionable problems, so neither suppresses the other.
+The last two rows of the table above are therefore cumulative.
 
 ### NA2.3 Cover severity — LOCKED
 
@@ -8918,5 +8920,110 @@ classification (NA2.4), the Case Key scoping contract (NA2.5), the Work
 Summary contract (NA2.6), and the Volunteer prerequisite, documented and
 deferred (NA2.7).
 
-**Still blocking Slice 2:** TEST organisation alignment (NA2.1). It needs
-approval to apply the single TEST-only migration above.
+**Still blocking Slice 2:** TEST organisation alignment (NA2.1).
+*Update: cleared in NA3. All pre-Slice-2 prerequisites are now cleared.*
+
+
+---
+
+## TEST Organisation ID Alignment (ORG-JOSHEVANS → ORG-TEST-001) — TEST only — 2026-09-28
+
+### NA3.1 What was applied
+
+Migration **`test_org_id_alignment_org_test_001`** was applied to TEST
+Supabase `dkqubldmfyeuudecxmvh` only. The migration count went from 6 to
+7. It is exactly the SQL in NA2.1:
+
+1. The `public.profiles.organisation_id` default changed from
+   `'ORG-JOSHEVANS'` to **`'ORG-TEST-001'`**.
+2. `public.handle_new_user()` was replaced. The only change is the
+   literal, from `'ORG-JOSHEVANS'` to **`'ORG-TEST-001'`**. It is still
+   `SECURITY DEFINER` with `search_path public`, and the role logic is
+   unchanged: `parent` if `account_type = parent`, otherwise `pending`.
+   The trigger `on_auth_user_created` on `auth.users` is still enabled.
+3. All 6 profiles were updated from `ORG-JOSHEVANS` to **`ORG-TEST-001`**.
+   Roles and active flags are unchanged: 2 coach, 1 management and
+   3 parent, all active.
+
+No compatibility logic accepting both IDs was added. No Edge Function,
+frontend, test or Airtable change was needed or made.
+
+**TEST now uses one organisation identity everywhere:**
+- Supabase profiles, the column default and the signup trigger;
+- Airtable Organisation & Branding `recYXqi1DTZ8ZECPQ`;
+- Needs Attention Settings and Exceptions, through that record.
+
+**Production is not affected and must never receive this migration.**
+Production was re-read before and after, and is unchanged:
+- default `ORG-JOSHEVANS`;
+- trigger md5 `fd119c28…`;
+- 6 profiles, all `ORG-JOSHEVANS`;
+- 6 migrations.
+
+Production correctly keeps `ORG-JOSHEVANS`, which is its real Airtable
+Organisation ID. Exclude this migration from any production promotion
+manifest.
+
+### NA3.2 Verification
+
+**Database.**
+- The column default is `'ORG-TEST-001'`.
+- All 6 profiles are `ORG-TEST-001`; 0 have any other value.
+- 0 public functions and 0 column defaults still contain
+  `ORG-JOSHEVANS`, and no RLS policy references an organisation.
+- `supabase/functions-test/` contains no `ORG-JOSHEVANS`.
+
+**Signup trigger, proven without side effects.** Two throwaway
+`auth.users` rows were inserted inside a DO block that ends by raising an
+exception, so everything was rolled back:
+- the coach-style signup produced `ORG-TEST-001` with role `pending`;
+- the parent signup (`account_type = parent`) produced `ORG-TEST-001`
+  with role `parent`.
+
+Afterwards, 0 probe users remained, and there are still 6 `auth.users`
+and 6 profiles.
+
+**Live auth and access** (pg_net; real password logins for
+`manager@`, `coach.a@` and `parent.a@test.invalid`). Every one of the 10
+TEST functions accepted its caller:
+
+| Caller | Call | Result |
+|---|---|---|
+| Management / Coach / Parent | `me` | 200, role correct, `organisation_id = ORG-TEST-001` |
+| Coach | `hub-content/players` | 200, **byte-identical** to the baseline (md5 `685b11e7…`) |
+| Management | `hub-content/session-participants` | 200 |
+| Parent | `parent-hub/me` | 200 (children returned) |
+| Parent | `parent-hub/feedback` (no params) | 400 validation: auth passed |
+| Management | `parent-hub/claims/pending` | 200 |
+| Management | `coach-compliance/summary` | 200 |
+| Management | `coach-availability/resolve` (no params) | 400 validation: auth passed |
+| Management | `coach-allocations/allocation` (no id) | 400 validation: auth passed |
+| Management | `occurrence-financial-outcomes/outcomes` (no id) | 400 validation: auth passed |
+| Management | `coach-cover/manage` | 200 |
+| Coach | `coach-cover/mine` | 200 |
+| Coach | `coach-cover/manage` | **403**, so role gating is unchanged |
+| Management / Coach | `coach-work-summaries/summaries` | 200 / 200 |
+| Management | `session-occurrences/generate` `{}` | 400 validation: auth passed, nothing generated |
+
+Each "400 validation" handler authenticates the caller before validating
+input, so a 400 proves access was granted. Some calls first hit pg_net's
+5-second default timeout while 18 Airtable-backed requests ran
+concurrently. They were re-issued with a 30-second timeout and returned
+200. This was a probe timing artefact, not an access failure.
+
+**Regression.** `node tests/run-all.js`: **56/56 files, 1,416 PASS,
+0 FAIL**. That is identical, check for check, to the pre-migration run.
+The test mocks still carry `ORG-JOSHEVANS` in their mocked `/me`
+payloads. No code or assertion reads that value, and the mocks are shared
+with production behaviour, so they were deliberately left unchanged.
+
+### NA3.3 Staffing rule locked (for the future evaluator)
+
+If a session **requires a Lead Coach**, has **at least one Coach**, has
+**no Lead Coach**, and is also **below Required Staff Count**, raise
+**both** `no_lead_coach` and `session_understaffed` (see NA2.2).
+
+### NA3.4 Status
+
+All pre-Slice-2 prerequisites are now cleared. **Slice 2 has not
+started.** No evaluator, API, UI or other change was made.
