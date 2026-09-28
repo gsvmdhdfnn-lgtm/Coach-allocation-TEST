@@ -22,8 +22,13 @@
  * Everything below the copied block is built ON that resolver: one shared
  * pass per request analyses every eligible occurrence once, and the four
  * evaluators only read their own findings from it (no per-rule scans).
+ * Slice 3.1: after resolving the roster, this layer (NOT the shared
+ * resolver) drops assignments that cannot satisfy FUTURE staffing - an
+ * inactive or missing Coach record, or a missing/inactive/unrecognised
+ * role - before any rule is decided. Unknown roles and missing Coach
+ * records are reported as configIssues, never given a meaning.
  */
-import type { AirtableRecord, CandidateCase, EvaluatorContext, EvaluatorRegistration } from "./needs-attention-engine.ts";
+import type { AirtableRecord, CandidateCase, ConfigIssue, EvaluatorContext, EvaluatorRegistration } from "./needs-attention-engine.ts";
 
 // ===== COPIED FROM hub-content/player-access.ts - DO NOT EDIT HERE =====
 export function firstLink(fields: Record<string, any>, name: string): string {
@@ -182,6 +187,8 @@ export const STAFFING_TABLES = {
   sessionStaff: "Session Staff",
   occurrenceStaff: "Occurrence Staff",
   coachRoles: "Coach Roles",
+  /** Read once per request for the Coach record's Active flag (Slice 3.1: inactive coaches never satisfy future staffing). */
+  coaches: "Coaches",
 } as const;
 /** Every staffing evaluator declares the same sources, so the engine loads each table once and shares it. */
 export const STAFFING_SOURCES: readonly string[] = Object.values(STAFFING_TABLES);
@@ -245,11 +252,22 @@ export function occurrenceEligibility(occ: AirtableRecord, session: AirtableReco
   return w === "in_window" ? null : w;
 }
 
+/**
+ * Why a resolved assignment does or does not count for FUTURE staffing:
+ *  - valid            active Coach record + recognised active role (Lead Coach / Coach / Learning Coach)
+ *  - inactive_coach   Coach record Active is not ticked - ignored (source data untouched)
+ *  - coach_not_found  linked Coach record is not in the Coaches table - ignored + config issue
+ *  - unknown_role     role missing, inactive or not one of the three recognised keys - ignored + config issue
+ * Checked in that order (an inactive coach is ignored before its role is looked at).
+ */
+export type StaffStatus = "valid" | "inactive_coach" | "coach_not_found" | "unknown_role";
+
 export interface StaffMember {
   coachId: string;
   roleKey: string | null;
   roleName: string | null;
   fromOccurrenceStaff: boolean;
+  status: StaffStatus;
 }
 
 export interface StaffingAnalysis {
@@ -264,18 +282,28 @@ export interface StaffingAnalysis {
   requiresLeadCoach: boolean;
   /** null = not specified (blank / not a whole number >= 0) - never inferred. */
   requiredStaffCount: number | null;
+  /** Every resolved assignment, valid or not (valid ones first-class; the rest explain what was ignored). */
   staff: StaffMember[];
+  /** Resolved assignments before validity filtering. */
+  rosterCount: number;
+  /** VALID staff (active coach + recognised role). "Zero staff" means total === 0. */
   total: number;
   leadCount: number;
   coachCount: number;
   learningCount: number;
-  /** Roster members whose role is missing, inactive or unrecognised - they never count. */
+  /** Ignored: active coach but missing / inactive / unrecognised role (config issue). */
   unknownRoleCount: number;
-  /** Counting staff = Lead Coach + Coach (active roles only). */
+  /** Ignored: Coach record not Active. */
+  inactiveCoachCount: number;
+  /** Ignored: Coach record not found (config issue). */
+  missingCoachCount: number;
+  /** Counting staff = valid Lead Coach + valid Coach. */
   qualifying: number;
 }
 
-function roleBucket(caps: CoachRoleCapabilities | null): "lead" | "coach" | "learning" | "unknown" {
+type RoleBucket = "lead" | "coach" | "learning" | "unknown";
+
+function roleBucket(caps: CoachRoleCapabilities | null): RoleBucket {
   if (!caps || !caps.active) return "unknown";
   if (caps.roleKey === "lead_coach") return "lead";
   if (caps.roleKey === "coach") return "coach";
@@ -287,10 +315,28 @@ function requiredCount(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
 }
 
-export function analyseStaffing(occ: AirtableRecord, session: AirtableRecord, roster: ResolvedOccurrenceCoach[]): StaffingAnalysis {
-  const staff = roster.map((r) => ({ coachId: r.coachId, roleKey: r.roleCaps?.roleKey || null, roleName: r.roleCaps?.roleName || null, fromOccurrenceStaff: r.fromOccurrenceStaff }));
-  const n = { lead: 0, coach: 0, learning: 0, unknown: 0 };
-  for (const r of roster) n[roleBucket(r.roleCaps)]++;
+/**
+ * @param coachById the Coaches table indexed by record id (Active flag). A coach
+ *   id absent from it is `coach_not_found`.
+ */
+export function analyseStaffing(occ: AirtableRecord, session: AirtableRecord, roster: ResolvedOccurrenceCoach[], coachById: ReadonlyMap<string, AirtableRecord>): StaffingAnalysis {
+  const n = { lead: 0, coach: 0, learning: 0, unknown: 0, inactive: 0, missing: 0 };
+  const staff: StaffMember[] = roster.map((r) => {
+    const coach = coachById.get(r.coachId);
+    let status: StaffStatus;
+    if (!coach) {
+      status = "coach_not_found";
+      n.missing++;
+    } else if (coach.fields["Active"] !== true) {
+      status = "inactive_coach";
+      n.inactive++;
+    } else {
+      const bucket = roleBucket(r.roleCaps);
+      n[bucket]++;
+      status = bucket === "unknown" ? "unknown_role" : "valid";
+    }
+    return { coachId: r.coachId, roleKey: r.roleCaps?.roleKey || null, roleName: r.roleCaps?.roleName || null, fromOccurrenceStaff: r.fromOccurrenceStaff, status };
+  });
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
   return {
     occurrenceId: occ.id,
@@ -304,20 +350,25 @@ export function analyseStaffing(occ: AirtableRecord, session: AirtableRecord, ro
     requiresLeadCoach: session.fields["Requires Lead Coach"] === true,
     requiredStaffCount: requiredCount(session.fields["Required Staff Count"]),
     staff,
-    total: roster.length,
+    rosterCount: roster.length,
+    total: n.lead + n.coach + n.learning,
     leadCount: n.lead,
     coachCount: n.coach,
     learningCount: n.learning,
     unknownRoleCount: n.unknown,
+    inactiveCoachCount: n.inactive,
+    missingCoachCount: n.missing,
     qualifying: n.lead + n.coach,
   };
 }
 
 /**
- * The LOCKED precedence (NA2.2 / NA3.3), decided once per occurrence:
- *  - 0 staff of any role            -> session_no_coach ONLY
+ * The LOCKED precedence (NA2.2 / NA3.3), decided once per occurrence on VALID
+ * staff only (inactive coaches, missing Coach records and unknown roles have
+ * already been removed - they never count and never stand in for a role):
+ *  - 0 valid staff                   -> session_no_coach ONLY
  *  - Lead required and no Lead Coach -> no_lead_coach (incl. Learning-Coach-only)
- *  - staff present but 0 counting and Lead NOT required -> learning_coach_only
+ *  - valid staff are all Learning Coaches and Lead NOT required -> learning_coach_only
  *  - counting >= 1 and counting < Required Staff Count (when specified) -> session_understaffed
  *    (so it can co-exist with no_lead_coach, and never fires with 0 counting staff)
  * Overstaffing never raises anything. The result does not depend on which
@@ -327,8 +378,33 @@ export function staffingFindings(a: StaffingAnalysis): StaffingRuleKey[] {
   if (a.total === 0) return ["session_no_coach"];
   const out: StaffingRuleKey[] = [];
   if (a.requiresLeadCoach && a.leadCount === 0) out.push("no_lead_coach");
-  if (a.qualifying === 0 && !a.requiresLeadCoach) out.push("learning_coach_only");
+  if (a.qualifying === 0 && a.learningCount > 0 && !a.requiresLeadCoach) out.push("learning_coach_only");
   if (a.qualifying >= 1 && a.requiredStaffCount != null && a.qualifying < a.requiredStaffCount) out.push("session_understaffed");
+  return out;
+}
+
+/** Config issues for assignments that were ignored because the data is wrong (not merely inactive). */
+export function staffingIssues(a: StaffingAnalysis, timeZone: string): ConfigIssue[] {
+  const where = `${a.sessionName ?? a.sessionId} on ${formatLocal(a.startIso, a.dateIso, timeZone)} (occurrence ${a.occurrenceId})`;
+  const out: ConfigIssue[] = [];
+  for (const m of a.staff) {
+    if (m.status === "unknown_role") {
+      const role = m.roleName || m.roleKey
+        ? `role "${m.roleName || m.roleKey}", which is inactive or not a recognised staffing role`
+        : "a missing or unresolvable role (no Role link, or a role snapshot that matches no Coach Roles row)";
+      out.push({
+        code: "staffing_role_unrecognised",
+        recordId: a.occurrenceId,
+        detail: `${where}: coach ${m.coachId} is assigned with ${role}. Recognised staffing roles are Lead Coach / Coach / Learning Coach. The assignment is ignored for staffing - it is not counted and not treated as a Learning Coach.`,
+      });
+    } else if (m.status === "coach_not_found") {
+      out.push({
+        code: "staffing_coach_not_found",
+        recordId: a.occurrenceId,
+        detail: `${where}: assigned coach ${m.coachId} has no Coaches record. The assignment is ignored for staffing.`,
+      });
+    }
+  }
   return out;
 }
 
@@ -336,6 +412,8 @@ export interface StaffingPass {
   analyses: StaffingAnalysis[];
   findings: Map<string, StaffingRuleKey[]>;
   skipped: Record<string, number>;
+  /** Data problems found on eligible occurrences (unknown roles, missing Coach records). */
+  issues: ConfigIssue[];
 }
 
 /** Diagnostics: how many full staffing passes have run (tests assert one per request). */
@@ -352,6 +430,7 @@ export function runStaffingPass(sources: Readonly<Record<string, readonly Airtab
   const coachRoleRows = [...(sources[T.coachRoles] ?? [])];
   const roleCapsById = roleCapabilitiesById(coachRoleRows);
   const roleCapsByNameMap = roleCapsByRoleName(coachRoleRows);
+  const coachById = new Map((sources[T.coaches] ?? []).map((c) => [c.id, c]));
   const sessionStaffById: Record<string, any> = {};
   const staffBySession = new Map<string, any[]>();
   for (const r of sessionStaffRows) {
@@ -368,6 +447,7 @@ export function runStaffingPass(sources: Readonly<Record<string, readonly Airtab
   const analyses: StaffingAnalysis[] = [];
   const findings = new Map<string, StaffingRuleKey[]>();
   const skipped: Record<string, number> = {};
+  const issues: ConfigIssue[] = [];
   for (const occ of occurrences) {
     const session = sessionById.get(firstLink(occ.fields, "Session")) ?? null;
     const why = occurrenceEligibility(occ, session, now, timeZone);
@@ -377,11 +457,12 @@ export function runStaffingPass(sources: Readonly<Record<string, readonly Airtab
     }
     const dateIso = typeof occ.fields["Date"] === "string" && ISO_DATE_RE.test(occ.fields["Date"]) ? occ.fields["Date"] : localDateIso(new Date(occ.fields["Start Date & Time"]), timeZone);
     const roster = resolveOccurrenceStaffing(dateIso, staffBySession.get(session!.id) ?? [], occStaffByOcc.get(occ.id) ?? [], roleCapsById, roleCapsByNameMap, sessionStaffById);
-    const a = analyseStaffing(occ, session!, roster);
+    const a = analyseStaffing(occ, session!, roster, coachById);
     analyses.push(a);
     findings.set(a.occurrenceId, staffingFindings(a));
+    issues.push(...staffingIssues(a, timeZone));
   }
-  return { analyses, findings, skipped };
+  return { analyses, findings, skipped, issues };
 }
 
 // One shared pass per request: every staffing evaluator receives the SAME
@@ -412,14 +493,18 @@ const RULE_TITLES: Record<StaffingRuleKey, string> = {
 };
 
 export function staffingSummary(a: StaffingAnalysis): string {
-  if (a.total === 0) return "no staff";
   const parts: string[] = [];
   const add = (n: number, one: string, many: string) => n && parts.push(`${n} ${n === 1 ? one : many}`);
   add(a.leadCount, "Lead Coach", "Lead Coaches");
   add(a.coachCount, "Coach", "Coaches");
   add(a.learningCount, "Learning Coach", "Learning Coaches");
-  add(a.unknownRoleCount, "with an unrecognised role", "with unrecognised roles");
-  return parts.join(", ");
+  const valid = parts.length ? parts.join(", ") : a.rosterCount ? "no valid staff" : "no staff";
+  const ignored: string[] = [];
+  const ign = (n: number, one: string, many: string) => n && ignored.push(`${n} ${n === 1 ? one : many}`);
+  ign(a.inactiveCoachCount, "inactive coach", "inactive coaches");
+  ign(a.unknownRoleCount, "with an unrecognised role", "with unrecognised roles");
+  ign(a.missingCoachCount, "unknown coach record", "unknown coach records");
+  return ignored.length ? `${valid} (ignored: ${ignored.join(", ")})` : valid;
 }
 
 export function formatLocal(iso: string | null, dateIso: string | null, timeZone: string): string {
@@ -436,9 +521,9 @@ export function formatLocal(iso: string | null, dateIso: string | null, timeZone
 export function staffingCase(rule: StaffingRuleKey, a: StaffingAnalysis, timeZone: string): CandidateCase {
   const when = formatLocal(a.startIso, a.dateIso, timeZone);
   const reasons: Record<StaffingRuleKey, string> = {
-    session_no_coach: "No staff are assigned for this occurrence.",
+    session_no_coach: a.rosterCount ? "No valid staff are assigned for this occurrence." : "No staff are assigned for this occurrence.",
     no_lead_coach: "This session requires a Lead Coach, but none is assigned for this occurrence.",
-    learning_coach_only: "Only non-counting staff (e.g. Learning Coaches) are assigned - no Lead Coach or Coach.",
+    learning_coach_only: "Only Learning Coaches are assigned - no Lead Coach or Coach.",
     session_understaffed: `Counting staff (Lead Coach + Coach) is ${a.qualifying}, below the Required Staff Count of ${a.requiredStaffCount}.`,
   };
   return {
@@ -449,7 +534,10 @@ export function staffingCase(rule: StaffingRuleKey, a: StaffingAnalysis, timeZon
     anchorTime: a.startIso ?? a.dateIso,
     destination: { route: "schedule/occurrence-staffing", params: { occurrenceId: a.occurrenceId, sessionId: a.sessionId } },
     targetIds: { occurrenceId: a.occurrenceId, sessionId: a.sessionId, ...(a.venueId ? { venueId: a.venueId } : {}) },
-    relatedIds: { coachIds: a.staff.map((s) => s.coachId) },
+    relatedIds: {
+      coachIds: a.staff.filter((s) => s.status === "valid").map((s) => s.coachId),
+      ...(a.staff.some((s) => s.status !== "valid") ? { ignoredCoachIds: a.staff.filter((s) => s.status !== "valid").map((s) => s.coachId) } : {}),
+    },
     context: {
       sessionName: a.sessionName,
       occurrenceName: a.occurrenceName,
@@ -459,6 +547,9 @@ export function staffingCase(rule: StaffingRuleKey, a: StaffingAnalysis, timeZon
       startLocal: when,
       staffingSummary: staffingSummary(a),
       totalStaff: a.total,
+      assignedStaff: a.rosterCount,
+      inactiveCoachesIgnored: a.inactiveCoachCount,
+      unknownCoachRecords: a.missingCoachCount,
       leadCoaches: a.leadCount,
       coaches: a.coachCount,
       learningCoaches: a.learningCount,
@@ -477,6 +568,7 @@ function staffingEvaluator(rule: StaffingRuleKey, ruleId: string): EvaluatorRegi
     sources: STAFFING_SOURCES,
     evaluate(ctx: EvaluatorContext): CandidateCase[] {
       const pass = sharedStaffingPass(ctx);
+      for (const issue of pass.issues) ctx.reportIssue?.(issue);
       const out: CandidateCase[] = [];
       for (const a of pass.analyses) if (pass.findings.get(a.occurrenceId)!.includes(rule)) out.push(staffingCase(rule, a, ctx.organisation.timezone));
       return out;

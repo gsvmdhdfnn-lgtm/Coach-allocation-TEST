@@ -94,13 +94,21 @@ export async function getCases(deps: Deps, caller: Caller, query: CasesQuery, no
   const active: NeedsAttentionCase[] = [];
   const suppressed: SuppressedCase[] = [];
   const evaluated: { ruleKey: string; candidates: number; active: number; suppressed: number }[] = [];
+  // Evaluator-reported data issues: identical reports (same code, record and detail) are kept once.
+  const reportedIssueKeys = new Set<string>();
+  const reportIssue = (issue: ConfigIssue) => {
+    const key = `${issue.code}|${issue.recordId ?? ""}|${issue.detail}`;
+    if (reportedIssueKeys.has(key)) return;
+    reportedIssueKeys.add(key);
+    issues.push({ ...issue });
+  };
   for (const entry of plan.entries) {
     if (!entry.run) continue;
     const ev = entry.evaluator!;
     const ctxSources: Record<string, readonly any[]> = {};
     for (const s of ev.sources) ctxSources[s] = sources[s] ?? [];
     try {
-      const candidates = ev.evaluate({ now, organisation, sources: Object.freeze(ctxSources) });
+      const candidates = ev.evaluate({ now, organisation, sources: Object.freeze(ctxSources), reportIssue });
       const m = materialiseCases(entry, candidates, { organisation, exceptions, now });
       active.push(...m.active);
       suppressed.push(...m.suppressed);

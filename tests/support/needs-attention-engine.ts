@@ -41,7 +41,7 @@ export const TIMINGS = ["Hours Before", "Days Before", "Hours Overdue", "Days Ov
 export type Timing = (typeof TIMINGS)[number];
 export const EVALUATION_STATUSES = ["Active", "Planned", "Retired"] as const;
 
-export const ENGINE_VERSION = "needs-attention-slice-3";
+export const ENGINE_VERSION = "needs-attention-slice-3.1";
 export const RULE_KEY_RE = /^[a-z][a-z0-9_]*$/;
 export const SUBJECT_TYPE_RE = /^[a-z][a-z0-9_]*$/;
 /** A subject id may be a record id or an ISO date - never a label: no '|', no whitespace. */
@@ -537,6 +537,13 @@ export interface EvaluatorContext {
   organisation: OrganisationContext;
   /** Domain tables this evaluator declared in `sources`, loaded once per request and shared across evaluators. */
   sources: Readonly<Record<string, readonly AirtableRecord[]>>;
+  /**
+   * Report a data/configuration problem found while evaluating (e.g. a staff
+   * assignment with an unrecognised role). Surfaced in `configIssues`; the
+   * orchestrator de-duplicates identical reports (evaluators that share one
+   * analysis pass may each report the same issue). Never creates a case.
+   */
+  reportIssue?: (issue: ConfigIssue) => void;
 }
 
 export interface EvaluatorRegistration {

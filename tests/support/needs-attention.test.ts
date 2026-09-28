@@ -369,7 +369,7 @@ async function main() {
     world({ rules: [A, B], extra: { "Domain A": [{ id: id("DomA1"), fields: {} }] } });
     const full = await run(reg);
     const b = full.body;
-    ck("71. Full payload: engine, organisation (ORG-TEST-001), generatedAt, complete, summary, cases, configIssues", b.engine === "needs-attention-slice-3" && b.organisation.organisationId === "ORG-TEST-001" && b.generatedAt === NOW.toISOString() && b.complete === true && b.summary && Array.isArray(b.cases) && Array.isArray(b.configIssues) && !("diagnostics" in b));
+    ck("71. Full payload: engine, organisation (ORG-TEST-001), generatedAt, complete, summary, cases, configIssues", b.engine === "needs-attention-slice-3.1" && b.organisation.organisationId === "ORG-TEST-001" && b.generatedAt === NOW.toISOString() && b.complete === true && b.summary && Array.isArray(b.cases) && Array.isArray(b.configIssues) && !("diagnostics" in b));
     const c0 = b.cases.find((c: any) => c.caseKey === "syn_alpha|occurrence:recA0000000000002");
     const REQUIRED = ["caseKey", "ruleId", "ruleKey", "ruleName", "category", "module", "severity", "severityReason", "title", "detail", "actionLabel", "destination", "targetIds", "relatedIds", "context", "anchorTime", "exceptionAllowed"];
     ck("72. Every case carries the full display contract (no client-side joins needed)", b.cases.every((c: any) => REQUIRED.every((k) => k in c)) && c0.ruleName === "Synthetic Alpha" && c0.actionLabel === "Review Staffing" && c0.destination.area === "Schedule & Sessions" && c0.destination.route === "/schedule/occurrence" && c0.destination.params.occurrenceId === "recA0000000000002" && c0.targetIds.occurrenceId === "recA0000000000002" && c0.relatedIds.coachIds[0] === "recC0000000000001" && c0.anchorTime === iso(3 * D) && c0.module === "module_alpha");
@@ -397,6 +397,15 @@ async function main() {
     const boom = await run([reg[0], synEval("syn_beta", "ATT-902", ["Domain A"], () => { throw new Error("synthetic failure"); })]);
     ck("81. An evaluator that throws marks the queue incomplete and is reported; other rules' cases still returned", boom.body.complete === false && boom.body.configIssues.some((i: any) => i.code === "evaluator_error" && i.ruleKey === "syn_beta") && boom.body.cases.length === 3);
     world({ rules: [A, B], extra: { "Domain A": [] } });
+    const dup = { code: "synthetic_data_issue", recordId: "recA0000000000009", detail: "shared finding" };
+    const rep = await run([
+      synEval("syn_alpha", "ATT-901", ["Domain A"], (ctx) => { ctx.reportIssue(dup); ctx.reportIssue({ ...dup }); ctx.reportIssue({ ...dup, recordId: "recA0000000000008" }); return one(["recA0000000000001"]); }),
+      synEval("syn_beta", "ATT-902", ["Domain A"], (ctx) => { ctx.reportIssue({ ...dup }); return []; }),
+    ]);
+    const synIssues = rep.body.configIssues.filter((i: any) => i.code === "synthetic_data_issue");
+    ck("81a. Evaluator-reported issues surface in configIssues; identical reports (even from two evaluators) appear ONCE, distinct records separately", synIssues.length === 2 && synIssues.filter((i: any) => i.recordId === "recA0000000000009").length === 1);
+    ck("81b. A reported issue never creates a case and never marks the queue incomplete", rep.body.cases.length === 1 && rep.body.complete === true);
+    world({ rules: [A, B], extra: { "Domain A": [] } });
     const dbg = await run(reg, { debug: true });
     ck("82. debug=1 adds diagnostics (evaluated, skipped, sources, reads) only when asked", dbg.body.diagnostics && Array.isArray(dbg.body.diagnostics.evaluated) && dbg.body.diagnostics.reads.lists["Needs Attention Rules"] === 1);
   }
@@ -413,7 +422,7 @@ async function main() {
     ck("83. TEST catalogue + deployed registry + empty schedule -> Clear, 0 cases, complete, no config issues", live.body.summary.state === "Clear" && live.body.cases.length === 0 && live.body.complete === true && live.body.configIssues.length === 0);
     ck("84. ...the 4 staffing rules are evaluated; the other 34 are skipped: 11 not_implemented, 23 planned", live.body.diagnostics.evaluated.length === 4 && live.body.diagnostics.skipped.length === 34 && reasons.not_implemented === 11 && reasons.planned === 23, JSON.stringify(reasons));
     const nonConfig = requests.filter((t) => !Object.values(CONFIG_TABLES).includes(t as any));
-    ck("85. ...reads = 5 config tables + the 5 shared staffing tables, each listed exactly once", nonConfig.length === 5 && Object.keys(live.body.diagnostics.reads.lists).length === 10 && Object.values(live.body.diagnostics.reads.lists).every((n: any) => n === 1));
+    ck("85. ...reads = 5 config tables + the 6 shared staffing tables (incl. Coaches), each listed exactly once", nonConfig.length === 6 && nonConfig.includes("Coaches") && Object.keys(live.body.diagnostics.reads.lists).length === 11 && Object.values(live.body.diagnostics.reads.lists).every((n: any) => n === 1));
   }
 
   // ===== Performance / read model =====

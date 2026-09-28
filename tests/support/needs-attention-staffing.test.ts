@@ -18,6 +18,7 @@ import {
   STAFFING_WINDOW_DAYS,
   analyseStaffing,
   localDateIso,
+  staffingIssues,
   occurrenceEligibility,
   staffingFindings,
   staffingPassStats,
@@ -53,6 +54,17 @@ const roles: AirtableRecord[] = [
   { id: ROLE_OLD, fields: { "Role Name": "Retired Role", "Role Key": "retired_role" } },
 ];
 const C1 = id("CoachOne"), C2 = id("CoachTwo"), C3 = id("CoachThree");
+// Slice 3.1: the Coaches table (Active flag) is a staffing source. CX / CL / CM are INACTIVE coaches.
+const CX = id("CoachInactX"), CL = id("CoachInactL"), CM = id("CoachInactM");
+const COACHES: AirtableRecord[] = [
+  { id: C1, fields: { "Coach Name": "One", Active: true } },
+  { id: C2, fields: { "Coach Name": "Two", Active: true } },
+  { id: C3, fields: { "Coach Name": "Three", Active: true } },
+  { id: CX, fields: { "Coach Name": "Inactive X" } },
+  { id: CL, fields: { "Coach Name": "Inactive Lead", Active: false } },
+  { id: CM, fields: { "Coach Name": "Inactive M" } },
+];
+const coachMap = (rows: AirtableRecord[] = COACHES) => new Map(rows.map((c) => [c.id, c]));
 
 function session(sid: string, o: { lead?: boolean; rsc?: number | null; lifecycle?: string; name?: string } = {}): AirtableRecord {
   const f: Record<string, any> = { "Session Name": o.name ?? `Session ${sid.slice(3, 8)}`, "Session Lifecycle Status": o.lifecycle ?? "Active", Venue: [id("VenueX")] };
@@ -85,10 +97,10 @@ function rule(key: string, ruleId: string, o: { sev?: string; warn?: [number, st
   if (o.urg) Object.assign(f, { "Supports Urgent Threshold": true, "Default Urgent Threshold": o.urg[0], "Default Urgent Timing": o.urg[1] });
   return { id: id("Rule" + ruleId.replace("-", "")), fields: f };
 }
-// The TEST catalogue's real values for the four staffing rules.
+// The TEST catalogue's approved values for the four staffing rules (Slice 3.1 defaults).
 const RULES = [
   rule("no_lead_coach", "ATT-001", { warn: [72, "Hours Before"], urg: [24, "Hours Before"], sort: 1 }),
-  rule("learning_coach_only", "ATT-002", { sev: "Warning", urg: [48, "Hours Before"], sort: 2 }),
+  rule("learning_coach_only", "ATT-002", { warn: [72, "Hours Before"], urg: [24, "Hours Before"], sort: 2 }),
   rule("session_understaffed", "ATT-005", { warn: [72, "Hours Before"], urg: [24, "Hours Before"], sort: 5 }),
   rule("session_no_coach", "ATT-013", { sev: "Warning", urg: [48, "Hours Before"], sort: 13 }),
 ];
@@ -103,7 +115,7 @@ let requests: string[] = [];
 };
 RETRY_DELAYS_MS.length = 0;
 
-function world(o: { sessions: AirtableRecord[]; occurrences: AirtableRecord[]; sessionStaff?: AirtableRecord[]; occurrenceStaff?: AirtableRecord[]; moduleOn?: boolean; settings?: AirtableRecord[] }) {
+function world(o: { sessions: AirtableRecord[]; occurrences: AirtableRecord[]; sessionStaff?: AirtableRecord[]; occurrenceStaff?: AirtableRecord[]; moduleOn?: boolean; settings?: AirtableRecord[]; coaches?: AirtableRecord[] }) {
   tables = {
     [CONFIG_TABLES.rules]: RULES,
     [CONFIG_TABLES.settings]: o.settings ?? [],
@@ -115,6 +127,7 @@ function world(o: { sessions: AirtableRecord[]; occurrences: AirtableRecord[]; s
     "Session Staff": o.sessionStaff ?? [],
     "Occurrence Staff": o.occurrenceStaff ?? [],
     "Coach Roles": roles,
+    "Coaches": o.coaches ?? COACHES,
   };
   requests = [];
 }
@@ -124,12 +137,16 @@ const run = (query: any = {}, now = NOW) => getCases(deps, MGMT, query, now) as 
 const keysFor = (body: any, occId: string) => body.cases.filter((c: any) => c.targetIds.occurrenceId === occId).map((c: any) => c.ruleKey).sort();
 
 function analysis(o: Partial<StaffingAnalysis>): StaffingAnalysis {
-  return { occurrenceId: "recO", occurrenceName: null, sessionId: "recS", sessionName: null, dateIso: null, startIso: null, endIso: null, venueId: null, requiresLeadCoach: false, requiredStaffCount: null, staff: [], total: 0, leadCount: 0, coachCount: 0, learningCount: 0, unknownRoleCount: 0, qualifying: 0, ...o };
+  return { occurrenceId: "recO", occurrenceName: null, sessionId: "recS", sessionName: null, dateIso: null, startIso: null, endIso: null, venueId: null, requiresLeadCoach: false, requiredStaffCount: null, staff: [], rosterCount: 0, total: 0, leadCount: 0, coachCount: 0, learningCount: 0, unknownRoleCount: 0, inactiveCoachCount: 0, missingCoachCount: 0, qualifying: 0, ...o };
 }
 
 async function main() {
   // ===== Pure precedence (the locked table) =====
-  const F = (o: Partial<StaffingAnalysis>) => staffingFindings(analysis({ ...o, total: o.total ?? (o.leadCount ?? 0) + (o.coachCount ?? 0) + (o.learningCount ?? 0) + (o.unknownRoleCount ?? 0), qualifying: (o.leadCount ?? 0) + (o.coachCount ?? 0) })).join(",");
+  // total = VALID staff only (Slice 3.1): unknown roles / inactive / missing coaches are in rosterCount but never in total.
+  const F = (o: Partial<StaffingAnalysis>) => {
+    const valid = (o.leadCount ?? 0) + (o.coachCount ?? 0) + (o.learningCount ?? 0);
+    return staffingFindings(analysis({ ...o, total: valid, rosterCount: valid + (o.unknownRoleCount ?? 0) + (o.inactiveCoachCount ?? 0) + (o.missingCoachCount ?? 0), qualifying: (o.leadCount ?? 0) + (o.coachCount ?? 0) })).join(",");
+  };
   ck("P1. Zero staff -> session_no_coach ONLY (even with Lead required + Required Staff Count)", F({ requiresLeadCoach: true, requiredStaffCount: 3 }) === "session_no_coach");
   ck("P2. Learning Coach only + Lead required -> no_lead_coach ONLY (not learning_coach_only, not understaffed)", F({ learningCount: 1, requiresLeadCoach: true, requiredStaffCount: 2 }) === "no_lead_coach");
   ck("P3. Learning Coach only + Lead NOT required -> learning_coach_only ONLY (not understaffed)", F({ learningCount: 2, requiredStaffCount: 2 }) === "learning_coach_only");
@@ -142,22 +159,39 @@ async function main() {
   ck("P10. Blank Required Staff Count -> never session_understaffed (not inferred)", F({ coachCount: 1, requiredStaffCount: null }) === "");
   ck("P11. Overstaffed (Required 1, three counting) -> nothing", F({ leadCount: 1, coachCount: 2, requiredStaffCount: 1 }) === "");
   ck("P12. Exactly at Required Staff Count -> nothing", F({ leadCount: 1, coachCount: 1, requiredStaffCount: 2 }) === "");
-  ck("P13. Unrecognised-role-only roster, Lead not required -> learning_coach_only (no counting staff; fail-safe, documented)", F({ unknownRoleCount: 1, requiredStaffCount: 2 }) === "learning_coach_only");
-  ck("P14. Unrecognised-role-only roster, Lead required -> no_lead_coach only", F({ unknownRoleCount: 1, requiresLeadCoach: true }) === "no_lead_coach");
+  ck("P13. (Slice 3.1, supersedes old P13) Unknown-role-only roster, Lead not required -> session_no_coach (zero VALID staff), NEVER learning_coach_only", F({ unknownRoleCount: 1, requiredStaffCount: 2 }) === "session_no_coach");
+  ck("P14. (Slice 3.1, supersedes old P14) Unknown-role-only roster, Lead required -> session_no_coach only (not no_lead_coach)", F({ unknownRoleCount: 1, requiresLeadCoach: true }) === "session_no_coach");
+  ck("P15. Inactive-coach-only roster -> session_no_coach only (zero valid staff), whatever the flags", F({ inactiveCoachCount: 2, requiresLeadCoach: true, requiredStaffCount: 2 }) === "session_no_coach" && F({ inactiveCoachCount: 1 }) === "session_no_coach");
+  ck("P16. learning_coach_only needs at least one VALID Learning Coach (unknown roles alongside do not change it)", F({ learningCount: 1, unknownRoleCount: 3, requiredStaffCount: 2 }) === "learning_coach_only" && F({ unknownRoleCount: 3, inactiveCoachCount: 1, requiredStaffCount: 2 }) === "session_no_coach");
 
   // ===== Role counting from the real resolver output =====
   {
     const caps = (key: string, name: string, active = true) => ({ active, roleName: name, roleKey: key, canViewPlayers: false, canAddFeedback: false, canEditDevelopmentPlans: false, canRecordAttendance: false });
+    const C4 = id("CoachFour");
+    const cm = coachMap([...COACHES, { id: C4, fields: { Active: true } }]);
     const a = analyseStaffing(occ(id("OccX"), id("SessX"), 2 * D), session(id("SessX"), { lead: true, rsc: 2 }), [
       { coachId: C1, roleCaps: caps("lead_coach", "Lead Coach"), fromOccurrenceStaff: false },
       { coachId: C2, roleCaps: caps("learning_coach", "Learning Coach"), fromOccurrenceStaff: false },
       { coachId: C3, roleCaps: caps("coach", "Coach", false), fromOccurrenceStaff: true },
-      { coachId: id("CoachFour"), roleCaps: null, fromOccurrenceStaff: true },
-    ]);
-    ck("R1. Counting: Lead + Coach only; Learning Coach, inactive role and unresolved role never count", a.total === 4 && a.leadCount === 1 && a.learningCount === 1 && a.coachCount === 0 && a.unknownRoleCount === 2 && a.qualifying === 1);
-    const s0 = analyseStaffing(occ(id("OccY"), id("SessY"), 2 * D), session(id("SessY"), { rsc: 0 }), []);
-    const sBad = analyseStaffing(occ(id("OccY"), id("SessY"), 2 * D), { id: id("SessY"), fields: { "Required Staff Count": 1.5, "Session Lifecycle Status": "Active" } }, []);
-    ck("R2. Required Staff Count: 0 is a real value; blank / fractional / negative = not specified", s0.requiredStaffCount === 0 && sBad.requiredStaffCount === null && analyseStaffing(occ(id("OccY"), id("SessY"), 2 * D), session(id("SessY")), []).requiredStaffCount === null);
+      { coachId: C4, roleCaps: null, fromOccurrenceStaff: true },
+    ], cm);
+    ck("R1. Counting: valid Lead + Coach only; Learning Coach valid but not counting; inactive role and unresolved role are UNKNOWN (not valid staff)", a.rosterCount === 4 && a.total === 2 && a.leadCount === 1 && a.learningCount === 1 && a.coachCount === 0 && a.unknownRoleCount === 2 && a.qualifying === 1 && a.staff.filter((m) => m.status === "unknown_role").map((m) => m.coachId).join(",") === [C3, C4].join(","));
+    const s0 = analyseStaffing(occ(id("OccY"), id("SessY"), 2 * D), session(id("SessY"), { rsc: 0 }), [], cm);
+    const sBad = analyseStaffing(occ(id("OccY"), id("SessY"), 2 * D), { id: id("SessY"), fields: { "Required Staff Count": 1.5, "Session Lifecycle Status": "Active" } }, [], cm);
+    ck("R2. Required Staff Count: 0 is a real value; blank / fractional / negative = not specified", s0.requiredStaffCount === 0 && sBad.requiredStaffCount === null && analyseStaffing(occ(id("OccY"), id("SessY"), 2 * D), session(id("SessY")), [], cm).requiredStaffCount === null);
+    const lcCaps = caps("learning_coach", "Learning Coach"), leadCaps = caps("lead_coach", "Lead Coach");
+    const inact = analyseStaffing(occ(id("OccZ"), id("SessZ"), 2 * D), session(id("SessZ"), { lead: true, rsc: 2 }), [
+      { coachId: CL, roleCaps: leadCaps, fromOccurrenceStaff: false },
+      { coachId: CX, roleCaps: lcCaps, fromOccurrenceStaff: false },
+      { coachId: id("CoachGhost"), roleCaps: leadCaps, fromOccurrenceStaff: false },
+    ], cm);
+    ck("R3. Inactive coaches (any role) and coaches with no Coaches record are NOT valid staff: 0 valid, 0 Lead, 0 Learning", inact.total === 0 && inact.leadCount === 0 && inact.learningCount === 0 && inact.inactiveCoachCount === 2 && inact.missingCoachCount === 1 && staffingFindings(inact).join(",") === "session_no_coach");
+    const iss = staffingIssues(inact, TZ);
+    ck("R4. Missing Coach record -> staffing_coach_not_found issue; inactive coaches raise NO config issue (valid historical data)", iss.length === 1 && iss[0].code === "staffing_coach_not_found" && iss[0].recordId === id("OccZ"));
+    const ia = staffingIssues(analyseStaffing(occ(id("OccQ"), id("SessQ"), 2 * D), session(id("SessQ")), [{ coachId: CX, roleCaps: null, fromOccurrenceStaff: false }], cm), TZ);
+    ck("R5. Inactive coach is ignored BEFORE its role is examined (no unknown-role issue for an inactive coach)", ia.length === 0);
+    const named = staffingIssues(a, TZ);
+    ck("R6. Unknown-role issue names an inactive/unrecognised role, and says 'missing or unresolvable' when there is no role at all (never 'no role' for a bad snapshot)", named.length === 2 && /role "Coach", which is inactive or not a recognised staffing role/.test(named[0].detail) && /a missing or unresolvable role/.test(named[1].detail));
   }
 
   // ===== 14-day window (Europe/London) =====
@@ -222,7 +256,7 @@ async function main() {
   ck("S9. Overstaffed -> no case", keysFor(b, O.over.id).length === 0);
   ck("S10. Exactly 7 cases in total (1+1+1+2+1+1), all distinct (rule, occurrence) keys - no duplicates", b.cases.length === 7 && new Set(b.cases.map((c: any) => c.caseKey)).size === 7);
   ck("S11. ONE shared staffing pass for the four rules in one request", staffingPassStats.passes - before === 1, String(staffingPassStats.passes - before));
-  ck("S12. Each staffing table listed exactly once; 10 list operations total (5 config + 5 staffing)", STAFFING_SOURCES.every((t) => b.diagnostics.reads.lists[t] === 1) && Object.keys(b.diagnostics.reads.lists).length === 10 && requests.length === 10);
+  ck("S12. Each staffing table listed exactly once; 11 list operations total (5 config + 6 staffing incl. Coaches)", STAFFING_SOURCES.every((t) => b.diagnostics.reads.lists[t] === 1) && Object.keys(b.diagnostics.reads.lists).length === 11 && requests.length === 11 && requests.filter((t) => t === "Coaches").length === 1);
   ck("S13. The four staffing rules were evaluated; engine complete, no config issues", b.diagnostics.evaluated.length === 4 && b.complete === true && b.configIssues.length === 0);
   const zeroCase = b.cases.find((c: any) => c.caseKey === `session_no_coach|occurrence:${O.zero.id}`);
   ck("S14. Case Key format: <rule>|occurrence:<Session Occurrence record id>", !!zeroCase && b.cases.every((c: any) => c.caseKey === `${c.ruleKey}|occurrence:${c.targetIds.occurrenceId}`));
@@ -323,6 +357,80 @@ async function main() {
     ck("G3. caseKey lookup evaluates only that rule (still via the shared pass) and finds the case", lk.body.exists === true && lk.body.case.ruleKey === "session_understaffed" && staffingPassStats.passes - passes2 === 1);
   }
 
+  // ===== Slice 3.1: unknown / missing roles (configuration problem, never guessed) =====
+  {
+    const mk = (tag: string, o: { lead?: boolean; rsc?: number | null } = {}) => session(id("SU" + tag), { ...o, name: "U " + tag });
+    const U = { only: mk("Only", { rsc: 2 }), onlyLead: mk("OnlyLd", { lead: true, rsc: 2 }), coach: mk("Coach", { rsc: 2 }), lc: mk("Lc", { rsc: 2 }), snap: mk("Snap", { rsc: 2 }), ghost: mk("Ghost", { rsc: 1 }) };
+    const UO = Object.fromEntries(Object.entries(U).map(([k, v]) => [k, occ(id("OU" + k), v.id, 3 * D)])) as Record<keyof typeof U, AirtableRecord>;
+    const noRole: AirtableRecord = { id: id("SSNoRole"), fields: { Session: [U.onlyLead.id], Coach: [C1], Active: true } };
+    const snapRow: AirtableRecord = { id: id("OSSnap"), fields: { "Session Occurrence": [UO.snap.id], Coach: [C3], "Assignment Type": "Additional", "Actual Role Snapshot": "Helper" } };
+    world({
+      sessions: Object.values(U), occurrences: Object.values(UO),
+      sessionStaff: [staff(U.only.id, C1, ROLE_OLD), noRole, staff(U.coach.id, C2, ROLE_COACH), staff(U.coach.id, C1, ROLE_OLD), staff(U.lc.id, C1, ROLE_LEARN), staff(U.lc.id, C2, ROLE_OLD), staff(U.snap.id, C2, ROLE_COACH), staff(U.ghost.id, id("CoachGhost"), ROLE_COACH)],
+      occurrenceStaff: [snapRow],
+    });
+    const u = (await run({ debug: true })).body;
+    const cOnly = u.cases.find((c: any) => c.targetIds.occurrenceId === UO.only.id);
+    ck("U1. Unknown (inactive/unrecognised) role ONLY, Lead not required -> session_no_coach only - NOT learning_coach_only", keysFor(u, UO.only.id).join(",") === "session_no_coach" && cOnly?.context.learningCoaches === 0 && cOnly?.context.unrecognisedRoles === 1 && cOnly?.context.totalStaff === 0 && cOnly?.context.assignedStaff === 1);
+    ck("U2. Missing role (no Role link), Lead required -> session_no_coach only (never guessed as any role)", keysFor(u, UO.onlyLead.id).join(",") === "session_no_coach");
+    const cCoach = u.cases.find((c: any) => c.caseKey === `session_understaffed|occurrence:${UO.coach.id}`);
+    ck("U3. Coach + unknown role, Required 2 -> counting 1 -> session_understaffed (unknown not counted)", keysFor(u, UO.coach.id).join(",") === "session_understaffed" && cCoach?.context.countingStaff === 1);
+    ck("U4. Learning Coach + unknown role, Lead not required -> learning_coach_only (the only RECOGNISED role is Learning Coach)", keysFor(u, UO.lc.id).join(",") === "learning_coach_only");
+    ck("U5. Unrecognised Occurrence Staff role snapshot ('Helper') is not counted and not a Learning Coach -> still understaffed", keysFor(u, UO.snap.id).join(",") === "session_understaffed");
+    ck("U6. Unknown role never masquerades as Learning Coach: summary/context say so explicitly", cOnly?.context.staffingSummary === "no valid staff (ignored: 1 with an unrecognised role)" && /No valid staff/.test(cOnly?.detail) && cCoach?.context.staffingSummary === "1 Coach (ignored: 1 with an unrecognised role)" && cCoach?.relatedIds?.ignoredCoachIds?.join(",") === C1 && cCoach?.relatedIds?.coachIds?.join(",") === C2);
+    const roleIssues = u.configIssues.filter((i: any) => i.code === "staffing_role_unrecognised");
+    const expectIssueOcc = [UO.only.id, UO.onlyLead.id, UO.coach.id, UO.lc.id, UO.snap.id].sort().join(",");
+    ck("U7. One staffing_role_unrecognised config issue per bad assignment (5), recordId = occurrence, reported ONCE despite four evaluators sharing the pass", roleIssues.length === 5 && roleIssues.map((i: any) => i.recordId).sort().join(",") === expectIssueOcc && roleIssues.every((i: any) => /not treated as a Learning Coach/.test(i.detail)));
+    ck("U8. Assigned coach with no Coaches record -> staffing_coach_not_found issue + treated as no valid staff (session_no_coach)", u.configIssues.filter((i: any) => i.code === "staffing_coach_not_found" && i.recordId === UO.ghost.id).length === 1 && keysFor(u, UO.ghost.id).join(",") === "session_no_coach");
+    ck("U9. Config issues never make the queue incomplete and create no extra cases", u.complete === true && u.cases.length === 6);
+    const lk = await run({ caseKey: `learning_coach_only|occurrence:${UO.lc.id}` });
+    ck("U10. caseKey lookup (one rule only) still reports the staffing config issues", lk.body.exists === true && (lk.body.configIssues ?? []).filter((i: any) => i.code === "staffing_role_unrecognised").length === 5);
+  }
+
+  // ===== Slice 3.1: inactive Coaches never satisfy future staffing =====
+  {
+    const mk = (tag: string, o: { lead?: boolean; rsc?: number | null } = {}) => session(id("SI" + tag), { ...o, name: "I " + tag });
+    const I = { only: mk("Only", { rsc: 1 }), mix: mk("Mix", { rsc: 2 }), lead: mk("Lead", { lead: true, rsc: 1 }), lc: mk("Lc", { rsc: 2 }), cover: mk("Cover", { lead: true, rsc: 1 }) };
+    const IO = { only: occ(id("OIOnly"), I.only.id, 3 * D), mix: occ(id("OIMix"), I.mix.id, 3 * D), lead: occ(id("OILead"), I.lead.id, 3 * D), lc: occ(id("OILc"), I.lc.id, 3 * D), coverA: occ(id("OICovA"), I.cover.id, 3 * D), coverB: occ(id("OICovB"), I.cover.id, 4 * D) };
+    const leadRow = staff(I.cover.id, C1, ROLE_LEAD);
+    const inactiveCover: AirtableRecord = { id: id("OSInCov"), fields: { "Session Occurrence": [IO.coverA.id], Coach: [CL], "Assignment Type": "Cover", "Session Staff Source": [leadRow.id], "Actual Role Snapshot": "Lead Coach" } };
+    const ssRows = [staff(I.only.id, CX, ROLE_COACH), staff(I.mix.id, C2, ROLE_COACH), staff(I.mix.id, CX, ROLE_COACH), staff(I.lead.id, CL, ROLE_LEAD), staff(I.lead.id, C2, ROLE_COACH), staff(I.lc.id, CM, ROLE_LEARN), leadRow];
+    world({ sessions: Object.values(I), occurrences: Object.values(IO), sessionStaff: ssRows, occurrenceStaff: [inactiveCover] });
+    const before = JSON.stringify([tables["Session Staff"], tables["Occurrence Staff"], tables["Coaches"]]);
+    const v = (await run({ debug: true })).body;
+    const cOnly = v.cases.find((c: any) => c.targetIds.occurrenceId === IO.only.id);
+    ck("I1. Only an inactive Coach assigned -> no valid staff -> session_no_coach only", keysFor(v, IO.only.id).join(",") === "session_no_coach" && cOnly?.context.inactiveCoachesIgnored === 1 && cOnly?.context.staffingSummary === "no valid staff (ignored: 1 inactive coach)" && cOnly?.relatedIds?.coachIds?.length === 0 && cOnly?.relatedIds?.ignoredCoachIds?.join(",") === CX);
+    ck("I2. Required 2, one active Coach + one inactive Coach -> session_understaffed (counting 1)", keysFor(v, IO.mix.id).join(",") === "session_understaffed" && v.cases.find((c: any) => c.targetIds.occurrenceId === IO.mix.id)?.context?.countingStaff === 1);
+    ck("I3. Lead required, inactive Lead + active Coach -> no_lead_coach (inactive Lead does not satisfy it)", keysFor(v, IO.lead.id).join(",") === "no_lead_coach");
+    ck("I4. Inactive Learning Coach only -> session_no_coach, NOT learning_coach_only", keysFor(v, IO.lc.id).join(",") === "session_no_coach");
+    ck("I5. Inactive coach as an Occurrence Staff Cover for the Lead -> that occurrence has no valid staff; the other occurrence keeps its active Lead", keysFor(v, IO.coverA.id).join(",") === "session_no_coach" && keysFor(v, IO.coverB.id).length === 0);
+    ck("I6. Inactive assignments are ignored, not rewritten: Session Staff / Occurrence Staff / Coaches data identical after evaluation (writes impossible)", JSON.stringify([tables["Session Staff"], tables["Occurrence Staff"], tables["Coaches"]]) === before);
+    ck("I7. Inactive coaches raise NO config issue (an inactive coach is valid historical data); 5 cases total", v.configIssues.length === 0 && v.cases.length === 5);
+    ck("I8. Coaches table read once per request (the only extra read)", v.diagnostics.reads.lists["Coaches"] === 1 && Object.keys(v.diagnostics.reads.lists).length === 11);
+  }
+
+  // ===== Slice 3.1: approved severity defaults, exact boundaries (anchor = occurrence start) =====
+  {
+    const snc = session(id("SVnc")), snl = session(id("SVnl"), { lead: true }), sun = session(id("SVun"), { rsc: 2 }), slc = session(id("SVlc"));
+    const at2 = (tag: string, sess: AirtableRecord, ms: number) => occ(id(tag + ms), sess.id, ms);
+    const e = 1; // 1 ms
+    const O2 = {
+      nc72: at2("Vc", snc, 72 * H), nc48: at2("Vc", snc, 48 * H), nc48p: at2("Vc", snc, 48 * H + e), nc10d: at2("Vc", snc, 10 * D),
+      nl72p: at2("Vn", snl, 72 * H + e), nl72: at2("Vn", snl, 72 * H), nl24: at2("Vn", snl, 24 * H), nl24p: at2("Vn", snl, 24 * H + e),
+      un72p: at2("Vu", sun, 72 * H + e), un72: at2("Vu", sun, 72 * H), un24: at2("Vu", sun, 24 * H), un24p: at2("Vu", sun, 24 * H + e),
+      lc72p: at2("Vl", slc, 72 * H + e), lc72: at2("Vl", slc, 72 * H), lc24: at2("Vl", slc, 24 * H), lc24p: at2("Vl", slc, 24 * H + e),
+    };
+    world({ sessions: [snc, snl, sun, slc], occurrences: Object.values(O2), sessionStaff: [staff(snl.id, C2, ROLE_COACH), staff(sun.id, C1, ROLE_LEAD), staff(slc.id, C1, ROLE_LEARN)] });
+    const cs = (await run()).body.cases;
+    const sv = (o: AirtableRecord, rk: string) => cs.find((c: any) => c.caseKey === `${rk}|occurrence:${o.id}`)?.severity ?? "none";
+    ck("V4. session_no_coach: Warning as soon as it is in the window (10 days, 72h) and just outside 48h", sv(O2.nc10d, "session_no_coach") === "Warning" && sv(O2.nc72, "session_no_coach") === "Warning" && sv(O2.nc48p, "session_no_coach") === "Warning");
+    ck("V5. session_no_coach: Urgent at EXACTLY 48h before (inclusive)", sv(O2.nc48, "session_no_coach") === "Urgent");
+    ck("V6. no_lead_coach: Normal >72h; Warning at exactly 72h; Warning just outside 24h; Urgent at exactly 24h", sv(O2.nl72p, "no_lead_coach") === "Normal" && sv(O2.nl72, "no_lead_coach") === "Warning" && sv(O2.nl24p, "no_lead_coach") === "Warning" && sv(O2.nl24, "no_lead_coach") === "Urgent");
+    ck("V7. session_understaffed: same thresholds (Normal >72h, Warning at 72h, Urgent at 24h)", sv(O2.un72p, "session_understaffed") === "Normal" && sv(O2.un72, "session_understaffed") === "Warning" && sv(O2.un24p, "session_understaffed") === "Warning" && sv(O2.un24, "session_understaffed") === "Urgent");
+    ck("V8. learning_coach_only: Normal >72h, Warning <=72h, Urgent <=24h (base changed from Warning to Normal)", sv(O2.lc72p, "learning_coach_only") === "Normal" && sv(O2.lc72, "learning_coach_only") === "Warning" && sv(O2.lc24p, "learning_coach_only") === "Warning" && sv(O2.lc24, "learning_coach_only") === "Urgent");
+    ck("V9. No locked minimum: every case's severityReason comes from base/thresholds only", cs.every((c: any) => !/locked/i.test(c.severityReason)));
+  }
+
   // ===== Drift =====
   {
     const na = readFileSync(join(FUNCS, "needs-attention/staffing.ts"), "utf8");
@@ -337,7 +445,7 @@ async function main() {
     const fixture = JSON.parse(readFileSync(join(HERE, "needs-attention-catalogue.fixture.json"), "utf8")).rules as any[];
     const reg = IMPLEMENTED_EVALUATORS.map((e) => `${e.ruleKey}=${e.ruleId}`).sort().join(",");
     ck("DR3. Registry = the four staffing rules with the TEST catalogue's exact Rule IDs, all Active in the catalogue", reg === "learning_coach_only=ATT-002,no_lead_coach=ATT-001,session_no_coach=ATT-013,session_understaffed=ATT-005" && IMPLEMENTED_EVALUATORS.every((e) => fixture.find((f) => f.ruleKey === e.ruleKey)?.ruleId === e.ruleId && fixture.find((f) => f.ruleKey === e.ruleKey)?.evaluationStatus === "Active"));
-    ck("DR4. All four declare the identical shared source list (so each table loads once)", IMPLEMENTED_EVALUATORS.every((e) => e.sources === STAFFING_SOURCES) && STAFFING_SOURCES.join(",") === "Session Occurrences,Sessions,Session Staff,Occurrence Staff,Coach Roles");
+    ck("DR4. All four declare the identical shared source list (so each table loads once)", IMPLEMENTED_EVALUATORS.every((e) => e.sources === STAFFING_SOURCES) && STAFFING_SOURCES.join(",") === "Session Occurrences,Sessions,Session Staff,Occurrence Staff,Coach Roles,Coaches");
     ck("DR5. No Volunteer role introduced; window is the fixed 14-day default (no Settings field)", !/volunteer/i.test(na.replace(/\/\*[\s\S]*?\*\//g, "")) && STAFFING_WINDOW_DAYS === 14);
   }
 

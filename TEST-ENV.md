@@ -9353,6 +9353,8 @@ caching, Supabase case storage, Volunteer and safeguarding.
 
 ## Needs Attention Foundation — Slice 3 (occurrence staffing rules) — TEST only — 2026-09-28
 
+> **Partly superseded by NA6 (Slice 3.1 follow-up correction, `needs-attention` v4).** Where NA5 and NA6 differ, NA6 wins. The superseded parts are marked inline below: unknown-role handling (NA5.2), the Coach Active flag (NA5.3), `learning_coach_only` severity (NA5.4), and the read count (NA5.5).
+
 **Scope.** Slice 3 implements exactly four evaluators: `session_no_coach`
 (ATT-013), `no_lead_coach` (ATT-001), `learning_coach_only` (ATT-002) and
 `session_understaffed` (ATT-005). It adds none of the following:
@@ -9391,6 +9393,8 @@ Pre-checks passed before any change:
 - There are no per-rule or per-occurrence queries.
 
 ### NA5.2 Locked precedence (as implemented)
+
+> **Superseded in part (NA6.2).** An unknown-role-only roster no longer raises `learning_coach_only`. Precedence is now decided on **valid** staff only: an active Coach with a recognised active role. Unknown roles become `configIssues`. The precedence table itself is unchanged.
 
 `staffingFindings()` runs once per eligible occurrence. Counting staff is
 Lead Coach + Coach; Learning Coach never counts.
@@ -9438,6 +9442,8 @@ Rules:
 
 ### NA5.3 Timing, eligibility and resolution
 
+> **Superseded in part (NA6.3).** The Coach record's `Active` flag IS now consulted. Inactive coaches never satisfy future staffing.
+
 **Horizon.** A fixed `STAFFING_WINDOW_DAYS = 14` constant. There is no
 Settings field, and it uses the organisation timezone (`Europe/London`
 in TEST).
@@ -9482,6 +9488,8 @@ the resolver.
 
 ### NA5.4 Case contract
 
+> **Superseded in part (NA6.4).** `learning_coach_only` is now Normal / Warning 72h / Urgent 24h, and the context carries new fields.
+
 - **Case Key:** `<ruleKey>|occurrence:<occurrenceRecordId>`, for example
   `no_lead_coach|occurrence:recRu1tEFQqD783iY`. When one occurrence
   raises two rules, it has two distinct keys.
@@ -9518,6 +9526,8 @@ runtime prints September as "Sept", for example "Tue 29 Sept 2026, 10:00".
 This is cosmetic only.
 
 ### NA5.5 Reads and performance
+
+> **Superseded (NA6.5).** There are now 11 list operations per request, because the Coaches table was added.
 
 - **Per request:**
   - 5 config tables, each listed once;
@@ -9627,6 +9637,8 @@ first. Afterwards:
 ### NA5.7 Deferred, flagged, and Slice 4 remaining
 
 **Flagged for review:**
+
+> Items 1 and 3 below were resolved by NA6.
 - A roster of only unrecognised roles raises `learning_coach_only`
   (fail-safe).
 - Occurrences of non-Active sessions are excluded, following the
@@ -9650,3 +9662,270 @@ first. Afterwards:
 
 Each later slice appends its registrations. Staffing sources are already
 loaded once, so later rules that share them add no reads.
+
+## Needs Attention — Slice 3.1 follow-up correction (staffing semantics + severity defaults) — TEST only — 2026-09-28
+
+**Scope.** This is a correction to Slice 3 only. It changes three things:
+- unknown or missing staffing roles;
+- inactive Coaches;
+- the four staffing severity defaults.
+
+No new rule, no Slice 4 work, no production, UI, cover, compliance,
+availability or Work Summary change. The locked precedence is unchanged.
+The shared resolver (`player-access` / `coach-cover` / the Needs Attention
+copied block) is **untouched**, and the drift tests still prove it
+byte-identical.
+
+Pre-checks passed:
+- HEAD = origin = `ac5a0d7`; clean tree;
+- deployed `needs-attention` v2 was byte-identical to the repo;
+- the catalogue held exactly the NA5.4 values.
+
+### NA6.1 What changed (files)
+
+| File | Change |
+|---|---|
+| `needs-attention/staffing.ts` | **Analysis layer only.** It filters after the resolver (see NA6.2 and NA6.3), adds `Coaches` to the shared staffing sources, adds `staffingIssues()`, and adds new context/relatedIds fields. The COPIED resolver block is unchanged |
+| `needs-attention/needs-attention.ts` | A generic optional `reportIssue(issue)` on `EvaluatorContext`. `ENGINE_VERSION = "needs-attention-slice-3.1"` |
+| `needs-attention/orchestrator.ts` | Collects evaluator-reported issues into `configIssues`. Identical reports (same code, record and detail) are kept **once**, because the four staffing evaluators share one pass and each reports the same issues. A reported issue never creates a case and never sets `complete: false` |
+| `registry.ts`, `repository.ts`, `index.ts` | Unchanged |
+
+No new Needs Attention rule was created. Data problems use the existing
+`configIssues` mechanism.
+
+### NA6.2 Unknown or missing staffing roles (locked)
+
+An unknown or missing role is a **configuration problem**. It is never
+guessed, never treated as a Learning Coach, and never counted.
+
+Each resolved assignment is classified, in this order:
+
+| Status | Condition | Effect |
+|---|---|---|
+| `coach_not_found` | The linked Coach id is not in the Coaches table | Ignored + config issue `staffing_coach_not_found` |
+| `inactive_coach` | Coach record `Active` is not ticked | Ignored (NA6.3). **No** config issue, because it is valid historical data. Its role is not examined |
+| `unknown_role` | Active coach, but the role is missing (no Role link), inactive, not one of `lead_coach` / `coach` / `learning_coach`, or an Occurrence Staff role snapshot that matches no Coach Roles row | Ignored + config issue `staffing_role_unrecognised` |
+| `valid` | Active coach + recognised active role | Counted: Lead Coach / Coach / Learning Coach |
+
+**Precedence runs on VALID staff only** (`total` = the valid count):
+- **0 valid** → `session_no_coach` only;
+- Lead required with no valid Lead → `no_lead_coach`;
+- valid staff are Learning Coaches only, and Lead is not required →
+  `learning_coach_only`;
+- 1 ≤ counting (valid Lead + valid Coach) < Required Staff Count →
+  `session_understaffed`.
+
+It follows that:
+- an unknown role only → `session_no_coach` (never `learning_coach_only`),
+  plus a config issue;
+- Coach + unknown role with Required 2 → counting 1 →
+  `session_understaffed`, plus a config issue;
+- Learning Coach + unknown role with no Lead required →
+  `learning_coach_only` (the only recognised role is Learning Coach), plus
+  a config issue.
+
+**Config issue shape:** `{code, recordId: <occurrence id>, detail}`.
+- The detail names the session, the local time, the occurrence and the
+  coach id.
+- It names the role when there is one (`role "X", which is inactive or
+  not a recognised staffing role`). Otherwise it says *"a missing or
+  unresolvable role (no Role link, or a role snapshot that matches no Coach
+  Roles row)"*.
+- It always ends: *"The assignment is ignored for staffing - it is not
+  counted and not treated as a Learning Coach."*
+
+Issues appear in `/cases` and in `?caseKey=` responses (not in
+`view=summary`, as before).
+
+**Case payload additions:**
+- `context.assignedStaff` (resolved assignments before filtering);
+- `context.inactiveCoachesIgnored`;
+- `context.unknownCoachRecords`;
+- the existing `context.unrecognisedRoles`;
+- `context.totalStaff`, which now means **valid** staff;
+- `relatedIds.coachIds` (valid staff only);
+- `relatedIds.ignoredCoachIds` (present only when something was ignored).
+
+The staffing summary reads, for example:
+- "no valid staff (ignored: 1 with an unrecognised role)";
+- "1 Coach (ignored: 1 inactive coach)".
+
+A `session_no_coach` detail says "No **valid** staff are assigned" when
+assignments exist but none are valid.
+
+### NA6.3 Inactive Coaches (locked, future staffing only)
+
+An assignment whose Coaches record `Active` is not ticked never satisfies
+future staffing:
+- it does not count toward Required Staff Count;
+- an inactive Lead Coach does not satisfy Requires Lead Coach;
+- an inactive Learning Coach is not valid Learning Coach staffing.
+
+This applies wherever the coach comes from: Session Staff, or Occurrence
+Staff (Cover / Additional).
+
+The filter is applied in the **Needs Attention analysis layer, after the
+shared resolver**:
+- no historical Session Staff or Occurrence Staff row is rewritten (writes
+  are impossible — the repository is read-only);
+- `player-access` behaviour is unchanged.
+
+**Read cost:** one extra list of the Coaches table per request. There is
+no per-coach or per-occurrence query.
+
+### NA6.4 Final staffing severity defaults (TEST catalogue, updated in Airtable)
+
+| Rule | Default Base | Warning | Urgent | Locked Minimum |
+|---|---|---|---|---|
+| `session_no_coach` (ATT-013) | **Warning** — as soon as it is in the 14-day window | — (not supported) | **48 Hours Before** | none |
+| `no_lead_coach` (ATT-001) | Normal | 72 Hours Before | 24 Hours Before | none |
+| `session_understaffed` (ATT-005) | Normal | 72 Hours Before | 24 Hours Before | none |
+| `learning_coach_only` (ATT-002) | **Normal** (was Warning) | **72 Hours Before** (was unsupported) | **24 Hours Before** (was 48) | none |
+
+- Only the `learning_coach_only` row's values changed: `Default Base
+  Severity`, `Supports Warning Threshold`, the Warning threshold and
+  timing, and the Urgent threshold.
+- The Logic/Definition text of all four rows was updated to describe
+  valid-staff semantics.
+- These values are **configurable defaults** (Client Customisable
+  Settings still override field by field). None is hard-coded in the
+  evaluator.
+- The NA1.7 catalogue row for ATT-002 is superseded by this table.
+- Cover timing is unchanged.
+
+### NA6.5 Reads and performance
+
+- **Per request:**
+  - 5 config tables + **6** staffing tables (Session Occurrences, Sessions,
+    Session Staff, Occurrence Staff, Coach Roles, **Coaches**);
+  - = **11 list operations**, each table exactly once, with no duplicates
+    and no per-occurrence or per-rule queries;
+  - live TEST: 11 lists / 11 pages.
+- With the existing wave size of 5, the staffing sources now load in **two
+  waves** (5 + 1). Airtable allows about 5 requests per second, so the
+  wave size was not raised.
+- **Live latency** (`function_edge_logs.execution_time_ms`; log ingestion
+  is sampled, so not every call has a row):
+
+  | Call | Version | State | Time |
+  |---|---|---|---|
+  | Cold, first call after deploy | v4 | 20 cases | 4,529 ms |
+  | Cold, first call after deploy | v3 | 20 cases | 2,759 ms |
+  | Warm, 4 concurrent calls | v3 | 20 cases | 2,235–3,108 ms (contending for Airtable) |
+  | Warm, `debug=1` | v4 | Clear | 1,552 ms |
+  | Warm, plain | v4 | Clear | 1,459 ms |
+
+  - The v2 warm Clear was 1,350 ms, so the Coaches read costs roughly
+    **+0.1–0.2 s** warm.
+- There is no caching.
+
+### NA6.6 Verification
+
+**Unit tests:**
+- `needs-attention-staffing.test.ts`: **100/100** (was 70). The changes:
+  - P13/P14 are rewritten: unknown-only → `session_no_coach`;
+  - P15/P16 added (inactive-only; Learning Coach alongside unknown roles);
+  - R1–R6: valid/unknown/inactive/missing classification, issues, and
+    that an inactive coach is filtered before role checks;
+  - **U1–U10**, unknown roles end to end:
+    - no-role and inactive-role, and an unresolvable snapshot "Helper";
+    - Coach + unknown, Learning Coach + unknown;
+    - the issue is emitted once per bad assignment, even with four
+      evaluators;
+    - `staffing_coach_not_found`;
+    - config issues never make the queue incomplete;
+    - `caseKey` lookup still reports them;
+  - **I1–I8**, inactive coaches:
+    - inactive-only; active + inactive with Required 2;
+    - inactive Lead + active Coach; inactive Learning Coach only;
+    - an inactive Cover replacing the active Lead on one occurrence;
+    - source data untouched; no config issue; Coaches read once;
+  - **V4–V9**, exact boundaries:
+    - `session_no_coach` Warning in the window and at 48 h + 1 ms,
+      Urgent at exactly 48 h;
+    - `no_lead_coach`, `session_understaffed` and `learning_coach_only`:
+      Normal at 72 h + 1 ms, Warning at exactly 72 h and at 24 h + 1 ms,
+      Urgent at exactly 24 h;
+    - no locked minimum;
+  - S12 and DR4 now expect 11 reads and 6 sources.
+- `needs-attention.test.ts`: **102/102** (was 100). 81a/81b cover issue
+  de-duplication across evaluators and that issues are never cases; 71 is
+  now engine slice-3.1; 85 expects 11 reads including Coaches.
+- **Mutation checks:** every injected bug fails the suite:
+  - unknown counted as staff;
+  - inactive not filtered;
+  - missing coach treated as present;
+  - no issue de-duplication;
+  - unknown role not flagged;
+  - no unknown-role issue.
+- Strict `tsc` is clean.
+
+**Full regression:** `node tests/run-all.js` → **58/58 files, 1,618
+PASS, 0 FAIL** (Slice 3 baseline: 58 files / 1,586).
+
+**Deployment:** `needs-attention` **v4** in TEST (`verify_jwt` on).
+- All 6 files are **byte-identical** to the repo (staffing `1d806bae…`,
+  engine `d77ce9c6…`, orchestrator `bdaaa1c6…`; the other 3 are unchanged
+  from v2).
+- v3 was deployed first. v4 only improved the wording of the
+  unknown-role config issue: an unresolvable snapshot had been described
+  as "no role".
+- No other function was deployed.
+
+**Live verification** used real HTTP via `pg_net`, a Management JWT and
+throwaway `NA-S31-PROBE` records:
+- 1 inactive probe Coach;
+- 13 Sessions, 16 Session Staff rows;
+- 21 Occurrences, 1 Occurrence Staff row.
+
+TEST was Clear before. The v4 `/cases` returned **exactly the 20 predicted
+cases**: `Urgent`, 4 Urgent / 9 Warning / 7 Normal, `complete: true`. It
+also returned exactly **4** `staffing_role_unrecognised` config issues,
+reported once each.
+
+| Probe | Setup | Live result |
+|---|---|---|
+| 01 | Alex with **no role**, Required 2 | `session_no_coach` only (Warning); summary "no valid staff (ignored: 1 with an unrecognised role)"; `?caseKey=learning_coach_only|…` → `exists:false` |
+| 02 | Sam Coach + Alex no role, Required 2 | `session_understaffed` (counting 1) + issue |
+| 03 | Alex Learning Coach + Morgan no role | `learning_coach_only` + issue |
+| 04 | Occurrence Staff "Helper" snapshot only | `session_no_coach` + issue ("missing or unresolvable role") |
+| 05 | Inactive coach only | `session_no_coach`; "(ignored: 1 inactive coach)"; no issue |
+| 06 | Sam Coach + inactive Coach, Required 2 | `session_understaffed` (counting 1) |
+| 07 | Inactive Lead + Sam Coach, Lead required | `no_lead_coach` |
+| 08 | Inactive Learning Coach only | `session_no_coach`; `?caseKey=learning_coach_only|…` → `exists:false` |
+| 09 | Zero staff at ~18 h / ~66 h / ~10 d | Urgent / Warning / Warning |
+| 10 | `no_lead_coach` (Coach only) at ~18 h / ~66 h / ~114 h | Urgent / Warning / Normal |
+| 11 | `session_understaffed` (Lead only, Required 2), same times | Urgent / Warning / Normal |
+| 12 | `learning_coach_only`, same times | Urgent / Warning / **Normal** (new default) |
+| 13 | Valid Lead + Coach, Required 2 | nothing (existing valid behaviour intact) |
+
+**Cleanup.** All 52 probe records were deleted by exact ID, children
+first. Afterwards:
+- Coaches = the original 3;
+- Sessions = TEST-A and TEST-B;
+- Session Staff = the original 3;
+- Occurrence Staff = 0;
+- 0 `NA-S3*` occurrences.
+
+`/cases` → **Clear**, 0 config issues, 11 lists.
+
+**Other functions** after cleanup:
+- `/me` returned 200 for Management and Parent.
+- hub-content `/players` (coach A) returned 200, **md5 `685b11e7…`,
+  byte-identical**.
+- parent-hub `/me` returned 200 (md5 unchanged from Slice 3).
+- coach-cover `/manage`, coach-compliance `/summary?coachId=` and
+  coach-work-summaries `/summaries` all returned 200.
+- needs-attention as Coach or Parent returned 403.
+
+### NA6.7 Still flagged / deferred
+
+- Occurrences of non-Active sessions are still excluded (the generator's
+  rule, NA5.3).
+- Destination routes are still logical routes.
+- Volunteer is still deferred.
+- The Exceptions table is still read whole.
+- `learning_coach_only`'s `a.learningCount > 0` guard is logically
+  implied by `total > 0 && qualifying === 0`. It is kept explicit for
+  readability (mutation M7 is equivalent).
+- Slice 4 has not been started.
