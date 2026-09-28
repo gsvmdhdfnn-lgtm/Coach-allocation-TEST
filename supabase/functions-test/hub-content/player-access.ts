@@ -500,11 +500,30 @@ export function roleCapsByRoleName(coachRoleRows: any[]): Record<string, CoachRo
  *    withdrawn/cancelled flag, not an invented field; see TEST-ENV.md.
  *    Historical rows are never deleted for this - an Absent row simply
  *    stops resolving as staffing, its own record is untouched.
+ *
+ * SUPERSEDED IN PART (Staffing Absent correction, 2026-09-28): an Absent
+ * row still never ADDS anyone, but it is no longer merely "ignored" - it
+ * now also REMOVES its coach from the occurrence's resolved roster; see
+ * isAbsentOccurrenceStaffRow() and resolveOccurrenceStaffing() below.
  */
 function isUsableOccurrenceStaffRow(row: { fields: Record<string, any> }): boolean {
   if (!firstLink(row.fields, "Coach")) return false;
   if (selectName(row.fields["Attendance"]) === "Absent") return false;
   return true;
+}
+
+/**
+ * Staffing Absent correction (2026-09-28, see TEST-ENV.md): an Occurrence
+ * Staff row with a linked Coach and `Attendance = "Absent"` means THAT
+ * coach is not working THIS occurrence - whether they are recurring
+ * Session Staff or were added by Occurrence Staff, and whether or not
+ * cover has been found. resolveOccurrenceStaffing() removes every such
+ * coach from the roster as its final step. Before this correction an
+ * Absent row was only ignored, so a recurring coach stayed on the roster
+ * until a Cover row naming their Session Staff row replaced them.
+ */
+function isAbsentOccurrenceStaffRow(row: { fields: Record<string, any> }): boolean {
+  return !!firstLink(row.fields, "Coach") && selectName(row.fields["Attendance"]) === "Absent";
 }
 
 /**
@@ -593,6 +612,17 @@ export interface ResolvedOccurrenceCoach {
  *         is exactly a same-coach role override and needs no special
  *         case beyond "last write wins" for that coach id.
  *
+ *  3. ABSENCE (Staffing Absent correction, 2026-09-28): finally, every
+ *     coach with an Absent row for this occurrence
+ *     (isAbsentOccurrenceStaffRow()) is REMOVED from the roster, whatever
+ *     added them (Session Staff or an Occurrence Staff row) and whether
+ *     or not a Cover row exists. Absent therefore wins over any other row
+ *     for the same coach on the same occurrence (fail-closed). A Cover /
+ *     Additional row for a DIFFERENT coach is what adds the replacement.
+ *     This SUPERSEDES the earlier "an Absent row is simply ignored" reading,
+ *     under which a recurring coach stayed on the roster unless a Cover row
+ *     cited their Session Staff row.
+ *
  * This never mutates a Session Staff row and never looks at any
  * Occurrence Staff row outside the one occurrence being resolved - a
  * one-date exception can never bleed onto another date or another
@@ -642,6 +672,10 @@ export function resolveOccurrenceStaffing(
     roster.set(coachId, { coachId, roleCaps: caps, fromOccurrenceStaff: true });
   }
 
+  for (const row of occurrenceStaffRowsForOccurrence) {
+    if (isAbsentOccurrenceStaffRow(row)) roster.delete(firstLink(row.fields, "Coach"));
+  }
+
   return [...roster.values()];
 }
 
@@ -667,7 +701,10 @@ export function resolveOccurrenceStaffing(
  * occurrence on this date), this function is byte-identical to Slice 2.
  * A coach explicitly replaced via Occurrence Staff `Cover` for this exact
  * occurrence is excluded here even though their Session Staff row is
- * still Active and in range - the occurrence-specific fact wins.
+ * still Active and in range - the occurrence-specific fact wins. The same
+ * now applies to a coach with an Absent Occurrence Staff row for this
+ * occurrence, with or without a Cover row (Staffing Absent correction,
+ * 2026-09-28): no occurrence-specific access through the recurring row.
  */
 export function sessionStaffCapabilitiesForSession(
   sessionId: string,

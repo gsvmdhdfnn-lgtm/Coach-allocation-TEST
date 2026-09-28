@@ -301,7 +301,9 @@ async function main() {
     const additional: AirtableRecord = { id: id("OSAdd"), fields: { "Session Occurrence": [oB.id], Coach: [C3], "Assignment Type": "Additional", "Planned Role Snapshot": "Learning Coach" } };
     world({ sessions: [s], occurrences: [oA, oB], sessionStaff: [ssA], occurrenceStaff: [absent, additional] });
     const o2 = (await run()).body;
-    ck("O3. Existing resolver semantics reused verbatim: an Absent row is ignored (no row-level removal) and an Additional row adds staff", keysFor(o2, oB.id).length === 0 && keysFor(o2, oA.id).length === 0);
+    // SUPERSEDED (Staffing Absent correction, 2026-09-28): O3 used to assert "an Absent row is ignored (no row-level removal)". Absent now
+    // removes its coach from that occurrence: C1 (the only Lead) is absent on oB, leaving only the Additional Learning Coach.
+    ck("O3. Shared resolver semantics: an Absent row removes its coach from that occurrence (no Lead left -> no_lead_coach on oB only; learning_coach_only is suppressed when a Lead is required, unchanged) and an Additional row adds staff", keysFor(o2, oB.id).join(",") === "no_lead_coach" && keysFor(o2, oA.id).length === 0, keysFor(o2, oB.id).join(","));
   }
 
   // ===== Effective-dated Session Staff handover =====

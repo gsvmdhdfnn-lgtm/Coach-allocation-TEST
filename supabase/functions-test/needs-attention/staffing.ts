@@ -13,6 +13,11 @@
  * asserts every chunk still appears byte-for-byte in player-access.ts and
  * that the block is identical to coach-cover's copy, so there is exactly
  * one interpretation of "who staffs this occurrence".
+ * Staffing Absent correction (2026-09-28): an Absent Occurrence Staff row
+ * now removes its coach from that occurrence's roster (see
+ * player-access.ts), so every Needs Attention rule built on this pass
+ * (staffing, compliance-on-assignment, availability, conflicts) treats an
+ * absent coach as not assigned, with or without cover.
  *
  * Everything below the copied block is built ON that resolver: one shared
  * pass per request analyses every eligible occurrence once, and the four
@@ -106,6 +111,10 @@ function isUsableOccurrenceStaffRow(row: { fields: Record<string, any> }): boole
   return true;
 }
 
+function isAbsentOccurrenceStaffRow(row: { fields: Record<string, any> }): boolean {
+  return !!firstLink(row.fields, "Coach") && selectName(row.fields["Attendance"]) === "Absent";
+}
+
 function resolveOccurrenceRoleCaps(
   row: { fields: Record<string, any> },
   sourceRow: any | null,
@@ -165,6 +174,10 @@ export function resolveOccurrenceStaffing(
 
     const caps = resolveOccurrenceRoleCaps(row, sourceRow, roleCapsByNameMap, roleCapsById);
     roster.set(coachId, { coachId, roleCaps: caps, fromOccurrenceStaff: true });
+  }
+
+  for (const row of occurrenceStaffRowsForOccurrence) {
+    if (isAbsentOccurrenceStaffRow(row)) roster.delete(firstLink(row.fields, "Coach"));
   }
 
   return [...roster.values()];

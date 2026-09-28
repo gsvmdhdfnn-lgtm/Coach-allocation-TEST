@@ -69,6 +69,9 @@ function isUsableOccurrenceStaffRow(row: { fields: Record<string, any> }): boole
   if (selectName(row.fields["Attendance"]) === "Absent") return false;
   return true;
 }
+function isAbsentOccurrenceStaffRow(row: { fields: Record<string, any> }): boolean {
+  return !!firstLink(row.fields, "Coach") && selectName(row.fields["Attendance"]) === "Absent";
+}
 
 const ISO_DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -133,6 +136,9 @@ function resolveOccurrenceRoster(
       if (sourceCoachId && sourceCoachId !== coachId) roster.delete(sourceCoachId);
     }
     roster.set(coachId, resolveOccurrenceRoleName(row, sourceRow, roleById));
+  }
+  for (const row of occurrenceStaffRowsForOccurrence) {
+    if (isAbsentOccurrenceStaffRow(row)) roster.delete(firstLink(row.fields, "Coach"));
   }
   return [...roster.entries()].map(([coachId, roleName]) => ({ coachId, roleName }));
 }
@@ -372,6 +378,25 @@ const coachById = {
 
   const names = resolveSessionCoachNames("sessOS2", "2026-10-10", staff, coachOS, roleById, { occurrenceStaffRows: occurrenceStaffByOcc["occAddDisplay"] || [], sessionStaffById });
   ck("10. An additive Occurrence Staff row shows BOTH the recurring coach and the added one, Lead Coach first by role priority", names.join(",") === "Danny Additive,Joe Additive", names.join(","));
+}
+
+// --- Staffing Absent correction (2026-09-28): parent display drops an absent coach, with or without cover ---
+{
+  const coachAbs = {
+    danny: { fields: { "Coach Name": "Danny Absent" } },
+    joe: { fields: { "Coach Name": "Joe Cover" } },
+  };
+  const ssDanny = { id: "ssAbsDanny", fields: { Session: ["sessAbs"], Coach: ["danny"], Role: ["lead"], Active: true } };
+  const staff = buildSessionStaffBySessionId([ssDanny]);
+  const sessionStaffById = buildSessionStaffById([ssDanny]);
+  const absentRow = { id: "osAbsDanny", fields: { Coach: ["danny"], "Session Occurrence": ["occAbs"], "Assignment Type": "Planned", Attendance: "Absent" } };
+  const coverRow = { id: "osAbsCover", fields: { Coach: ["joe"], "Session Occurrence": ["occAbs"], "Assignment Type": "Cover", "Session Staff Source": [ssDanny.id], "Planned Role Snapshot": "Lead Coach" } };
+  const noCover = resolveSessionCoachNames("sessAbs", "2026-10-10", staff, coachAbs, roleById, { occurrenceStaffRows: [absentRow], sessionStaffById });
+  ck("AB1. Absent recurring coach, no cover: parents are not shown Danny for that occurrence", noCover.length === 0, noCover.join(","));
+  const withCover = resolveSessionCoachNames("sessAbs", "2026-10-10", staff, coachAbs, roleById, { occurrenceStaffRows: [absentRow, coverRow], sessionStaffById });
+  ck("AB2. Absent + cover: parents see the cover coach only", withCover.join(",") === "Joe Cover", withCover.join(","));
+  const otherDate = resolveSessionCoachNames("sessAbs", "2026-10-17", staff, coachAbs, roleById, { occurrenceStaffRows: [], sessionStaffById });
+  ck("AB3. Other dates unchanged: Danny shows normally", otherDate.join(",") === "Danny Absent", otherDate.join(","));
 }
 
 console.log(R.map(([s, n, x]) => `${s}  ${n}${x ? "  -- " + x : ""}`).join("\n"));

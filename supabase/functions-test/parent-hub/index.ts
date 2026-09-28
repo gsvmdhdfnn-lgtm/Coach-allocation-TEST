@@ -520,6 +520,16 @@ function isUsableOccurrenceStaffRow(row: { fields: Record<string, any> }): boole
 }
 
 /**
+ * Staffing Absent correction (2026-09-28) - the exact duplicate of
+ * hub-content/player-access.ts's isAbsentOccurrenceStaffRow(): an Absent
+ * Occurrence Staff row means that coach is not working that occurrence,
+ * with or without cover, so resolveOccurrenceRoster() removes them.
+ */
+function isAbsentOccurrenceStaffRow(row: { fields: Record<string, any> }): boolean {
+  return !!firstLink(row.fields, "Coach") && selectName(row.fields["Attendance"]) === "Absent";
+}
+
+/**
  * The role NAME that actually applied for ONE Occurrence Staff row -
  * Coaches Slice 3, the display-tier twin of hub-content/player-access.ts's
  * resolveOccurrenceRoleCaps() (same precedence, same fail-closed-per-level
@@ -550,7 +560,9 @@ function resolveOccurrenceRoleName(row: { fields: Record<string, any> }, sourceR
  * this exact occurrence is applied on top - a `Cover` row with a
  * resolvable Session Staff Source first removes that source row's own
  * coach, then every usable row sets its own coach's entry, additive or
- * role-overriding as appropriate). Returns role NAMES (not capabilities),
+ * role-overriding as appropriate; finally - Staffing Absent correction,
+ * 2026-09-28 - every coach with an Absent row for this occurrence is
+ * removed, with or without cover). Returns role NAMES (not capabilities),
  * since this file's display tier only needs a name to sort by - see that
  * file's own comment for the full rationale; any change to the algorithm
  * itself must be made identically in both files.
@@ -588,6 +600,10 @@ function resolveOccurrenceRoster(
     }
 
     roster.set(coachId, resolveOccurrenceRoleName(row, sourceRow, roleById));
+  }
+
+  for (const row of occurrenceStaffRowsForOccurrence) {
+    if (isAbsentOccurrenceStaffRow(row)) roster.delete(firstLink(row.fields, "Coach"));
   }
 
   return [...roster.entries()].map(([coachId, roleName]) => ({ coachId, roleName }));

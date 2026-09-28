@@ -14,6 +14,13 @@
  * convention it is copied, not imported; tests/support/coach-cover.test.ts
  * asserts every copied block still appears byte-for-byte in
  * player-access.ts, so the two can never silently drift apart.
+ *
+ * Staffing Absent correction (2026-09-28): the copied resolver now REMOVES
+ * any coach with an Absent Occurrence Staff row for the occurrence, with
+ * or without cover (see player-access.ts). resolveRequesterAssignment()
+ * below keeps a recurring coach who is removed ONLY by their own Absent
+ * row(s) recognisable as the requester whose slot cover replaces, so the
+ * cover workflow behaves exactly as before for an already-absent coach.
  */
 
 // ===== COPIED FROM hub-content/player-access.ts - DO NOT EDIT HERE =====
@@ -97,6 +104,10 @@ function isUsableOccurrenceStaffRow(row: { fields: Record<string, any> }): boole
   return true;
 }
 
+function isAbsentOccurrenceStaffRow(row: { fields: Record<string, any> }): boolean {
+  return !!firstLink(row.fields, "Coach") && selectName(row.fields["Attendance"]) === "Absent";
+}
+
 function resolveOccurrenceRoleCaps(
   row: { fields: Record<string, any> },
   sourceRow: any | null,
@@ -156,6 +167,10 @@ export function resolveOccurrenceStaffing(
 
     const caps = resolveOccurrenceRoleCaps(row, sourceRow, roleCapsByNameMap, roleCapsById);
     roster.set(coachId, { coachId, roleCaps: caps, fromOccurrenceStaff: true });
+  }
+
+  for (const row of occurrenceStaffRowsForOccurrence) {
+    if (isAbsentOccurrenceStaffRow(row)) roster.delete(firstLink(row.fields, "Coach"));
   }
 
   return [...roster.values()];
@@ -234,13 +249,27 @@ export interface RequesterAssignment {
  * Is `coachId` genuinely staffing this occurrence (via Session Staff or
  * current Occurrence Staff truth), and what exactly would a replacement
  * have to cancel out? null = not assigned to it at all.
+ *
+ * Staffing Absent correction (2026-09-28): a recurring coach (a Session
+ * Staff row applies on the date) who is off the resolved roster ONLY
+ * because of their own Absent row(s) still holds the slot a cover
+ * request replaces, so they are resolved as if those rows were absent -
+ * exactly the answer this function gave before the correction. A coach
+ * already replaced by a Cover row, or one with no applying Session Staff
+ * row, stays null as before.
  */
 export function resolveRequesterAssignment(ctx: StaffingContext, occ: OccurrenceRef, coachId: string): RequesterAssignment | null {
-  const entry = rosterForOccurrence(ctx, occ).find((r) => r.coachId === coachId);
-  if (!entry) return null;
   const ownSessionStaff = sessionStaffForSession(ctx, occ.sessionId).find(
     (r) => firstLink(r.fields, "Coach") === coachId && sessionStaffAppliesOnDate(r, occ.dateIso)
   );
+  let entry = rosterForOccurrence(ctx, occ).find((r) => r.coachId === coachId);
+  if (!entry && ownSessionStaff) {
+    const withoutOwnAbsence = occurrenceStaffForOccurrence(ctx, occ.id).filter(
+      (r) => !(isAbsentOccurrenceStaffRow(r) && firstLink(r.fields, "Coach") === coachId)
+    );
+    entry = rosterForOccurrence(ctx, occ, withoutOwnAbsence).find((r) => r.coachId === coachId);
+  }
+  if (!entry) return null;
   const ownOccurrenceRows = occurrenceStaffForOccurrence(ctx, occ.id).filter(
     (r) => isUsableOccurrenceStaffRow(r) && firstLink(r.fields, "Coach") === coachId
   );
