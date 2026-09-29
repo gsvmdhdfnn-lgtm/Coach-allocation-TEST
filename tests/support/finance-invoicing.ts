@@ -154,8 +154,8 @@ export interface Claim {
 // Eligible work for one client + period (consumes F4 resolutions)
 // ---------------------------------------------------------------------
 
-/** Outcomes that mean the setup must be fixed before this client's total can be trusted. */
-const SETUP_OUTCOMES: readonly Outcome[] = ["configuration_error", "missing_commercial_terms", "finance_service_not_found", "missing_finance_service"];
+/** Outcomes that mean the stored setup is inconsistent and must be corrected before this client's total can be trusted. */
+const SETUP_OUTCOMES: readonly Outcome[] = ["configuration_error", "finance_service_not_found", "missing_finance_service"];
 /** not_eligible statuses that may still become billable later (not a blocker; a warning). */
 const PENDING_STATUSES: readonly EligibilityStatus[] = ["awaiting_confirmation", "exception_delivery_unresolved"];
 
@@ -168,6 +168,14 @@ export interface Work {
   pending: Resolution[];
   /** Setup problems for this client's work in the period (blockers for a draft). */
   setup: Resolution[];
+  /**
+   * Delivered work of the client's services with NO commercial terms on its
+   * date (F4 missing_commercial_terms). Never priced, never a £0 line. A
+   * warning, not a blocker: F3 terms cannot be backdated, so a past date
+   * without terms can never be "fixed" - blocking on it would block every
+   * draft for the period for ever.
+   */
+  noTerms: Resolution[];
   /** Everything else, named - never money (not billable, cancelled, postponed, not delivered yet, inactive, deferred). */
   other: Resolution[];
 }
@@ -181,13 +189,14 @@ const byDate = (a: Resolution, b: Resolution) => `${a.occurrence.date} ${a.occur
  * line in `claims` (all drafts, this one included).
  */
 export function classifyWork(rs: readonly Resolution[], claims: readonly Claim[]): Work {
-  const w: Work = { available: [], claimed: [], pending: [], setup: [], other: [] };
+  const w: Work = { available: [], claimed: [], pending: [], setup: [], noTerms: [], other: [] };
   for (const r of [...rs].sort(byDate)) {
     if (r.outcome === "eligible" && r.expected && r.terms && r.terms.payer === "client" && r.quantity && r.unitAmount && r.service) {
       const claim = claims.find((c) => c.occurrenceId === r.occurrence.occurrenceId);
       if (claim) w.claimed.push({ resolution: r, claim });
       else w.available.push(r);
     } else if (SETUP_OUTCOMES.includes(r.outcome)) w.setup.push(r);
+    else if (r.outcome === "missing_commercial_terms") w.noTerms.push(r);
     else if (r.outcome === "not_eligible" && r.eligibility.status && PENDING_STATUSES.includes(r.eligibility.status)) w.pending.push(r);
     else w.other.push(r);
   }
@@ -484,6 +493,13 @@ export function reviewDraft(input: { draft: Draft; lines: readonly Line[]; clien
   if (ov.length) w({ code: "billing_overrides", message: `${ov.length} line(s) use a Management billing override (quantity or amount)`, lineIds: ov.map((l) => l.lineId) });
   const zero = included.filter((l) => l.grossMinor === 0);
   if (zero.length) w({ code: "zero_value_lines", message: `${zero.length} included line(s) are worth £0.00`, lineIds: zero.map((l) => l.lineId) });
+  if (work.noTerms.length) {
+    w({
+      code: "work_without_terms",
+      message: `${work.noTerms.length} occurrence(s) of this client's services in the period have no commercial terms on their date, so they are not on this invoice (${work.noTerms.slice(0, 3).map((r) => r.occurrence.date).join(", ")}${work.noTerms.length > 3 ? ", ..." : ""})`,
+      occurrenceIds: work.noTerms.map((r) => r.occurrence.occurrenceId),
+    });
+  }
   if (work.pending.length) w({ code: "unconfirmed_work", message: `${work.pending.length} delivered occurrence(s) in the period are not confirmed yet and are not on this invoice`, occurrenceIds: work.pending.map((r) => r.occurrence.occurrenceId) });
   const onDraft = new Set(lines.filter((l) => l.status === "included" || l.status === "excluded").map((l) => l.occurrenceId));
   const fresh = work.available.filter((r) => !onDraft.has(r.occurrence.occurrenceId));

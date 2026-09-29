@@ -322,9 +322,12 @@ async function main() {
     terms.fields["Effective From"] = "2026-09-20";
     const brk = addOcc(S.breakfast, "2026-09-10");
     const e2 = (await elig(ids.parkside)).body;
-    ck("EL9. Missing commercial terms on the date is a setup problem, never a £0 amount", e2.setupProblems.some((x: any) => x.occurrenceId === brk && x.outcome === "missing_commercial_terms" && x.value === null) && !e2.available.some((x: any) => x.occurrenceId === brk));
+    ck("EL9. Missing commercial terms on the date is named (withoutTerms), never a £0 amount and never available", e2.withoutTerms.some((x: any) => x.occurrenceId === brk && x.outcome === "missing_commercial_terms" && x.value === null) && !e2.available.some((x: any) => x.occurrenceId === brk) && e2.summary.withoutTerms === 1);
     const d = await create(ids.parkside);
-    ck("EL10. The draft has lines only for available work; its review blocks on the unresolved setup", d.httpStatus === 201 && d.body.lines.length === 3 && d.body.lines.every((l: any) => Number(l.gross) > 0) && d.body.review.blockers.some((b: any) => b.code === "unresolved_configuration"));
+    ck("EL10. The draft has lines only for available work; work without terms is a warning (terms cannot be backdated), not a blocker", d.httpStatus === 201 && d.body.lines.length === 3 && d.body.lines.every((l: any) => Number(l.gross) > 0) && d.body.review.warnings.some((w: any) => w.code === "work_without_terms" && w.occurrenceIds.includes(brk)) && !d.body.review.blockers.some((x: any) => x.code === "unresolved_configuration"));
+    const bad = addOcc(S.ppa, "2026-09-25", { status: "Rescheduled?" });
+    const r2 = (await read(d.body.draft.draftId)).body;
+    ck("EL11. A genuine configuration error in the client's work for the period blocks the draft (unresolved_configuration)", r2.review.blockers.some((x: any) => x.code === "unresolved_configuration" && x.occurrenceIds.includes(bad)) && r2.review.readyForIssue === false);
   }
 
   // ===== BM. Billing method (F3 addition) =====
