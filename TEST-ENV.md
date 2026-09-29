@@ -13886,3 +13886,277 @@ F3-retained records were not touched.
   fixture (FIN3.11). It gives F4 a real ended-then-reactivated service with a
   three-segment price history.
 
+
+## Finance Foundation — F4 (occurrence billing resolution + expected billable value) — TEST only — 2026-09-29
+
+**Scope.** For one Session Occurrence, F4 answers: which commercial setup
+applies on its date, is it eligible for billing, what quantity, and what is the
+**expected billable value** (net / VAT / gross), with a trace of where every
+figure came from. The work is only in the TEST repo, TEST Airtable
+(`appQktredAuGa1X7e`) and TEST Supabase (`dkqubldmfyeuudecxmvh`). Production
+Airtable, production Supabase, production Sessions, production Clients/Billing
+Rules, Google Sheets, Stripe, Xero and legacy Financials were not touched.
+
+F4 creates **no invoices** (F5), no payments, credits, Coach costs or cash
+flow, and nothing it returns is revenue received. "Already invoiced" is F5's
+concern.
+
+**Ownership (locked).** Schedule owns the Session, the Occurrence and its
+status / confirmation; F4 only **reads** them and never writes a Schedule
+record. Finance owns the Service, its commercial terms, its lifecycle, billing
+exceptions and the expected value. F3 terms are never overwritten by F4.
+
+### FIN4.1 Pre-implementation audit (findings)
+
+- **Repo:** branch `foundation/test-base-isolation`, HEAD `5524025` = origin,
+  clean tree. `finance` v6 deployed.
+- **F3 data:** 1 client, 4 services (PPA £50 + VAT → £55 from 1 Nov; After-school
+  £9 × 18 no VAT; Holiday camp parent-paid; Breakfast club £40 → £45 → £50,
+  ended and reactivated on 29 Sep). 21 audit events.
+- **`Sessions.Finance Service ID`** (`fldciYOlVZ9yVDf59`, text) exists; no TEST
+  Session had one set (TEST-A / TEST-B are Parent Bookable).
+- **Session Occurrences** (`tblIUwuIpnnlciNNi`): Occurrence ID (Schedule's stable
+  `{sessionRec}:{date}` key, `…:R:{origin}` for replacements), Date, Start / End
+  Date & Time, Status (Scheduled / Completed / Cancelled / Postponed),
+  Confirmation State (Awaiting Confirmation / Confirmed / Exception Recorded),
+  Exception Reason, Schedule Change State, Session link. **Neither Sessions nor
+  Occurrences carry an Organisation link** (TEST is one organisation).
+- **Schedule semantics:** nothing in TEST writes Completed, Confirmation State or
+  Register State; the Slice 6 freeze rule treats a past Scheduled occurrence as
+  having happened. Needs Attention ATT-006 ("Confirm Session") is Planned only.
+- **Occurrence Financial Outcomes:** empty in TEST; F4 does not use it (it is a
+  Schedule/Coach cancellation-cost record, not a billing decision).
+- **Player Session Links / Parent Hub memberships:** not used for quantity (the
+  brief forbids it). **Player Attendance** exists only in production — not used.
+- **Lifecycle history question:** the audit trail holds *decision timestamps*
+  (e.g. ended at 19:12, reactivated at 19:13), not *business dates*. It cannot
+  deterministically answer "was this Service operating on date X" (a Service
+  ended today may have stopped last week; two changes can land in one day), and
+  the brief forbids using it as the operational store. → The smallest proper
+  model was added (FIN4.2). **No product decision was needed**: the shape is the
+  already-locked "changes apply from a chosen date onward; completed history
+  retains the values used" rule, applied to the lifecycle exactly as F3 applies
+  it to terms.
+
+### FIN4.2 Dated service lifecycle (F3 extension, `finance-lifecycle.ts`, pure)
+
+- **Table `Finance Service Lifecycle`** (`tbl7i0aOOJE0GoZet`): Lifecycle ID
+  (`FSL-` + 12 hex), Organisation, Service, Status (Active / Paused / Ended),
+  Effective From (blank = from the beginning), Effective Until, Superseded By,
+  Reason, Created By User ID, Created At.
+- **Rules (same as F3 terms):**
+  - a status change applies from `effectiveFrom` (today or later; default today)
+    — never backdated (409 `backdated_change_not_allowed`);
+  - the current period is closed the day before and a new one opened;
+  - a change dated the same day as a not-yet-started (or starting-today) period
+    supersedes it; the superseded row is kept;
+  - a change before an already-scheduled one → 409
+    `lifecycle_change_before_scheduled_change`;
+  - periods must be contiguous, non-overlapping, only the first open at the
+    start, only the latest open at the end — otherwise the organisation's
+    commercial data is invalid (409), never guessed;
+  - **only Active is commercially operating**; Paused and Ended are not.
+- **The current status is the period covering today.** The service row's Status
+  cell is only a convenience copy of today's status at the last write and is
+  never read back as the truth (test LC8).
+- **API (F3 contract extended, not changed):** `POST /services/{FSV}` accepts an
+  optional top-level `effectiveFrom` with a status change. Service bodies gain a
+  `lifecycle: { current, history[] }` block; `?on=` reads gain
+  `onDate.serviceStatus`. New services get an initial Active period.
+- **Backfill (TEST, 6 rows):** one Active-from-the-beginning period for each of
+  the 4 services; the Breakfast club's 29 Sep end + same-day reactivation is
+  recorded faithfully as Active (→ 2026-09-28), Ended from 2026-09-29
+  **superseded** by Active from 2026-09-29. Each backfill row's Reason cites its
+  source audit event id.
+- **Known limitation (documented, not a decision):** the F3 "ended service is
+  frozen except reactivation" guard uses today's status, so a service Ended
+  today with a reactivation already scheduled for a future date still refuses
+  terms changes until that date.
+
+### FIN4.3 Eligibility (encodes Schedule semantics; nothing invented)
+
+| Schedule facts | Eligibility |
+|---|---|
+| Status Cancelled | `cancelled` — not eligible |
+| Status Postponed | `postponed` — not eligible (its replacement is its own occurrence) |
+| Scheduled and end (or start) time still in the future; no times and date ≥ today | `not_yet_delivered` |
+| Delivered (Completed, or Scheduled whose time has passed) + Confirmation State `Exception Recorded` | `schedule_exception_recorded` — never silently billed |
+| Delivered + Confirmation blank / Awaiting Confirmation | `awaiting_confirmation` |
+| Delivered + `Confirmed` | `eligible` |
+| Unknown Status / Confirmation value | `configuration_error` |
+
+Billable = no active Finance "not billable" decision. Standard eligibility =
+delivered + confirmed + billable ("not already invoiced" is F5).
+
+### FIN4.4 Resolution and result contract (`finance-billing.ts`, pure)
+
+Precedence (first match wins): unreadable Schedule rows → `configuration_error`;
+no Finance Service ID on the Session → **`missing_finance_service`**;
+malformed ID → `configuration_error`; ID not in the caller's organisation →
+`finance_service_not_found`; an active override recorded against another
+service → `configuration_error`; lifecycle on the date Paused/Ended →
+**`commercially_inactive`**; no terms on the date → `missing_commercial_terms`;
+overlapping/invalid terms → `configuration_error`; payer Parents →
+`deferred_revenue_model` (`parent_paid`); subscription → deferred
+(`subscription`); other → deferred (`other_charge`); duplicate active override
+kind → `configuration_error`; then value; active not-billable →
+**`not_billable`** (reason kept); schedule not eligible → `not_eligible`; else
+**`eligible`**.
+
+- **Value:** fixed per session = amount × 1; per player = amount × quantity
+  (terms default, or the occurrence quantity override). Unit amount = terms
+  amount or an occurrence amount override. VAT via the F2 kernel
+  (`calculateVat`, integer pence). The Session is never asked for a quantity
+  and Parent Hub memberships are never counted. Nothing is guessed from
+  Commercial Model, Billing Model, Finance Key, the Session name or the Sheet.
+- **Output** (`finance-billing-v1`): `outcome` + `outcomeLabel` + `detail`,
+  `eligibleForInvoicing`, `service` (id, name, client, `statusOnDate`,
+  `lifecycleId`), `commercialTerms` (id, dates, payer, charge type, summary),
+  `eligibility` (status, delivered, confirmed, billable, label), `quantity`
+  (value, source, override id, reason), `unitAmount`, `expected` (currency,
+  VAT treatment, rate, amount, net, VAT, gross, calculation text),
+  **`billableValue` (= `expected` only when eligible, else null)**, `deferral`,
+  `overrides` (active and historical), `trace[]` (plain-language lines),
+  `resolvedOn`. A non-success outcome never carries a £0 billable value;
+  `expected` stays visible on not-eligible / not-billable occurrences so the
+  figure is traceable.
+
+### FIN4.5 Occurrence billing overrides (Finance-owned)
+
+- **Table `Finance Occurrence Billing Overrides`** (`tblMlkItRynTAKInB`):
+  Override ID (`FOB-` + 12 hex), Organisation, Occurrence ID, Occurrence Date,
+  Session ID, Finance Service ID, Commercial Terms ID (in force when made), Kind
+  (Not billable / Quantity / Amount), Quantity, Amount (Minor Units), Reason
+  (required), Created By User ID, Created At, Removed At, Removed By User ID,
+  Removal Reason, Superseded By. Referenced by Schedule's Occurrence ID only —
+  no link field is added to Session Occurrences.
+- **Rules:** one active override per kind per occurrence; a second one → 409
+  `billing_override_exists`; replacing one must name it (`supersedes`), and the
+  old row is kept, closed and marked superseded; the identical active decision
+  → 200 `changed:false`; quantity only on per-player terms, amount only on
+  fixed / per-player terms, otherwise 409 `billing_override_not_applicable`;
+  an occurrence without a Finance Service cannot take an override. Rows are only
+  created or closed (never edited otherwise, never deleted except as the
+  compensating undo of the same request). Every stored row is validated on read
+  (invalid → 409 `billing_override_data_invalid`).
+
+### FIN4.6 API — TEST Edge Function `finance` v7 (`verify_jwt: true`)
+
+| Route | Access | Purpose |
+|---|---|---|
+| `GET /occurrences/{Occurrence ID}/billing` | View / Manage | resolve one occurrence |
+| `GET /sessions/{Session ID}/billing?from=&to=` | View / Manage | resolve a Session's occurrences (≤ 93 days) + summary (outcome counts, eligible net/VAT/gross) |
+| `POST /occurrences/{Occurrence ID}/billing-overrides` | Manage | `{ override: { kind, quantity? \| amount? }, reason, supersedes? }` |
+| `POST /occurrences/{Occurrence ID}/billing-overrides/{FOB}/remove` | Manage | `{ reason }` |
+
+F1–F3 routes and contracts are unchanged (F3 service bodies only gain the
+`lifecycle` block). Same order as F3: 404/405 → 401 → 403
+`management_required` → 400 query/body (tenant keys → `tenant_param_rejected`)
+→ `authorizeFinance()` (View resolves, Manage writes; module off → 403). No
+Airtable record ids are returned. No invoice routes.
+
+**Writes** use the F3 discipline: the shared per-organisation
+`commercial:<org>` lock (so terms, lifecycle and billing exceptions never
+interleave), load + resolve, plan, Airtable writes with registered undo, ONE
+audit insert; failure → undo + 503, undo failure → 500
+`finance_billing_unaudited`. Rejected and no-op requests write no event.
+
+**Read pattern (constant, never one query per occurrence):** F1 auth (grants +
+2 config tables) + the F3 snapshot (4 tables in parallel) + for one occurrence:
+1 filtered occurrence read, then the Session (by record id) and its overrides
+in parallel; for a range: 1 Session read by Session ID, 1 filtered occurrence
+read (`ARRAYJOIN({Session})` + date window), 1 override read per 40
+occurrences. Formulas only narrow; every row is re-checked in code (exact id,
+session link, date, organisation). Test RG3 proves 50 occurrences cost the same
+reads as 10.
+
+**Audit events** (F2 `finance_audit_events`, entity
+`finance_occurrence_billing_override`, contract `finance-billing-v1`):
+`finance_occurrence_billing_override.created` (before = the superseded decision
+or null) and `.removed`; context carries occurrence id/date, session, service,
+terms. Lifecycle changes reuse `finance_client_service.updated` with a
+`lifecycleChange` context (kind, dates, closed/superseded period).
+
+**Tenancy note.** Tenancy is enforced through Finance data: the Finance Service,
+terms, lifecycle and overrides are only ever read inside the caller's
+organisation (another organisation's service → `finance_service_not_found`).
+Schedule tables have no organisation link yet, so the occurrence facts
+themselves are single-organisation TEST data.
+
+### FIN4.7 Live TEST verification (2026-09-29, `finance` v7, real HTTP via `pg_net`)
+
+Deploy byte-verified: **18/18 files identical** to the repo. Probes as
+`manager@test.invalid` (Manage), `coach.a@` and `parent.a@test.invalid`.
+
+| # | Proof | Result |
+|---|---|---|
+| 1 | PPA 10 Sep, confirmed | `eligible`, £50 × 1 + VAT → net 50.00 / VAT 10.00 / gross 60.00, terms `FCT-E45386DF9669` |
+| 2 | After-school 10 Sep, confirmed | `eligible`, £9 × 18 = 162.00 (no VAT) |
+| 3 | Quantity 20 on After-school 17 Sep | 201 `FOB-7A77B8025BDD`, £9 × 20 = 180.00; 24 Sep still £9 × 18 = 162.00 |
+| 4 | PPA 15 Oct / 5 Nov | £50 + VAT (`FCT-E453…`, until 31 Oct) / £55 + VAT = 66.00 gross (`FCT-46A7…`) |
+| 5 | Not billable on PPA 17 Sep | 201 `FOB-FE80A969B0D3`, `not_billable`, reason kept, `billableValue` null, expected 60.00 still traceable |
+| 6 | PPA 24 Sep unconfirmed / 22 Sep Cancelled | `not_eligible` `awaiting_confirmation` / `cancelled`; no billable value |
+| 7 | TEST-A 26 Oct (no Finance Service ID) | `missing_finance_service` |
+| 8 | Breakfast: Ended from 1 Nov, Active from 1 Dec (two dated changes) → 24 Sep / 20 Oct / 12 Nov / 3 Dec | £40 + VAT eligible / £45 expected / **`commercially_inactive` (ended)** / £50 expected, each with its own lifecycle period |
+| 9 | View grant: resolve / write | 200 `access:view` (180.00) / 403 `finance_manage_required` |
+| 10 | Manage (restored): amount override £10 on After-school 24 Sep, then removed | 201 (£10 × 18 = 180.00) / 200 removed, occurrence back to £9 × 18 |
+| 11 | Module off: resolve / range / write; then restored | 403 `finance_module_disabled` ×3; restored to Enabled |
+| 12 | Tenant key in query / body; Coach; Parent; no auth | 400 `tenant_param_rejected` ×2; 403 `management_required` ×2; 401 |
+| 13 | Audit | 21 → **27**: 3 override created, 1 removed, 2 lifecycle updates. Duplicate (409), View write, module-off write and tenant attempts wrote none |
+| 14 | Needs Attention `/cases` before and after | 200 **Clear, 0 cases** both times |
+
+Also: Camp 17 Sep → `missing_commercial_terms` (its terms start 1 Oct); Camp
+5 Oct → `deferred_revenue_model` `parent_paid`; a second quantity override →
+409 `billing_override_exists`; Session range TEST-F4-PPA 1 Sep–30 Nov → 6
+occurrences, 1 eligible (60.00 gross), 1 not billable, 4 not eligible; a
+94-day range → 400.
+
+### FIN4.8 Resting TEST data (documented fixtures, kept for F5)
+
+- **Sessions** (Session Lifecycle Status **Inactive**, so the generator and
+  daily top-up ignore them): `TEST-F4-PPA` → `FSV-D2E140F8755D`,
+  `TEST-F4-AFTER` → `FSV-B2A5C5275835`, `TEST-F4-BREAKFAST` →
+  `FSV-681F9A8704C8`, `TEST-F4-CAMP` → `FSV-6D4E564C6E9E`.
+- **15 Session Occurrences** named `TEST F4 …` on those Sessions (PPA 10/17/22/24
+  Sep, 15 Oct, 5 Nov; After-school 10/17/24 Sep; Breakfast 24 Sep, 20 Oct,
+  12 Nov, 3 Dec; Camp 17 Sep, 5 Oct), Confirmation State set directly on the
+  fixtures (nothing in TEST writes it yet).
+- **Overrides:** `FOB-7A77B8025BDD` (quantity 20, active), `FOB-FE80A969B0D3`
+  (not billable, active), `FOB-63BA87355515` (amount, removed — history).
+- **Lifecycle:** 6 backfill rows + 2 Breakfast periods (Ended 1–30 Nov, Active
+  from 1 Dec).
+- **Baseline:** `module_finance` ON; exactly one active grant (Manage) for
+  `manager@test.invalid` (the View probe grant revoked); no write locks; the
+  temporary `f2probe` schema dropped; TEST user passwords were reset for the
+  probe (TEST only).
+
+### FIN4.9 Tests and regression
+
+- **`tests/support/finance-billing.test.ts` — 91/91** (shim
+  `tests/e2e/financebillingtest.js`): LC lifecycle (9), FX value (5), HI
+  history (3), EL eligibility (8), MC missing/broken config (9), LG lifecycle
+  gap (3), DF deferred (2), OV overrides (19), AC access + tenant (8), AU audit
+  (8), RG session range (6), RT routes (2), Z drift/purity (9). The mock ignores
+  `filterByFormula` on purpose, so every in-code re-check is exercised.
+- **Mutations: 32/32 caught** (inactive billed, today's terms, deferrals off,
+  missing service as eligible, unconfirmed/cancelled/exception billed, future
+  delivered, not-billable ignored, quantity override ignored, duplicates
+  accepted, silent replace, no-op rewritten, quantity on fixed, foreign-service
+  override, quantity ignored in value, billable value on non-eligible, tenant
+  key accepted, unbounded range, backdated lifecycle, lifecycle gap,
+  multi-session occurrence, foreign-org override, invalid stored quantity,
+  range/override rows not re-checked, View can write, audit failure not rolled
+  back, lock never released, non-eligible summed, re-removal writes).
+- **F3 suite** updated for the lifecycle (mock table, RE6 now allows the dated
+  lifecycle writes): **100/100**; F3 correction mutations 23/23.
+- **Unchanged:** F1 56/56, F2 kernel 47/47, F2 Settings 92/92, Occurrence
+  Financial Outcomes, Schedule and Needs Attention suites all green.
+- **Full suite:** `npm test` → **71/71 files, 2,522 PASS / 0 FAIL**.
+
+### FIN4.10 Deferred (later Finance slices — not started)
+
+- F5 invoice drafting (and "already invoiced" as an eligibility input).
+- Parent-paid revenue, subscription periods and "other" charges.
+- A Schedule "Confirm Session" write path (Confirmation State is read, never
+  written, by Finance).
+- Organisation links on Schedule tables (multi-tenant Schedule data).

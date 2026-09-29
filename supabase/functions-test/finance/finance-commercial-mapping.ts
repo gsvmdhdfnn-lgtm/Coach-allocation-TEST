@@ -9,9 +9,14 @@
  * that does not validate, links the wrong number of organisations/parents,
  * or duplicates a public id makes the organisation's commercial data
  * INVALID (409) - it is never skipped or guessed.
+ *
+ * F4 adds "Finance Service Lifecycle" (dated Active / Paused / Ended periods,
+ * see finance-lifecycle.ts). Every service must have a valid lifecycle; a
+ * service without one is invalid data, never "assumed Active".
  */
 import { isIsoDate } from "./finance-effective-dating.ts";
 import { isRateBasisPoints, isVatTreatment, type VatTreatment } from "./finance-money.ts";
+import { type LifecyclePeriod, checkLifecycle } from "./finance-lifecycle.ts";
 import {
   type ChargeType,
   type Client,
@@ -27,7 +32,7 @@ import {
   MAX_UNIT_AMOUNT_MINOR,
 } from "./finance-commercial.ts";
 
-export const TABLES = { clients: "Finance Clients", services: "Finance Client Services", terms: "Finance Commercial Terms" } as const;
+export const TABLES = { clients: "Finance Clients", services: "Finance Client Services", terms: "Finance Commercial Terms", lifecycle: "Finance Service Lifecycle" } as const;
 
 export const F = {
   org: "Organisation",
@@ -58,6 +63,17 @@ export const F = {
     qty: "Default Billable Quantity",
     freq: "Subscription Frequency",
     other: "Other Description",
+    createdBy: "Created By User ID",
+    createdAt: "Created At",
+  },
+  lifecycle: {
+    id: "Lifecycle ID",
+    service: "Service",
+    status: "Status",
+    from: "Effective From",
+    until: "Effective Until",
+    supersededBy: "Superseded By",
+    reason: "Reason",
     createdBy: "Created By User ID",
     createdAt: "Created At",
   },
@@ -182,10 +198,32 @@ export function termsFromRow(r: Row): Parsed<Terms> {
   };
 }
 
+export function lifecycleFromRow(r: Row): Parsed<LifecyclePeriod> {
+  const f = r.fields ?? {};
+  const l = F.lifecycle;
+  const id = str(f[l.id]);
+  const parent = links(f[l.service]);
+  const status = reverse(SERVICE_STATUS, f[l.status]);
+  const from = f[l.from] ?? null;
+  const until = f[l.until] ?? null;
+  const supersededBy = str(f[l.supersededBy]);
+  if (!id || !ID_PATTERNS.lifecycle.test(id)) return { ok: false, problem: `lifecycle row ${r.id}: bad Lifecycle ID` };
+  if (parent.length !== 1) return { ok: false, problem: `lifecycle ${id}: must link exactly one service` };
+  if (!status) return { ok: false, problem: `lifecycle ${id}: invalid status` };
+  if ((from !== null && !isIsoDate(from)) || (until !== null && !isIsoDate(until))) return { ok: false, problem: `lifecycle ${id}: invalid effective dates` };
+  if (supersededBy !== null && !ID_PATTERNS.lifecycle.test(supersededBy)) return { ok: false, problem: `lifecycle ${id}: invalid Superseded By` };
+  return {
+    ok: true,
+    parent: parent[0],
+    stored: { recordId: r.id, value: { lifecycleId: id, serviceId: "", status, effectiveFrom: from, effectiveUntil: until, supersededBy, reason: str(f[l.reason]) } },
+  };
+}
+
 export interface World {
   clients: Stored<Client>[];
   services: Stored<Service>[];
   terms: Stored<Terms>[];
+  lifecycle: Stored<LifecyclePeriod>[];
 }
 
 /**
@@ -194,12 +232,14 @@ export interface World {
  * record id inside this organisation's snapshot only, so a link into
  * another organisation's rows can never resolve.
  */
-export function buildWorld(raw: { clients: Row[]; services: Row[]; terms: Row[] }): { ok: true; world: World } | { ok: false; error: string } {
+export function buildWorld(raw: { clients: Row[]; services: Row[]; terms: Row[]; lifecycle?: Row[] }): { ok: true; world: World } | { ok: false; error: string } {
   const problems: string[] = [];
+  const lifecycleRows = raw.lifecycle ?? [];
   const multiOrg = (rows: Row[], what: string) => rows.filter((r) => links(r.fields?.[F.org]).length !== 1).forEach((r) => problems.push(`${what} row ${r.id} is linked to more than one organisation`));
   multiOrg(raw.clients, "client");
   multiOrg(raw.services, "service");
   multiOrg(raw.terms, "terms");
+  multiOrg(lifecycleRows, "lifecycle");
   const clients: Stored<Client>[] = [];
   for (const r of raw.clients) {
     const p = clientFromRow(r);
@@ -230,10 +270,25 @@ export function buildWorld(raw: { clients: Row[]; services: Row[]; terms: Row[] 
     if (!sid) problems.push(`terms ${p.stored.value.termsId} links a service outside this organisation`);
     else terms.push({ recordId: p.stored.recordId, value: { ...p.stored.value, serviceId: sid } });
   }
+  const lifecycle: Stored<LifecyclePeriod>[] = [];
+  for (const r of lifecycleRows) {
+    const p = lifecycleFromRow(r);
+    if (!p.ok) {
+      problems.push(p.problem);
+      continue;
+    }
+    const sid = serviceByRecord.get(p.parent as string);
+    if (!sid) problems.push(`lifecycle ${p.stored.value.lifecycleId} links a service outside this organisation`);
+    else lifecycle.push({ recordId: p.stored.recordId, value: { ...p.stored.value, serviceId: sid } });
+  }
+  for (const s of services) {
+    const h = checkLifecycle(lifecycle.filter((l) => l.value.serviceId === s.value.serviceId).map((l) => l.value));
+    if (!h.ok) problems.push(`service ${s.value.serviceId}: ${h.error}`);
+  }
   const dupes = (ids: string[]) => ids.filter((x, i) => ids.indexOf(x) !== i);
-  for (const d of [...dupes(clients.map((c) => c.value.clientId)), ...dupes(services.map((s) => s.value.serviceId)), ...dupes(terms.map((t) => t.value.termsId))]) problems.push(`duplicate id ${d}`);
+  for (const d of [...dupes(clients.map((c) => c.value.clientId)), ...dupes(services.map((s) => s.value.serviceId)), ...dupes(terms.map((t) => t.value.termsId)), ...dupes(lifecycle.map((l) => l.value.lifecycleId))]) problems.push(`duplicate id ${d}`);
   if (problems.length) return { ok: false, error: `Stored commercial setup is not valid (${problems.slice(0, 3).join("; ")}${problems.length > 3 ? `; +${problems.length - 3} more` : ""}) - it must be corrected before use` };
-  return { ok: true, world: { clients, services, terms } };
+  return { ok: true, world: { clients, services, terms, lifecycle } };
 }
 
 // ----- domain -> Airtable fields -----
@@ -298,4 +353,28 @@ export function termsCreateFields(t: Terms, create: { orgRecordId: string; servi
 /** The ONLY edit ever made to an existing terms row: setting (or, as compensation, clearing) its Effective Until. */
 export function termsUntilField(until: string | null): Record<string, unknown> {
   return { [F.terms.until]: until };
+}
+
+export function lifecycleCreateFields(p: LifecyclePeriod, create: { orgRecordId: string; serviceRecordId: string; userId: string; at: string }): Record<string, unknown> {
+  const x = F.lifecycle;
+  return {
+    [F.org]: [create.orgRecordId],
+    [x.id]: p.lifecycleId,
+    [x.service]: [create.serviceRecordId],
+    [x.status]: SERVICE_STATUS[p.status],
+    [x.from]: p.effectiveFrom,
+    [x.until]: p.effectiveUntil,
+    [x.reason]: p.reason,
+    [x.createdBy]: create.userId,
+    [x.createdAt]: create.at,
+  };
+}
+
+/** The only edits ever made to an existing lifecycle row: closing it (Effective Until) or marking it superseded - both reversible only as compensation. */
+export function lifecycleUntilField(until: string | null): Record<string, unknown> {
+  return { [F.lifecycle.until]: until };
+}
+
+export function lifecycleSupersededField(by: string | null): Record<string, unknown> {
+  return { [F.lifecycle.supersededBy]: by };
 }

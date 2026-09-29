@@ -1,6 +1,6 @@
 /**
- * Finance - access boundary + core API (Finance Foundation F1-F3; see
- * TEST-ENV.md "Finance Foundation - F1" / "- F2" / "- F3"). Thin HTTP
+ * Finance - access boundary + core API (Finance Foundation F1-F4; see
+ * TEST-ENV.md "Finance Foundation - F1" / "- F2" / "- F3" / "- F4"). Thin HTTP
  * wrapper, same convention as the Coaches / Needs Attention functions:
  * policy lives in finance-access.ts / finance-settings.ts /
  * finance-money.ts / finance-commercial.ts (pure), reads and writes in the
@@ -24,6 +24,13 @@
  *                                               POST /services/{FSV-id}/commercial/changes  (apply from a date)
  *   GET  /commercial/options                    (active services + summaries, for Session creation)
  *
+ * F4 occurrence billing resolution (Finance read = GET, Finance manage = POST):
+ *   GET  /occurrences/{Occurrence ID}/billing                       resolve one occurrence
+ *   GET  /sessions/{Session ID}/billing?from=YYYY-MM-DD&to=YYYY-MM-DD  resolve a Session's occurrences (<= 93 days)
+ *   POST /occurrences/{Occurrence ID}/billing-overrides             { override: { kind, quantity? | amount? }, reason, supersedes? }
+ *   POST /occurrences/{Occurrence ID}/billing-overrides/{FOB-id}/remove   { reason }
+ *   Expected / billable value only - never revenue received, never an invoice.
+ *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
  * tenant-looking query parameter or body key is rejected with 400, never
@@ -45,6 +52,8 @@ import {
   parseTermsChange,
 } from "./finance-commercial.ts";
 import { type CommercialDeps, type WriteInput, readCommercial, writeCommercial } from "./finance-commercial-orchestrator.ts";
+import { checkRangeQuery, matchBillingRoute, parseOverrideCreate, parseOverrideRemove } from "./finance-billing.ts";
+import { readOccurrenceBilling, readSessionBilling, writeOverride } from "./finance-billing-orchestrator.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
 const AIRTABLE_BASE_ID = Deno.env.get("AIRTABLE_BASE_ID")!;
@@ -156,7 +165,7 @@ async function handleCommercial(req: Request, url: URL, match: NonNullable<Retur
   } else if (r.name === "service.update") {
     const p = parseServiceUpdate(raw, isTenantKey);
     if (!p.ok) return commercialResponse({ status: "error", ...p });
-    input = { route: r.name, serviceId: r.params.serviceId, patch: p.patch, reason: p.reason };
+    input = { route: r.name, serviceId: r.params.serviceId, patch: p.patch, effectiveFrom: p.effectiveFrom, reason: p.reason };
   } else if (r.name === "terms.create") {
     const p = parseInitialTerms(raw, isTenantKey);
     if (!p.ok) return commercialResponse({ status: "error", ...p });
@@ -171,6 +180,42 @@ async function handleCommercial(req: Request, url: URL, match: NonNullable<Retur
   return commercialResponse(await writeCommercial(deps, caller, input));
 }
 
+/** F4 routes: same order as F3 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleBilling(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchBillingRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  if (r.name === "session.billing") {
+    const q = checkRangeQuery(url.searchParams, isTenantKey);
+    if (!q.ok) return commercialResponse({ status: "error", ...q });
+    return commercialResponse(await readSessionBilling(deps, caller, r.params.sessionId, q.from, q.to));
+  }
+  const query = checkCommercialQuery(url.searchParams, [], isTenantKey);
+  if (!query.ok) return jsonResponse({ error: query.error, code: query.code, ...(query.fields ? { fields: query.fields } : {}) }, 400);
+  if (r.name === "occurrence.billing") return commercialResponse(await readOccurrenceBilling(deps, caller, r.params.occurrenceId));
+  const raw = await req.text();
+  if (r.name === "override.create") {
+    const p = parseOverrideCreate(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await writeOverride(deps, caller, { route: "override.create", occurrenceId: r.params.occurrenceId, req: p.req }));
+  }
+  const p = parseOverrideRemove(raw, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  return commercialResponse(await writeOverride(deps, caller, { route: "override.remove", occurrenceId: r.params.occurrenceId, overrideId: r.params.overrideId, reason: p.reason }));
+}
+
+/** Path segments URL-decoded (an Occurrence ID contains ":"); null when a segment is not valid percent-encoding. */
+function decodedPath(route: string): string | null {
+  try {
+    return route.split("/").map((s) => decodeURIComponent(s)).join("/");
+  } catch {
+    return null;
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -180,6 +225,11 @@ Deno.serve(async (req: Request) => {
   const route = url.pathname.replace(/^.*\/finance\/?/, "").replace(/\/$/, "");
 
   try {
+    const decoded = decodedPath(route);
+    if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
+    const billing = matchBillingRoute(decoded, req.method);
+    if (billing) return await handleBilling(req, url, billing);
+
     const commercial = matchCommercialRoute(route, req.method);
     if (commercial) return await handleCommercial(req, url, commercial);
 

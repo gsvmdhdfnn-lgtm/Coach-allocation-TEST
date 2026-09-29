@@ -8,8 +8,9 @@
  * Finance commercial setup repository (Finance Foundation F3; see TEST-ENV.md
  * "Finance Foundation - F3").
  *
- *   - Airtable (transitional operational storage, TEST only): the three
- *     tables in TABLES (finance-commercial-mapping.ts). Rows are listed per
+ *   - Airtable (transitional operational storage, TEST only): the four
+ *     tables in TABLES (finance-commercial-mapping.ts; the lifecycle table
+ *     since F4). Rows are listed per
  *     organisation (the row's Organisation link must include the caller's
  *     Organisation & Branding record); create and patch only; delete ONLY as
  *     the compensating undo of a row created by the same request.
@@ -31,13 +32,14 @@ export const WRITE_LOCK_RELEASE_RPC = "release_finance_write_lock";
 
 export const COMMERCIAL_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000];
 
-type Table = (typeof TABLES)[keyof typeof TABLES];
+/** A Finance-owned table (F3 TABLES, or the F4 billing override table). */
+export type Table = string;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function airtableFetch(url: string, init: RequestInit): Promise<Response> {
+export async function airtableFetch(url: string, init: RequestInit): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(url, init);
     if (res.status !== 429 || attempt >= COMMERCIAL_RETRY_DELAYS_MS.length) return res;
@@ -46,10 +48,10 @@ async function airtableFetch(url: string, init: RequestInit): Promise<Response> 
   }
 }
 
-const RECORD_ID_RE = /^rec[A-Za-z0-9]{14}$/;
-const tableUrl = (c: AirtableConfig, t: Table) => `https://api.airtable.com/v0/${c.baseId}/${encodeURIComponent(t)}`;
+export const RECORD_ID_RE = /^rec[A-Za-z0-9]{14}$/;
+export const tableUrl = (c: AirtableConfig, t: Table) => `https://api.airtable.com/v0/${c.baseId}/${encodeURIComponent(t)}`;
 
-async function expectOk(res: Response, what: string): Promise<any> {
+export async function expectOk(res: Response, what: string): Promise<any> {
   if (!res.ok) throw new Error(`${what} failed: ${res.status} ${await res.text()}`);
   return res.json();
 }
@@ -72,13 +74,14 @@ export async function listForOrganisation(config: AirtableConfig, table: Table, 
   return rows;
 }
 
-export async function loadCommercialRows(config: AirtableConfig, organisationRecordId: string): Promise<{ clients: Row[]; services: Row[]; terms: Row[] }> {
-  const [clients, services, terms] = await Promise.all([
+export async function loadCommercialRows(config: AirtableConfig, organisationRecordId: string): Promise<{ clients: Row[]; services: Row[]; terms: Row[]; lifecycle: Row[] }> {
+  const [clients, services, terms, lifecycle] = await Promise.all([
     listForOrganisation(config, TABLES.clients, organisationRecordId),
     listForOrganisation(config, TABLES.services, organisationRecordId),
     listForOrganisation(config, TABLES.terms, organisationRecordId),
+    listForOrganisation(config, TABLES.lifecycle, organisationRecordId),
   ]);
-  return { clients, services, terms };
+  return { clients, services, terms, lifecycle };
 }
 
 export async function createRow(config: AirtableConfig, table: Table, fields: Record<string, unknown>): Promise<Row> {

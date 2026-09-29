@@ -14,6 +14,12 @@
  *   Any failure in 5 or 6 undoes every write of this request and returns
  *   503; if the undo itself fails the caller gets 500 (never "success").
  *   7. release the lock (always)
+ *
+ * F4: a Service's status is its dated lifecycle (finance-lifecycle.ts). The
+ * status shown and used for every rule here is the period covering today;
+ * a status change is a lifecycle change from `effectiveFrom` (today or
+ * later, default today). The stored Status cell is only a convenience copy
+ * of today's status at the last write - never read back as the truth.
  */
 import type { FinanceCaller, OrganisationContext } from "./finance-access.ts";
 import { type Deps, authorizeFinance } from "./orchestrator.ts";
@@ -58,10 +64,14 @@ import {
   clientRestoreFields,
   serviceFields,
   serviceRestoreFields,
+  lifecycleCreateFields,
+  lifecycleSupersededField,
+  lifecycleUntilField,
   termsCreateFields,
   termsUntilField,
 } from "./finance-commercial-mapping.ts";
 import { acquireWriteLock, createRow, deleteCreatedRow, insertAuditEvents, loadCommercialRows, patchRow, releaseWriteLock } from "./finance-commercial-repository.ts";
+import { type LifecyclePeriod, checkLifecycle, lifecycleOn, planLifecycleChange, publicLifecycle } from "./finance-lifecycle.ts";
 
 export interface CommercialDeps extends Deps {
   clock?: () => Date;
@@ -78,7 +88,10 @@ const orgBody = (o: OrganisationContext) => ({ organisationId: o.organisationId,
 const lockKey = (o: OrganisationContext) => `commercial:${o.organisationId}`;
 const norm = (s: string) => s.trim().toLowerCase();
 
-async function loadWorld(deps: CommercialDeps, org: OrganisationContext): Promise<{ ok: true; world: World; raw: { clients: Row[]; services: Row[]; terms: Row[] } } | Fail> {
+type RawRows = { clients: Row[]; services: Row[]; terms: Row[]; lifecycle: Row[] };
+
+/** Loads and validates the organisation's commercial data, then sets each service's status to its lifecycle period covering `today`. */
+export async function loadWorld(deps: CommercialDeps, org: OrganisationContext, today: string): Promise<{ ok: true; world: World; raw: RawRows } | Fail> {
   let raw;
   try {
     raw = await loadCommercialRows(deps.airtable, org.recordId);
@@ -88,8 +101,29 @@ async function loadWorld(deps: CommercialDeps, org: OrganisationContext): Promis
   }
   const w = buildWorld(raw);
   if (!w.ok) return fail(409, "commercial_data_invalid", w.error);
-  return { ok: true, world: w.world, raw };
+  const services = [];
+  for (const s of w.world.services) {
+    const cur = lifecycleOn(lifecycleHistory(w.world, s.value.serviceId), today);
+    if (cur.status !== "resolved") return fail(409, "commercial_data_invalid", `Service ${s.value.serviceId} has no lifecycle period covering ${today}`);
+    services.push({ recordId: s.recordId, value: { ...s.value, status: cur.period.status } });
+  }
+  return { ok: true, world: { ...w.world, services }, raw };
 }
+
+/** The applying (non-superseded) lifecycle periods of a service, sorted; validated by buildWorld. */
+export function lifecycleHistory(world: World, serviceId: string): LifecyclePeriod[] {
+  const h = checkLifecycle(world.lifecycle.filter((l) => l.value.serviceId === serviceId).map((l) => l.value));
+  return h.ok ? h.history : [];
+}
+
+const serviceBody = (s: Service, c: Client, terms: Terms[], lifecycle: LifecyclePeriod[], today: string, on?: string) => {
+  const body = publicService(s, c, terms, today, on);
+  if (on !== undefined) {
+    const lc = lifecycleOn(lifecycle, on);
+    (body.commercial as Record<string, unknown>).onDate = { ...((body.commercial as Record<string, unknown>).onDate as Record<string, unknown>), serviceStatus: lc.status === "resolved" ? lc.period.status : null };
+  }
+  return { ...body, lifecycle: publicLifecycle(lifecycle, today) };
+};
 
 async function loadSettings(deps: CommercialDeps, org: OrganisationContext): Promise<{ ok: true; settings: FinanceSettings | null } | Fail> {
   let rows;
@@ -122,10 +156,10 @@ export async function readCommercial(deps: CommercialDeps, caller: FinanceCaller
   const auth = await authorizeFinance(deps, caller, "read");
   if (auth.status !== "ok") return fail(auth.httpStatus, auth.code, auth.error);
   const org = auth.organisation;
-  const loaded = await loadWorld(deps, org);
+  const today = todayIn(org.timezone, now(deps));
+  const loaded = await loadWorld(deps, org, today);
   if (!loaded.ok) return loaded;
   const w = loaded.world;
-  const today = todayIn(org.timezone, now(deps));
   const base = { contract: COMMERCIAL_CONTRACT, organisation: orgBody(org), access: auth.access };
 
   const serviceCard = (s: Service): Record<string, unknown> | Fail => {
@@ -156,7 +190,7 @@ export async function readCommercial(deps: CommercialDeps, caller: FinanceCaller
     for (const s of w.services.filter((x) => x.value.clientId === c.value.clientId)) {
       const h = history(w, s.value.serviceId);
       if (!h.ok) return h;
-      services.push(publicService(s.value, c.value, h.terms, today));
+      services.push(serviceBody(s.value, c.value, h.terms, lifecycleHistory(w, s.value.serviceId), today));
     }
     return { status: "ok", httpStatus: 200, body: { ...base, client: publicClient(c.value), services } };
   }
@@ -167,7 +201,7 @@ export async function readCommercial(deps: CommercialDeps, caller: FinanceCaller
     const c = findClient(w, s.value.clientId) as { value: Client };
     const h = history(w, s.value.serviceId);
     if (!h.ok) return h;
-    return { status: "ok", httpStatus: 200, body: { ...base, service: publicService(s.value, c.value, h.terms, today, on) } };
+    return { status: "ok", httpStatus: 200, body: { ...base, service: serviceBody(s.value, c.value, h.terms, lifecycleHistory(w, s.value.serviceId), today, on) } };
   }
 
   if (route.name === "options") {
@@ -196,18 +230,19 @@ export async function readCommercial(deps: CommercialDeps, caller: FinanceCaller
 // Writes
 // ---------------------------------------------------------------------
 
-class Txn {
+/** Compensating transaction: every write registers its undo (also used by the F4 billing overrides). */
+export class Txn {
   private undo: { label: string; run: () => Promise<unknown> }[] = [];
   private deps: CommercialDeps;
   constructor(deps: CommercialDeps) {
     this.deps = deps;
   }
-  async create(table: (typeof TABLES)[keyof typeof TABLES], fields: Record<string, unknown>): Promise<Row> {
+  async create(table: string, fields: Record<string, unknown>): Promise<Row> {
     const row = await createRow(this.deps.airtable, table, fields);
     this.undo.push({ label: `delete ${table} ${row.id}`, run: () => deleteCreatedRow(this.deps.airtable, table, row.id) });
     return row;
   }
-  async patch(table: (typeof TABLES)[keyof typeof TABLES], recordId: string, fields: Record<string, unknown>, restore: Record<string, unknown>): Promise<Row> {
+  async patch(table: string, recordId: string, fields: Record<string, unknown>, restore: Record<string, unknown>): Promise<Row> {
     const row = await patchRow(this.deps.airtable, table, recordId, fields);
     this.undo.push({ label: `restore ${table} ${recordId}`, run: () => patchRow(this.deps.airtable, table, recordId, restore) });
     return row;
@@ -232,7 +267,7 @@ export type WriteInput =
   | { route: "clients.create"; client: ClientPatch & { name: string }; reason: string | null }
   | { route: "client.update"; clientId: string; patch: ClientPatch; reason: string | null }
   | { route: "services.create"; clientId: string; name: string; initial: InitialTermsRequest | null; reason: string | null }
-  | { route: "service.update"; serviceId: string; patch: ServicePatch; reason: string | null }
+  | { route: "service.update"; serviceId: string; patch: ServicePatch; effectiveFrom?: string | null; reason: string | null }
   | { route: "terms.create"; serviceId: string; req: InitialTermsRequest; reason: string | null }
   | { route: "terms.change"; serviceId: string; req: ChangeRequest; reason: string | null };
 
@@ -251,10 +286,10 @@ export async function writeCommercial(deps: CommercialDeps, caller: FinanceCalle
   if (!token) return fail(409, "finance_commercial_busy", "Clients and services are being changed by someone else right now - try again in a moment");
 
   try {
-    const loaded = await loadWorld(deps, org);
-    if (!loaded.ok) return loaded;
     const at = now(deps).toISOString();
     const today = todayIn(org.timezone, now(deps));
+    const loaded = await loadWorld(deps, org, today);
+    if (!loaded.ok) return loaded;
     const plan = await planWrite(deps, org, caller, input, loaded.world, loaded.raw, at, today);
     if (!plan.ok) return plan;
     if ("noop" in plan) return { status: "ok", httpStatus: 200, body: { contract: COMMERCIAL_CONTRACT, organisation: orgBody(org), access: "manage", changed: false, ...plan.noop } };
@@ -291,7 +326,7 @@ async function planWrite(
   caller: FinanceCaller,
   input: WriteInput,
   w: World,
-  raw: { clients: Row[]; services: Row[]; terms: Row[] },
+  raw: RawRows,
   at: string,
   today: string
 ): Promise<Plan> {
@@ -299,7 +334,7 @@ async function planWrite(
   const ev = (eventType: string, entityType: string, recordId: string, before: Record<string, unknown> | null, after: Record<string, unknown>, route: string, context?: Record<string, unknown>) =>
     auditEvent({ organisationId: org.organisationId, actorUserId: caller.userId, eventType, entityType, recordId, before, after, reason: input.reason, route, context });
   const rawRow = (rows: Row[], id: string) => rows.find((r) => r.id === id) as Row;
-  const uniqueId = (prefix: "FCL" | "FSV" | "FCT", taken: string[]) => {
+  const uniqueId = (prefix: "FCL" | "FSV" | "FCT" | "FSL", taken: string[]) => {
     for (let i = 0; i < 5; i++) {
       const id = newId(prefix, hex(deps));
       if (!taken.includes(id)) return id;
@@ -356,6 +391,7 @@ async function planWrite(
     if (c.value.status !== "active") return fail(409, "client_inactive", "This client is inactive - reactivate it before adding services");
     if (w.services.some((s) => s.value.clientId === c.value.clientId && norm(s.value.name) === norm(input.name))) return fail(409, "duplicate_service_name", `This client already has a service called "${input.name}"`);
     const service: Service = { serviceId: uniqueId("FSV", w.services.map((s) => s.value.serviceId)), clientId: c.value.clientId, name: input.name, status: "active", revision: 1, updatedAt: at };
+    const initial: LifecyclePeriod = { lifecycleId: uniqueId("FSL", w.lifecycle.map((l) => l.value.lifecycleId)), serviceId: service.serviceId, status: "active", effectiveFrom: null, effectiveUntil: null, supersededBy: null, reason: null };
     let terms: Terms | null = null;
     if (input.initial) {
       const t = completeTerms(input.initial.input, null, settings);
@@ -367,13 +403,14 @@ async function planWrite(
       status: 201,
       run: async (txn) => {
         const row = await txn.create(TABLES.services, serviceFields(service, meta, { orgRecordId: org.recordId, clientRecordId: c.recordId }));
+        await txn.create(TABLES.lifecycle, lifecycleCreateFields(initial, { orgRecordId: org.recordId, serviceRecordId: row.id, ...meta }));
         const route = `POST /clients/${c.value.clientId}/services`;
-        const events = [ev(EVENTS.serviceCreated, ENTITY_SERVICE, service.serviceId, null, { serviceId: service.serviceId, clientId: service.clientId, name: service.name, status: service.status, revision: 1 }, route)];
+        const events = [ev(EVENTS.serviceCreated, ENTITY_SERVICE, service.serviceId, null, { serviceId: service.serviceId, clientId: service.clientId, name: service.name, status: service.status, revision: 1 }, route, { initialLifecycle: { lifecycleId: initial.lifecycleId, status: "active", effectiveFrom: null } })];
         if (terms) {
           await txn.create(TABLES.terms, termsCreateFields(terms, { orgRecordId: org.recordId, serviceRecordId: row.id, ...meta }));
           events.push(ev(EVENTS.termsCreated, ENTITY_TERMS, terms.termsId, null, auditTerms(terms), route, { serviceId: service.serviceId, inline: true }));
         }
-        return { events, body: { service: publicService(service, c.value, terms ? [terms] : [], today) } };
+        return { events, body: { service: serviceBody(service, c.value, terms ? [terms] : [], [initial], today) } };
       },
     };
   }
@@ -389,22 +426,72 @@ async function planWrite(
   const reactivation = s.value.status === "ended" && input.route === "service.update" && input.patch.status === "active" && (input.patch.name === undefined || input.patch.name === s.value.name);
   if (s.value.status === "ended" && !reactivation) return fail(409, "service_ended", "This service has ended - reactivate it (status active) before changing it; its history is kept");
 
+  const lc = lifecycleHistory(w, s.value.serviceId);
+
   if (input.route === "service.update") {
     const before = s.value;
-    const merged: Service = { ...before, ...input.patch };
-    const changed = (Object.keys(input.patch) as (keyof Service)[]).filter((k) => before[k] !== merged[k]);
-    if (!changed.length) return { ok: true, noop: { service: publicService(before, client, h.terms, today) } };
-    if (changed.includes("name") && w.services.some((x) => x.value.clientId === before.clientId && x.value.serviceId !== before.serviceId && norm(x.value.name) === norm(merged.name))) return fail(409, "duplicate_service_name", `This client already has a service called "${merged.name}"`);
-    const after: Service = { ...merged, revision: before.revision + 1, updatedAt: at };
+    const nameChanged = input.patch.name !== undefined && input.patch.name !== before.name;
+    let plan: ReturnType<typeof planLifecycleChange> | null = null;
+    if (input.patch.status !== undefined) {
+      plan = planLifecycleChange(lc, input.patch.status, input.effectiveFrom ?? today, today);
+      if (!plan.ok) return fail(plan.httpStatus, plan.code, plan.error);
+    }
+    const lifecycleChange = plan !== null && plan.ok && plan.kind !== "noop" ? plan : null;
+    if (!nameChanged && !lifecycleChange) return { ok: true, noop: { service: serviceBody(before, client, h.terms, lc, today) } };
+    const name = nameChanged ? (input.patch.name as string) : before.name;
+    if (nameChanged && w.services.some((x) => x.value.clientId === before.clientId && x.value.serviceId !== before.serviceId && norm(x.value.name) === norm(name))) return fail(409, "duplicate_service_name", `This client already has a service called "${name}"`);
+
+    let next: LifecyclePeriod | null = null;
+    let newLifecycle = lc;
+    if (lifecycleChange) {
+      next = { lifecycleId: uniqueId("FSL", w.lifecycle.map((l) => l.value.lifecycleId)), serviceId: before.serviceId, status: lifecycleChange.next.status, effectiveFrom: lifecycleChange.next.effectiveFrom, effectiveUntil: null, supersededBy: null, reason: input.reason };
+      newLifecycle =
+        lifecycleChange.kind === "append"
+          ? [...lc.slice(0, -1), { ...lifecycleChange.close, effectiveUntil: lifecycleChange.closedUntil }, next]
+          : [...lc.slice(0, -1), next];
+    }
+    const todayPeriod = lifecycleOn(newLifecycle, today);
+    const after: Service = { ...before, name, status: todayPeriod.status === "resolved" ? todayPeriod.period.status : before.status, revision: before.revision + 1, updatedAt: at };
+    const changed = [...(nameChanged ? ["name"] : []), ...(lifecycleChange ? ["status"] : [])];
+    const recOf = (id: string) => (w.lifecycle.find((l) => l.value.lifecycleId === id) as { recordId: string }).recordId;
     const shape = (x: Service) => ({ serviceId: x.serviceId, clientId: x.clientId, name: x.name, status: x.status, revision: x.revision });
     return {
       ok: true,
       status: 200,
       run: async (txn) => {
         await txn.patch(TABLES.services, s.recordId, serviceFields(after, meta), serviceRestoreFields(before, rawRow(raw.services, s.recordId)));
+        if (lifecycleChange && next) {
+          if (lifecycleChange.kind === "append") {
+            await txn.patch(TABLES.lifecycle, recOf(lifecycleChange.close.lifecycleId), lifecycleUntilField(lifecycleChange.closedUntil), lifecycleUntilField(lifecycleChange.close.effectiveUntil));
+            await txn.create(TABLES.lifecycle, lifecycleCreateFields(next, { orgRecordId: org.recordId, serviceRecordId: s.recordId, ...meta }));
+          } else {
+            await txn.create(TABLES.lifecycle, lifecycleCreateFields(next, { orgRecordId: org.recordId, serviceRecordId: s.recordId, ...meta }));
+            await txn.patch(TABLES.lifecycle, recOf(lifecycleChange.replace.lifecycleId), lifecycleSupersededField(next.lifecycleId), lifecycleSupersededField(null));
+          }
+        }
+        const lifecycleContext =
+          lifecycleChange && next
+            ? {
+                lifecycleChange: {
+                  kind: lifecycleChange.kind,
+                  lifecycleId: next.lifecycleId,
+                  status: next.status,
+                  effectiveFrom: next.effectiveFrom,
+                  ...(lifecycleChange.kind === "append"
+                    ? { closedLifecycleId: lifecycleChange.close.lifecycleId, closedUntil: lifecycleChange.closedUntil }
+                    : { supersededLifecycleId: lifecycleChange.replace.lifecycleId, supersededStatus: lifecycleChange.replace.status }),
+                },
+              }
+            : {};
         return {
-          events: [ev(EVENTS.serviceUpdated, ENTITY_SERVICE, before.serviceId, shape(before), shape(after), `POST /services/${before.serviceId}`, { changedFields: changed, ...(reactivation ? { lifecycle: "reactivated" } : {}) })],
-          body: { service: publicService(after, client, h.terms, today) },
+          events: [
+            ev(EVENTS.serviceUpdated, ENTITY_SERVICE, before.serviceId, shape(before), shape(after), `POST /services/${before.serviceId}`, {
+              changedFields: changed,
+              ...(reactivation ? { lifecycle: "reactivated" } : {}),
+              ...lifecycleContext,
+            }),
+          ],
+          body: { service: serviceBody(after, client, h.terms, newLifecycle, today) },
         };
       },
     };
@@ -422,7 +509,7 @@ async function planWrite(
         await txn.create(TABLES.terms, termsCreateFields(terms, { orgRecordId: org.recordId, serviceRecordId: s.recordId, ...meta }));
         return {
           events: [ev(EVENTS.termsCreated, ENTITY_TERMS, terms.termsId, null, auditTerms(terms), `POST /services/${s.value.serviceId}/commercial`, { serviceId: s.value.serviceId })],
-          body: { service: publicService(s.value, client, [terms], today) },
+          body: { service: serviceBody(s.value, client, [terms], lc, today) },
         };
       },
     };
@@ -433,7 +520,7 @@ async function planWrite(
   if (!plan.ok) return fail(plan.httpStatus, plan.code, plan.error);
   const t = completeTerms(input.req.changes, termsFieldsOf(plan.close), settings);
   if (!t.ok) return t;
-  if (sameTerms(t.terms, termsFieldsOf(plan.close))) return { ok: true, noop: { service: publicService(s.value, client, h.terms, today) } };
+  if (sameTerms(t.terms, termsFieldsOf(plan.close))) return { ok: true, noop: { service: serviceBody(s.value, client, h.terms, lc, today) } };
   const next: Terms = { termsId: uniqueId("FCT", w.terms.map((x) => x.value.termsId)), serviceId: s.value.serviceId, effectiveFrom: plan.effectiveFrom, effectiveUntil: null, ...t.terms };
   const closeRow = (w.terms.find((x) => x.value.termsId === plan.close.termsId) as { recordId: string }).recordId;
   const newHistory = [...h.terms.slice(0, -1), plan.closed, next];
@@ -451,7 +538,7 @@ async function planWrite(
             changedFields: input.req.changedKeys,
           }),
         ],
-        body: { service: publicService(s.value, client, newHistory, today) },
+        body: { service: serviceBody(s.value, client, newHistory, lc, today) },
       };
     },
   };

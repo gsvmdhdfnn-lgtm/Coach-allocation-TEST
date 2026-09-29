@@ -89,7 +89,7 @@ function reset(over: Partial<World> = {}) {
   world = {
     grants: { [MGR]: [g("manage")] },
     moduleOn: true,
-    tables: { [TABLES.clients]: [], [TABLES.services]: [], [TABLES.terms]: [], "Finance Settings": [settingsRow(SETTINGS)] },
+    tables: { [TABLES.clients]: [], [TABLES.services]: [], [TABLES.terms]: [], [TABLES.lifecycle]: [], "Finance Settings": [settingsRow(SETTINGS)] },
     audit: [],
     lockHeld: null,
     lockMode: "ok",
@@ -312,7 +312,7 @@ async function main() {
     const re = await W({ route: "service.update", serviceId: ppaId, patch: { status: "active" }, reason: "restarts in September" });
     const svcWrites = tableWrites();
     ck("RE5. Manage reactivates Ended -> Active: 200, status active, revision 3, same service id", re.status === "ok" && re.httpStatus === 200 && re.body.changed === true && re.body.service.status === "active" && re.body.service.revision === 3 && re.body.service.serviceId === ppaId);
-    ck("RE6. Reactivation does not rewrite commercial terms: one PATCH on the service row only, terms rows byte-identical, history identical", svcWrites.length === 1 && svcWrites[0].method === "PATCH" && tableOf(svcWrites[0].url) === TABLES.services && termsSnap() === before && hist(re) === histBefore);
+    ck("RE6. Reactivation does not rewrite commercial terms: one PATCH on the service row + dated lifecycle writes only (F4), no terms write, terms rows byte-identical, history identical", svcWrites.filter((c) => tableOf(c.url) === TABLES.services).length === 1 && svcWrites.find((c) => tableOf(c.url) === TABLES.services)!.method === "PATCH" && svcWrites.every((c) => tableOf(c.url) === TABLES.services || tableOf(c.url) === TABLES.lifecycle) && svcWrites.some((c) => tableOf(c.url) === TABLES.lifecycle) && termsSnap() === before && hist(re) === histBefore);
     const ev = world.audit[world.audit.length - 1];
     ck("RE7. Audit: exactly one finance_client_service.updated event, before ended -> after active, changedFields [status], lifecycle reactivated, reason", world.audit.length === events + 1 && ev.event_type === "finance_client_service.updated" && ev.record_id === ppaId && ev.before.status === "ended" && ev.after.status === "active" && ev.after.revision === 3 && JSON.stringify(ev.context.changedFields) === '["status"]' && ev.context.lifecycle === "reactivated" && ev.reason === "restarts in September");
     const on = async (d: string) => (await Rd({ name: "service.read", params: { serviceId: ppaId } }, d)).body.service.commercial;

@@ -404,14 +404,24 @@ export function parseServiceCreate(raw: string, isTenantKey: (k: string) => bool
   return { ok: true, name: c.patch.name as string, initial, reason: b.reason };
 }
 
-export function parseServiceUpdate(raw: string, isTenantKey: (k: string) => boolean): { ok: true; patch: ServicePatch; reason: string | null } | Invalid {
-  const b = parseBody(raw, ["service", "reason"], isTenantKey);
+/**
+ * `effectiveFrom` (F4) dates a status change - the lifecycle rule is the
+ * commercial-terms rule: a chosen date, today or later. Omitted = today.
+ * It is only meaningful with a status change.
+ */
+export function parseServiceUpdate(raw: string, isTenantKey: (k: string) => boolean): { ok: true; patch: ServicePatch; effectiveFrom: string | null; reason: string | null } | Invalid {
+  const b = parseBody(raw, ["service", "effectiveFrom", "reason"], isTenantKey);
   if (!b.ok) return b;
   const s = section(b.body.service, "service", SERVICE_FIELDS, isTenantKey, true);
   if (!s.ok) return s;
   const c = collect(s, serviceField);
   if (!c.ok) return c;
-  return { ok: true, patch: c.patch as ServicePatch, reason: b.reason };
+  const from = b.body.effectiveFrom;
+  if (from !== undefined && from !== null) {
+    if (!isIsoDate(from)) return invalid("invalid_input", "Some fields are not valid - nothing was saved", { effectiveFrom: "must be a real date YYYY-MM-DD" });
+    if (c.patch.status === undefined) return invalid("invalid_input", "Some fields are not valid - nothing was saved", { effectiveFrom: "only applies to a status change" });
+  }
+  return { ok: true, patch: c.patch as ServicePatch, effectiveFrom: (from as string | undefined) ?? null, reason: b.reason };
 }
 
 export function parseInitialTerms(raw: string, isTenantKey: (k: string) => boolean): { ok: true; req: InitialTermsRequest; reason: string | null } | Invalid {
@@ -776,9 +786,15 @@ export function auditTerms(t: Terms): Record<string, unknown> {
 // Routes + opaque ids
 // ---------------------------------------------------------------------
 
-export const ID_PATTERNS = { client: /^FCL-[0-9A-F]{12}$/, service: /^FSV-[0-9A-F]{12}$/, terms: /^FCT-[0-9A-F]{12}$/ } as const;
+export const ID_PATTERNS = {
+  client: /^FCL-[0-9A-F]{12}$/,
+  service: /^FSV-[0-9A-F]{12}$/,
+  terms: /^FCT-[0-9A-F]{12}$/,
+  lifecycle: /^FSL-[0-9A-F]{12}$/,
+  override: /^FOB-[0-9A-F]{12}$/,
+} as const;
 
-export function newId(prefix: "FCL" | "FSV" | "FCT", randomHex: string): string {
+export function newId(prefix: "FCL" | "FSV" | "FCT" | "FSL" | "FOB", randomHex: string): string {
   return `${prefix}-${randomHex.replace(/[^0-9a-f]/gi, "").slice(0, 12).toUpperCase()}`;
 }
 
