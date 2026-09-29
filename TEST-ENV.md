@@ -12895,3 +12895,349 @@ Later Finance write routes will call the same `authorizeFinance(…,
 - **Moving `module_finance` / organisation config to Supabase** with the
   platform organisation layer. Isolation is per base until then.
 - **A TEST-facing frontend.** There is no Finance UI.
+
+## Finance Foundation — F2 (Finance Settings + money/VAT kernel + Finance audit trail) — TEST only — 2026-09-29
+
+F2 adds three things, all TEST only:
+- organisation **Finance Settings**, read and managed through the existing
+  `finance` function;
+- a pure **money / VAT / effective-dating kernel** for later slices;
+- an **append-only Finance audit trail**, written for every Finance
+  Settings change.
+
+F2 creates no clients, services, billing rules, invoices, payments, credits,
+Coach Cost reporting, suppliers, cash-flow or month records, no Stripe, Xero or
+Sheets integration, no Finance UI, and no Needs Attention evaluators.
+**Production was not touched.**
+
+### FIN2.1 Pre-implementation audit (findings)
+
+- **Git:** branch `foundation/test-base-isolation`, HEAD `22eabc4` equal to
+  origin, clean tree.
+- **F1 (`finance` v1):** `authorizeFinance()` is reused unchanged. F1
+  `finance-access.ts`, `orchestrator.ts` and `repository.ts` are
+  byte-unchanged; `repository.ts` stays read-only.
+- **Organisation & Branding** already owns the Organisation Name, Hub Name,
+  Logo, Website, Support Email and Timezone. F2 therefore stores only
+  Finance-specific identity (legal name, invoice address, company number) and
+  duplicates none of these.
+- **Feature Controls:** `module_finance` is Enabled (F1 baseline).
+- **Existing tables:** TEST had no Finance or settings table apart from Hub
+  Settings (generic key rows) and Needs Attention Settings.
+- **Production (read only):** no Finance Settings scaffold exists. It has
+  `Billing Rules` (a later slice) and `Hub Audit Events` / `Restricted Audit
+  Details`, a family and booking oriented audit with record links. Neither was
+  copied; F2 is Finance-scoped and organisation-keyed.
+- **History patterns:** Session History and Work Summary History are Airtable
+  rows that can be edited. The Needs Attention exception audit never edits the
+  approval snapshot. Airtable cannot enforce append-only, so the Finance audit
+  lives in Supabase with trigger-enforced immutability.
+- **Money today:** Coach Allocations and Occurrence Financial Outcomes use
+  float pounds with `roundCurrency()` (`Math.round((n+ε)*100)/100`). They are
+  not refactored in F2 (see FIN2.9).
+- **Effective dating today:** `coach-rates.ts` `rateProfileAppliesOnDate`
+  uses an inclusive From/Until and reports two matches as ambiguous. F2's
+  helper keeps that rule and makes it generic. `coach-rates.ts` is untouched.
+
+### FIN2.2 Finance Settings: ownership, storage, fields
+
+**Storage.** A new TEST Airtable table, **`Finance Settings`**
+(`tblbQDDt3cgQmfCwB`), is transitional operational storage. It is not in
+production, Google Sheets or `config.js`.
+- **Ownership:** one row per organisation, owned through its `Organisation`
+  link to exactly one Organisation & Branding row.
+- The row id `FINSET-<Organisation ID>` is only a label.
+- Zero rows means "not configured", which is a normal state. Two or more rows,
+  or a row linked to more than one organisation, fails closed with 409.
+- Airtable added the reverse link field on Organisation & Branding. It is
+  additive, and `resolveOrganisation` ignores it.
+
+**Fields.** Settings use the API names below. The stored Airtable field is in
+brackets.
+
+| Field | Rule |
+|---|---|
+| `invoiceLegalName` (Invoice Legal Name) | text ≤ 200. Required |
+| `invoiceAddress` (Invoice Address) | multiline ≤ 500 chars, ≤ 8 lines. Required |
+| `companyNumber` (Company Number) | optional, letters/digits/space/hyphen ≤ 20 |
+| `vatRegistered` (VAT Registration: Registered / Not registered) | true / false. Required |
+| `vatNumber` (VAT Number) | letters/digits/space ≤ 20. Required when registered; must be empty when not |
+| `defaultVatRateBasisPoints` (Default VAT Rate (Basis Points)) | integer 0–10000 (2000 = 20%). Required when registered; empty when not. **No rate is ever assumed** |
+| `defaultVatTreatment` (Default VAT Treatment: Plus VAT / VAT Included / No VAT) | `plus_vat` \| `vat_included` \| `no_vat`. Required when registered. When not registered it must be empty or `no_vat` (the effective default is then `no_vat`). It is the organisation **default only**; per-service treatment arrives in F3 |
+| `defaultPaymentTermsDays` (Default Payment Terms (Days)) | integer 0–365. Required |
+| `coachPaymentDayOfFollowingMonth` (Coach Payment Day) | integer **1–28**: coaches are paid on day N of the month after the work. 29–31 are refused so that no month is ambiguous. There is no bundling (F12). Required |
+
+**Meta fields.** `Revision`, `Last Changed By User ID` and `Last Changed At`
+are written by the API only.
+
+**Stored values are validated on every read** with the same validators as
+input. An unknown select label, a fractional rate, day 31, or a cross-field
+contradiction makes the row 409 `finance_settings_invalid`, naming the
+field. It is never treated as blank.
+
+**Known limit.** A person with TEST Airtable access can still edit the row
+directly, bypassing the API and its audit. The table description says so. The
+fix is moving Settings to Supabase with the platform organisation layer.
+
+### FIN2.3 Completeness
+
+`completeness = { complete, requiredTotal, requiredComplete, missing[] }`.
+
+- **Required:** legal name, invoice address, VAT registration state, payment
+  terms and coach payment day. If VAT registered, also the VAT number, default
+  rate and default treatment. So the total is 5 when not registered and 8 when
+  registered.
+- `complete` also requires the cross-field rules to hold.
+- Optional items (company number) and integrations (Stripe/Xero/Sheets) never
+  reduce completeness. No credentials are stored.
+- `effectiveDefaultVat(settings)`, exported for F3, returns:
+  - `{no_vat, 0}` when not registered;
+  - the configured treatment and rate when registered;
+  - `null` while unknown. It never guesses a rate.
+
+### FIN2.4 Money, VAT and rounding (`finance-money.ts`, pure)
+
+**Money.**
+- Integer **minor units** (pence), GBP.
+- Decimal input is parsed **only from strings** (`"12.34"`, at most 2 dp; no
+  numbers, commas, symbols or exponents).
+- Bounded at ±£1,000,000,000.00, so every product stays exact.
+- `formatMinor`, `sumMinor` and `isMinor` throw or refuse on fractional values.
+
+**Rates** are integer basis points. `parseRatePercent("17.5")` gives 1750.
+
+**VAT** (`calculateVat({amountMinor, treatment, rateBasisPoints})`):
+
+| Treatment | Input | VAT | Other figure |
+|---|---|---|---|
+| `plus_vat` | net | round(net × r / 10000) | gross = net + VAT |
+| `vat_included` | gross | round(gross × r / (10000 + r)) | net = gross − VAT |
+| `no_vat` | amount | 0 | net = gross = amount; a non-zero rate is refused (`rate_with_no_vat`) |
+
+- **The one rounding rule:** round half away from zero, to the penny, applied
+  once, to the VAT figure only. It is computed with BigInt, so there are no
+  floats.
+- Net and gross are then integer arithmetic, so **gross = net + VAT exactly,
+  always**. This is tested over 7 rates × 472 amounts × 2 treatments.
+- Negative amounts (future credits) mirror positive ones.
+- Plus/included without a rate fails; it never defaults to 20%.
+- The kernel is not exposed over HTTP: there is no debug or VAT endpoint.
+
+### FIN2.5 Effective-date contract (`finance-effective-dating.ts`, pure)
+
+- `resolveEffective(entries, date)` works on `YYYY-MM-DD` real calendar dates.
+- `effectiveFrom` is required and inclusive. `effectiveUntil` is optional and
+  inclusive (open-ended when absent). An until before its from is invalid.
+- Results:
+  - exactly one match → `resolved`;
+  - none → `none` (no nearest or fallback guess);
+  - more than one → `ambiguous` with all matches. It **never picks the newest.**
+  - any malformed entry or query date → `invalid` for the whole set. A broken
+    row is never skipped.
+- `findOverlaps(entries)` lets write paths reject overlapping sets before
+  storing them.
+- This is a library for F3 onwards. Nothing in the deployed function imports it
+  yet, so the bundler omits it from the `finance` deployment.
+
+### FIN2.6 Finance audit contract (Supabase `public.finance_audit_events`)
+
+**Migration** `finance_f2_audit_events_and_settings_lock`:
+
+- **Columns:**
+  - `id` uuid;
+  - `organisation_id`;
+  - `actor_user_id` (no FK, so the audit survives user deletion);
+  - `event_type` (`domain.action`);
+  - `entity_type`;
+  - `record_id`;
+  - `occurred_at`;
+  - `before` / `after` jsonb objects (at least one present);
+  - `reason` (≤ 500);
+  - `context` jsonb.
+- **Immutable:**
+  - a `BEFORE UPDATE OR DELETE` row trigger and a `BEFORE TRUNCATE` statement
+    trigger raise `42501 … append-only`;
+  - `occurred_at` is forced to the database clock on insert, so it cannot be
+    backdated;
+  - live proof: UPDATE, DELETE and TRUNCATE were all refused.
+- **Access:**
+  - RLS is on, with no policies, and everything is revoked from
+    anon/authenticated. Only the service role can write it.
+  - Live: anon REST read → 401; Manager-JWT REST read and insert → 403.
+  - It is never returned by the API (audit internals are not exposed).
+- **Settings events:**
+  - `finance_settings.created` (before `null`) or `finance_settings.updated`;
+  - entity `finance_settings`; `record_id` is the Airtable row id;
+  - before/after = `{revision, settings}`;
+  - context = `{source:"finance-api", route:"POST /settings", contract, changedFields[]}`;
+  - reason is the caller's optional `reason`.
+- **Exactly one event per effective write.** Reads, no-op updates and rejected
+  updates write none.
+- **Write order:**
+  1. The Airtable write happens first.
+  2. The audit insert follows.
+  3. If the audit insert fails, the Airtable change is **undone**: the patch is
+     reverted to the before values and revision, or a newly created row is
+     deleted. The caller gets 503 `finance_audit_unavailable`.
+  4. If the undo also fails, the caller gets 500 `finance_settings_unaudited`
+     and a loud log line. It is never reported as success.
+- **Concurrency:** `finance_settings_locks` plus the
+  `acquire/release_finance_settings_lock` RPCs (the same shape as the Needs
+  Attention exception locks; service_role EXECUTE only; 5-minute stale expiry)
+  serialise writes per organisation. A second concurrent write gets 409
+  `finance_settings_busy`, proven live.
+
+### FIN2.7 API — TEST Edge Function `finance` v3 (`verify_jwt: true`)
+
+**Deployments:**
+- v2 was deployed with `PATCH /settings`.
+- **v3 is current.** The update moved to `POST /settings` because `pg_net`
+  (the only live HTTP path from this environment) supports only
+  GET/POST/DELETE. The semantics are unchanged: a partial update.
+- v3 was byte-verified by read-back: 8/8 bundled files are identical to the
+  repo.
+
+| Route | Requirement | Result |
+|---|---|---|
+| `GET /access`, `POST /write-check` | unchanged (F1) | unchanged |
+| `GET /settings` | Finance read (View or Manage) | `{contract:"finance-settings-v1", organisation:{organisationId,name}, access, configured, revision, updatedAt, settings:{9 fields}, completeness}` |
+| `POST /settings` | Finance manage | body `{settings:{…fields to change}, reason?}` → the same body plus `changed:true\|false` |
+
+- **Order:** 404/405 → 401 → 403 `management_required` → query check (400) →
+  body parse (400) → `authorizeFinance` (403/409/503) → lock (409/503) → load
+  (409/503) → cross-field (400) → write → audit.
+- **Rejected with 400:**
+  - `tenant_param_rejected`: tenant keys at the top level, inside `settings`,
+    or in the query;
+  - `unexpected_field`: unknown or dangerous keys (`revision`, `recordId`,
+    `__proto__`, credentials…);
+  - `invalid_settings`: any invalid value; all field errors are returned
+    together and nothing is written;
+  - `invalid_body`: an empty `settings` object.
+- **GET distinguishes three states:**
+  - not configured → 200 `configured:false`;
+  - stored data invalid or ambiguous → 409;
+  - store unavailable → 503.
+- **Never returned:** Airtable record or base ids, user ids, the actor, audit
+  rows or ids, grant rows, or service keys.
+
+### FIN2.8 Live TEST verification (2026-09-29, `finance` v3, real HTTP via `pg_net`)
+
+Fresh JWTs for `manager@test.invalid`, `coach.a@test.invalid` and
+`parent.a@test.invalid` (TEST-only passwords reset with the established
+`crypt()` pattern).
+
+| # | Case | Result |
+|---|---|---|
+| 1 | Manage, GET before any config | 200 `configured:false`, revision 0, 0/5 |
+| 2 | Manage, first valid POST (legal name, address, terms 30) | 200 `changed:true`, rev 1, 3/5. Exactly 1 `finance_settings.created` event (org, actor, before null, after, reason, changed fields); lock released |
+| 3 | F1 `GET /access` / `POST /write-check` | 200 / 200 (unchanged) |
+| 4 | Cross-field invalid (not registered + VAT number + day 7) | 400 `invalid_settings` {vatNumber}. Airtable row unchanged (no day 7 written); audit count still 1 |
+| 5 | Invalid values (day 31, rate 20.5) / unknown `revision` | 400 `invalid_settings` (both fields) / 400 `unexpected_field` |
+| 6 | Tenant: `?organisationId=`, body `organisationId`, `settings.baseId` | 400 `tenant_param_rejected` ×3 |
+| 7 | No-op update (same values, padded text) | 200 `changed:false`, rev 1, no event |
+| 8 | Two simultaneous updates | one 200 (rev 2, 1 event), one 409 `finance_settings_busy`; no lock left |
+| 9 | **View** grant: GET / POST | 200 `access:"view"` / 403 `finance_manage_required` (no event) |
+| 10 | **No grant**: GET / POST | 403 `finance_access_denied` ×2 |
+| 11 | Coach / Parent: GET / POST | 403 `management_required` ×4 |
+| 12 | No auth / DELETE method | 401 / 405 |
+| 13 | **Module off**: GET / POST | 403 `finance_module_disabled` ×2; module restored ON |
+| 14 | Baseline write (Manage) | 200 rev 3, **complete 8/8** |
+| 15 | Audit immutability (SQL UPDATE / DELETE / TRUNCATE) | all refused `42501 append-only` |
+| 16 | Audit/lock via client roles (anon read, Manager read/insert, Manager lock RPC) | 401 / 403 / 403 / 403 |
+| 17 | Needs Attention after F2 | 200, Clear, 0 cases, `complete:true` (unchanged) |
+
+VAT and money are proven by the unit tests (FIN2.9), not over HTTP.
+
+**Resting baseline (deliberate):**
+- `module_finance` is **Enabled**.
+- `finance_access_grants`: exactly one active grant, `manager@test.invalid` /
+  ORG-TEST-001 / **manage** (re-granted by "F2 live verification").
+- The F2 proofs left two more revoked rows as history: the F1 baseline manage
+  grant (revoked for the View proof) and the F2 View probe.
+- **Finance Settings for ORG-TEST-001** (`FINSET-ORG-TEST-001`, revision 3,
+  complete 8/8):
+
+  | Setting | Value |
+  |---|---|
+  | Legal name | "Test Coaching Organisation Ltd (TEST)" |
+  | Invoice address | "1 Test Street / Test Town / TE1 1ST" |
+  | Company number | none |
+  | VAT | Registered, VAT number `GBTEST000000`, default rate 2000 bp, default treatment `vat_included` |
+  | Payment terms | 30 days |
+  | Coach payment day | **7** |
+
+  These are **TEST placeholders chosen for F3**, not real organisation data
+  and not product decisions.
+- **Audit trail:** 3 events (created rev 1; updated rev 2, the concurrency
+  probe; updated rev 3, the baseline).
+- The temporary `f2probe` SQL helper schema was dropped. No probe grants or
+  settings remain active.
+
+### FIN2.9 Tests and regression
+
+- **`tests/support/finance-kernel.test.ts`: 47 checks.**
+  - M, money: parsing, bounds, formatting, sums, round-trip.
+  - V, VAT: all treatments, custom rates, half rounding, zero amount, zero
+    rate, negatives, reconciliation sweep, invalid input, no assumed rate.
+  - E, effective dating: before first, exact from, between, exact until,
+    after end, open end, gap, overlap → ambiguous, malformed, leap years.
+- **`tests/support/finance-settings.test.ts`: 80 checks.**
+  - S: domain and completeness.
+  - P: body parsing, including `__proto__`.
+  - G: GET access matrix, missing/invalid/ambiguous/unavailable, isolation,
+    reads write nothing.
+  - U: update: one write plus one event, before/after, no-op, cross-field,
+    lock busy/error, write failure, audit failure with undo for patch and
+    create, undo failure, invalid stored state, isolation, Coach.
+  - C: contract, no leaks.
+  - Z: drift and code checks: support copies identical; pure files are pure;
+    no hard-coded rate; no float rounding; the audit table is insert-only in
+    code; no client timestamp; routes; F1 files untouched; no Josh Evans /
+    Stripe / Xero / credentials.
+- **F1 test Z8** was updated to the new ROUTES shape: F1 routes unchanged,
+  plus `settings` GET/POST. F1 is still **56/56**.
+- **Shims:** `tests/e2e/financekerneltest.js`, `tests/e2e/financesettingstest.js`.
+- **Support copies:** `finance-money.ts`, `finance-effective-dating.ts`,
+  `finance-settings.ts`, `finance-settings-repository.ts`,
+  `finance-settings-orchestrator.ts`.
+- **Mutation check: 18/18 caught** by behavioural checks (drift checks
+  excluded):
+  - half-down rounding;
+  - included-VAT formula;
+  - numbers accepted as money;
+  - no_vat ignoring a rate;
+  - overlap picking the first match;
+  - exclusive until;
+  - malformed entries skipped;
+  - cross-field rule off;
+  - VAT detail not required;
+  - unknown fields accepted;
+  - malformed stored value read as blank;
+  - no-op writing;
+  - created row not undone;
+  - View can update;
+  - lock never released;
+  - busy lock ignored;
+  - rows not filtered by organisation;
+  - audit skipped.
+- **Full suite (final code, `finance` v3):** `npm test` gives **69/69 files, 2,319 PASS / 0 FAIL**. That is the 2,192 F1 baseline plus 47 kernel checks plus 80 Settings checks.
+
+### FIN2.10 Deferred (later Finance slices)
+
+- **Per-service VAT treatment, clients, services and billing rules (F3).**
+  They will use `calculateVat`, `effectiveDefaultVat` and `resolveEffective`.
+- **Invoice-facing identity beyond F2:** invoice/accounts email (Organisation
+  & Branding's Support Email is not duplicated), bank/remittance details,
+  invoice numbering. These belong to the invoicing slice.
+- **Coach payment bundling (F12).** F2 stores only the day.
+- **A Finance audit read API/UI** (who changed what). Nothing reads the audit
+  over HTTP today.
+- **Moving Finance Settings from Airtable to Supabase.** Until then, direct
+  Airtable edits bypass the audit (FIN2.2).
+- **Migrating Coach Allocations / Occurrence Financial Outcomes off float
+  `roundCurrency`** to integer pence, and `coach-rates.ts` to the shared
+  effective-dating helper. Neither was broadly refactored in F2.
+- **Optimistic concurrency** (client-sent `revision`) for the future UI. The
+  server lock prevents lost updates between concurrent writes, but not stale
+  forms.

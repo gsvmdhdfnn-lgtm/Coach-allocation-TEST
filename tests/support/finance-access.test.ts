@@ -258,7 +258,7 @@ async function main() {
     ck("Z6. Repository is read-only: no POST/PATCH/PUT/DELETE, no method override", !/method\s*:|"POST"|"PATCH"|"PUT"|"DELETE"/.test(repo));
     const idx = canon("index.ts");
     ck("Z7. index.ts boot-refuses production Airtable bases AND the production Supabase project", idx.includes("apprptFotQuVL1mhs") && idx.includes('PRODUCTION_SUPABASE_REFS = ["bkkukymqaxawnudoxdjs"]') && (idx.match(/throw new Error\(/g) ?? []).length >= 3);
-    ck("Z8. Only two routes exist: GET access, POST write-check", /const ROUTES: Record<string, string> = \{ access: "GET", "write-check": "POST" \};/.test(idx));
+    ck("Z8. F1 routes unchanged (GET access, POST write-check); the only other route is F2's settings GET/POST", /const ROUTES: Record<string, string\[\]> = \{ access: \["GET"\], "write-check": \["POST"\], settings: \["GET", "POST"\] \};/.test(idx));
     ck("Z9. write-check authorises 'manage' and persists nothing", /authorizeFinance\(deps, caller, "manage"\)/.test(idx) && /persisted: false/.test(idx) && !/insert|upsert|update\(|\.from\("finance/.test(idx));
     ck("Z10. Tenant query/body checks run on every route after the Management check; 500s never echo internals", idx.indexOf("isFinanceEligible(caller)") < idx.indexOf("checkQueryKeys(") && /jsonResponse\(\{ error: "Unexpected error" \}, 500\)/.test(idx));
     const all = ["finance-access.ts", "repository.ts", "orchestrator.ts", "index.ts"].map(canon).join("\n");

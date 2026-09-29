@@ -1,24 +1,30 @@
 /**
- * Finance - access boundary + core API shell (Finance Foundation F1; see
- * TEST-ENV.md "Finance Foundation - F1"). Thin HTTP wrapper, same convention
- * as the Coaches / Needs Attention functions: policy lives in
- * finance-access.ts (pure), reads in repository.ts, composition in
- * orchestrator.ts. This file only authenticates, checks request shape, maps
- * outcomes to HTTP responses, and boot-refuses against production.
+ * Finance - access boundary + core API (Finance Foundation F1 + F2; see
+ * TEST-ENV.md "Finance Foundation - F1" / "- F2"). Thin HTTP wrapper, same
+ * convention as the Coaches / Needs Attention functions: policy lives in
+ * finance-access.ts / finance-settings.ts / finance-money.ts (pure), reads
+ * and writes in repository.ts / finance-settings-repository.ts, composition
+ * in orchestrator.ts / finance-settings-orchestrator.ts. This file only
+ * authenticates, checks request shape, maps outcomes to HTTP responses, and
+ * boot-refuses against production.
  *
  * Routes (every one requires an active Management profile holding a Finance
  * grant for their own organisation, with module_finance enabled):
- *   GET  /access        Finance read  -> { contract, organisation, module, access, capabilities }
- *   POST /write-check   Finance manage -> authorisation probe only; persists NOTHING
+ *   GET   /access        Finance read   -> { contract, organisation, module, access, capabilities }   (F1, unchanged)
+ *   POST  /write-check   Finance manage -> authorisation probe only; persists NOTHING                 (F1, unchanged)
+ *   GET   /settings      Finance read   -> organisation Finance Settings + completeness               (F2)
+ *   POST  /settings      Finance manage -> { settings: {...changed fields}, reason? }; partial update, one audited write (F2)
  *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
  * tenant-looking query parameter or body key is rejected with 400, never
- * ignored. F1 creates no Finance business records and writes nothing.
+ * ignored.
  */
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { type FinanceCaller, FINANCE_CONTRACT, buildAccessBody, checkEmptyBody, checkQueryKeys, isFinanceEligible } from "./finance-access.ts";
-import { type Deps, authorizeFinance } from "./orchestrator.ts";
+import { type FinanceCaller, FINANCE_CONTRACT, buildAccessBody, checkEmptyBody, checkQueryKeys, isFinanceEligible, isTenantKey } from "./finance-access.ts";
+import { authorizeFinance } from "./orchestrator.ts";
+import { parseUpdateBody } from "./finance-settings.ts";
+import { type SettingsDeps, getFinanceSettings, updateFinanceSettings } from "./finance-settings-orchestrator.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
 const AIRTABLE_BASE_ID = Deno.env.get("AIRTABLE_BASE_ID")!;
@@ -46,7 +52,7 @@ if (!/^app[A-Za-z0-9]{14}$/.test(AIRTABLE_BASE_ID || "")) {
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-/** Used ONLY to read public.finance_access_grants (RLS on, no client grants - service role only). */
+/** Service role, used ONLY for public.finance_access_grants (read), public.finance_audit_events (append) and the finance_settings_locks RPCs - all RLS on, no client grants. */
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const PRODUCTION_SUPABASE_REFS = ["bkkukymqaxawnudoxdjs"];
@@ -88,12 +94,12 @@ async function resolveCaller(authHeader: string | null): Promise<FinanceCaller |
   };
 }
 
-const deps: Deps = {
+const deps: SettingsDeps = {
   airtable: { baseId: AIRTABLE_BASE_ID, token: AIRTABLE_TOKEN },
   grants: { supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY },
 };
 
-const ROUTES: Record<string, string> = { access: "GET", "write-check": "POST" };
+const ROUTES: Record<string, string[]> = { access: ["GET"], "write-check": ["POST"], settings: ["GET", "POST"] };
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -104,9 +110,9 @@ Deno.serve(async (req: Request) => {
   const route = url.pathname.replace(/^.*\/finance\/?/, "").replace(/\/$/, "");
 
   try {
-    const method = ROUTES[route];
-    if (!method) return jsonResponse({ error: `Unknown route: ${route}` }, 404);
-    if (req.method !== method) return jsonResponse({ error: `Method not allowed - use ${method}` }, 405);
+    const methods = ROUTES[route];
+    if (!methods) return jsonResponse({ error: `Unknown route: ${route}` }, 404);
+    if (!methods.includes(req.method)) return jsonResponse({ error: `Method not allowed - use ${methods.join(" or ")}` }, 405);
     const caller = await resolveCaller(req.headers.get("Authorization"));
     if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
     if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
@@ -120,6 +126,20 @@ Deno.serve(async (req: Request) => {
       const out = await authorizeFinance(deps, caller, "manage");
       if (out.status !== "ok") return jsonResponse({ error: out.error, code: out.code }, out.httpStatus);
       return jsonResponse({ contract: FINANCE_CONTRACT, action: "manage", authorized: true, persisted: false }, 200);
+    }
+
+    if (route === "settings" && req.method === "POST") {
+      const parsed = parseUpdateBody(await req.text(), isTenantKey);
+      if (!parsed.ok) return jsonResponse({ error: parsed.error, code: parsed.code, ...(parsed.fields ? { fields: parsed.fields } : {}) }, 400);
+      const res = await updateFinanceSettings(deps, caller, parsed);
+      if (res.status !== "ok") return jsonResponse({ error: res.error, code: res.code, ...(res.fields ? { fields: res.fields } : {}) }, res.httpStatus);
+      return jsonResponse(res.body, 200);
+    }
+
+    if (route === "settings") {
+      const res = await getFinanceSettings(deps, caller);
+      if (res.status !== "ok") return jsonResponse({ error: res.error, code: res.code }, res.httpStatus);
+      return jsonResponse(res.body, 200);
     }
 
     const out = await authorizeFinance(deps, caller, "read");
