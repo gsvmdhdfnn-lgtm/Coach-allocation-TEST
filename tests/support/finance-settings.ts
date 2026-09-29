@@ -1,7 +1,7 @@
 /**
  * Test-suite copy of the canonical finance/finance-settings.ts, kept in sync by hand
  * exactly like every other deployed copy (drift-checked in
- * finance-settings.test.ts). No changes.
+ * the finance *.test.ts files). No changes.
  */
 /**
  * Finance Settings domain - PURE (Finance Foundation F2; see TEST-ENV.md

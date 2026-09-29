@@ -1,10 +1,10 @@
 /**
- * Finance - access boundary + core API (Finance Foundation F1 + F2; see
- * TEST-ENV.md "Finance Foundation - F1" / "- F2"). Thin HTTP wrapper, same
- * convention as the Coaches / Needs Attention functions: policy lives in
- * finance-access.ts / finance-settings.ts / finance-money.ts (pure), reads
- * and writes in repository.ts / finance-settings-repository.ts, composition
- * in orchestrator.ts / finance-settings-orchestrator.ts. This file only
+ * Finance - access boundary + core API (Finance Foundation F1-F3; see
+ * TEST-ENV.md "Finance Foundation - F1" / "- F2" / "- F3"). Thin HTTP
+ * wrapper, same convention as the Coaches / Needs Attention functions:
+ * policy lives in finance-access.ts / finance-settings.ts /
+ * finance-money.ts / finance-commercial.ts (pure), reads and writes in the
+ * *repository.ts files, composition in the *orchestrator.ts files. This file only
  * authenticates, checks request shape, maps outcomes to HTTP responses, and
  * boot-refuses against production.
  *
@@ -14,6 +14,15 @@
  *   POST  /write-check   Finance manage -> authorisation probe only; persists NOTHING                 (F1, unchanged)
  *   GET   /settings      Finance read   -> organisation Finance Settings + completeness               (F2)
  *   POST  /settings      Finance manage -> { settings: {...changed fields}, reason? }; partial update, one audited write (F2)
+ *
+ * F3 commercial setup (Finance read = GET, Finance manage = POST):
+ *   GET  /clients                               POST /clients
+ *   GET  /clients/{FCL-id}                      POST /clients/{FCL-id}            (update)
+ *                                               POST /clients/{FCL-id}/services   (+ optional inline commercial setup)
+ *   GET  /services/{FSV-id}[?on=YYYY-MM-DD]     POST /services/{FSV-id}           (name / status)
+ *                                               POST /services/{FSV-id}/commercial          (initial setup)
+ *                                               POST /services/{FSV-id}/commercial/changes  (apply from a date)
+ *   GET  /commercial/options                    (active services + summaries, for Session creation)
  *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
@@ -25,6 +34,17 @@ import { type FinanceCaller, FINANCE_CONTRACT, buildAccessBody, checkEmptyBody, 
 import { authorizeFinance } from "./orchestrator.ts";
 import { parseUpdateBody } from "./finance-settings.ts";
 import { type SettingsDeps, getFinanceSettings, updateFinanceSettings } from "./finance-settings-orchestrator.ts";
+import {
+  checkCommercialQuery,
+  matchCommercialRoute,
+  parseClientCreate,
+  parseClientUpdate,
+  parseInitialTerms,
+  parseServiceCreate,
+  parseServiceUpdate,
+  parseTermsChange,
+} from "./finance-commercial.ts";
+import { type CommercialDeps, type WriteInput, readCommercial, writeCommercial } from "./finance-commercial-orchestrator.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
 const AIRTABLE_BASE_ID = Deno.env.get("AIRTABLE_BASE_ID")!;
@@ -52,7 +72,7 @@ if (!/^app[A-Za-z0-9]{14}$/.test(AIRTABLE_BASE_ID || "")) {
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-/** Service role, used ONLY for public.finance_access_grants (read), public.finance_audit_events (append) and the finance_settings_locks RPCs - all RLS on, no client grants. */
+/** Service role, used ONLY for public.finance_access_grants (read), public.finance_audit_events (append) and the finance_settings_locks / finance_write_locks RPCs - all RLS on, no client grants. */
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const PRODUCTION_SUPABASE_REFS = ["bkkukymqaxawnudoxdjs"];
@@ -94,12 +114,62 @@ async function resolveCaller(authHeader: string | null): Promise<FinanceCaller |
   };
 }
 
-const deps: SettingsDeps = {
+const deps: SettingsDeps & CommercialDeps = {
   airtable: { baseId: AIRTABLE_BASE_ID, token: AIRTABLE_TOKEN },
   grants: { supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY },
 };
 
 const ROUTES: Record<string, string[]> = { access: ["GET"], "write-check": ["POST"], settings: ["GET", "POST"] };
+
+function commercialResponse(res: { status: string; httpStatus: number; body?: unknown; error?: string; code?: string; fields?: Record<string, string> }) {
+  if (res.status === "ok") return jsonResponse(res.body, res.httpStatus);
+  return jsonResponse({ error: res.error, code: res.code, ...(res.fields ? { fields: res.fields } : {}) }, res.httpStatus);
+}
+
+/** F3 routes: same order as F1/F2 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleCommercial(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchCommercialRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const query = checkCommercialQuery(url.searchParams, match.queryAllowed, isTenantKey);
+  if (!query.ok) return jsonResponse({ error: query.error, code: query.code, ...(query.fields ? { fields: query.fields } : {}) }, 400);
+
+  const r = match.route;
+  if (req.method === "GET") return commercialResponse(await readCommercial(deps, caller, r, query.on));
+
+  const raw = await req.text();
+  let input: WriteInput;
+  if (r.name === "clients.create") {
+    const p = parseClientCreate(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    input = { route: r.name, client: p.client, reason: p.reason };
+  } else if (r.name === "client.update") {
+    const p = parseClientUpdate(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    input = { route: r.name, clientId: r.params.clientId, patch: p.patch, reason: p.reason };
+  } else if (r.name === "services.create") {
+    const p = parseServiceCreate(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    input = { route: r.name, clientId: r.params.clientId, name: p.name, initial: p.initial, reason: p.reason };
+  } else if (r.name === "service.update") {
+    const p = parseServiceUpdate(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    input = { route: r.name, serviceId: r.params.serviceId, patch: p.patch, reason: p.reason };
+  } else if (r.name === "terms.create") {
+    const p = parseInitialTerms(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    input = { route: r.name, serviceId: r.params.serviceId, req: p.req, reason: p.reason };
+  } else if (r.name === "terms.change") {
+    const p = parseTermsChange(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    input = { route: r.name, serviceId: r.params.serviceId, req: p.req, reason: p.reason };
+  } else {
+    return jsonResponse({ error: "Unknown route" }, 404);
+  }
+  return commercialResponse(await writeCommercial(deps, caller, input));
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -110,6 +180,9 @@ Deno.serve(async (req: Request) => {
   const route = url.pathname.replace(/^.*\/finance\/?/, "").replace(/\/$/, "");
 
   try {
+    const commercial = matchCommercialRoute(route, req.method);
+    if (commercial) return await handleCommercial(req, url, commercial);
+
     const methods = ROUTES[route];
     if (!methods) return jsonResponse({ error: `Unknown route: ${route}` }, 404);
     if (!methods.includes(req.method)) return jsonResponse({ error: `Method not allowed - use ${methods.join(" or ")}` }, 405);

@@ -1,7 +1,7 @@
 /**
  * Test-suite copy of the canonical finance/finance-effective-dating.ts, kept in sync by hand
  * exactly like every other deployed copy (drift-checked in
- * finance-settings.test.ts). No changes.
+ * the finance *.test.ts files). No changes.
  */
 /**
  * Effective-dated value resolution - PURE (Finance Foundation F2; see

@@ -1,7 +1,7 @@
 /**
  * Test-suite copy of the canonical finance/finance-settings-repository.ts, kept in sync by hand
  * exactly like every other deployed copy (drift-checked in
- * finance-settings.test.ts). Only import paths adjusted:
+ * the finance *.test.ts files). Only import paths adjusted:
  * ./repository.ts -> ./finance-repository.ts.
  */
 /**

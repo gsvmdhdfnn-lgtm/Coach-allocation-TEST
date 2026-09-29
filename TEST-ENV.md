@@ -13322,3 +13322,432 @@ Manage).**
 - The audit trail has 7 events. The four new ones (revs 4–7) are the probe and
   its restore. The table is append-only, so they are permanent history.
 - The grants and `module_finance` are unchanged.
+
+## Finance Foundation — F3 (Clients, Client Services, effective-dated commercial terms) — TEST only — 2026-09-29
+
+**Scope.** F3 adds the Finance-owned commercial setup:
+- **Clients:** the external customers or payers, such as a school.
+- **Client Services:** what is delivered to a client.
+- **Commercial terms:** effective-dated terms per service.
+
+The work is only in the TEST repo, TEST Airtable (`appQktredAuGa1X7e`) and TEST
+Supabase (`dkqubldmfyeuudecxmvh`). Production Airtable, production Supabase,
+Sessions data, Google Sheets, Stripe, Xero and legacy Financials were not
+touched.
+
+F3 does **not** resolve billing per occurrence, and it creates no invoices,
+payments, credits, Coach costs, cash flow or Needs Attention rules. Nothing in
+F3 is Actual Revenue.
+
+### FIN3.1 Pre-implementation audit (read-only findings)
+
+- **Production `Clients & Schools` and `Billing Rules` are empty.** Nothing
+  needs migrating.
+  - `Billing Rules` does not fit the locked model: it links straight to
+    Sessions/PSLs, uses a float currency, and has no VAT, quantity or service
+    layer.
+  - It is **not** reused.
+- **Production Sessions have commercial fields:** Commercial Model (Parent
+  Bookable / School-Client Contract / Internal), Billing Model (7 options),
+  Finance Key, and Client/Organisation and Billing Rules links.
+  - Production PSLs hold commercial snapshots.
+  - What We Offer has Price, Billing Period and Price Note.
+  - In TEST only 2 Sessions carry a value (Commercial Model = Parent Bookable).
+- **No code reads the Session commercial fields.** The only "Client / School"
+  reference in code is compliance scoping.
+- **Decision:** F3 creates new TEST-only "Finance …" tables, named so that a
+  Client can never be confused with the platform tenant (`organisation_id`).
+  The existing Session fields are left alone and marked transitional
+  (FIN3.7).
+
+### FIN3.2 Models (domain: `finance-commercial.ts`, pure)
+
+**Client** (`clientId` = `FCL-` + 12 upper-case hex)
+- **Fields:**
+  - `name`;
+  - `status`: `active` / `inactive`;
+  - `billingContactName`;
+  - `billingEmail`, stored lower-case;
+  - `billingCcEmails`: at most 5, de-duplicated;
+  - `paymentTermsDaysOverride`: 0–365, or null to use the Settings default;
+  - `poRequired`;
+  - `revision`, `updatedAt`.
+- A Client is **not** the tenant. The tenant always comes from the caller's
+  profile.
+- **Rules:**
+  - Names are unique per organisation (case-insensitive, trimmed). A clash
+    returns 409 `duplicate_client_name`.
+  - An inactive client stays readable, but cannot take new services (409
+    `client_inactive`).
+
+**Client Service** (`serviceId` = `FSV-…`)
+- **Fields:** `clientId`, `name`, `status`, `revision`, `updatedAt`.
+- **Lifecycle:** `active` ⇄ `paused` → `ended`.
+  - **Ended is terminal and frozen.** Reopening, renaming or changing the terms
+    returns 409 `service_ended`.
+  - An ended service stays readable, with its full history.
+- Names are unique within a client (409 `duplicate_service_name`).
+
+**Commercial terms** (`termsId` = `FCT-…`): one effective-dated segment per
+row.
+
+| Field | Values / rule |
+|---|---|
+| `payer` | `client` ("Client / school pays") or `parent` ("Parents pay") |
+| `chargeType` | `fixed_per_session` ("Fixed amount per session"), `per_player`, `subscription`, `other` |
+| `amount` | Decimal **string** in, integer **pence** stored (F2 `parseMoney`); 0 to £100,000 per unit |
+| `vatTreatment` / `vatRatePercent` | F2 treatments `plus_vat` / `vat_included` / `no_vat`; rate stored as basis points; `no_vat` ⇒ rate 0 |
+| `defaultBillableQuantity` | **Required for `per_player`**, 0–10,000. Refused for the other types |
+| `subscriptionFrequency` | `weekly` / `monthly` / `termly`. Required for `subscription`, refused otherwise |
+| `otherDescription` | ≤100 chars. Required for `other` (e.g. "per term fee"), refused otherwise |
+| `effectiveFrom` / `effectiveUntil` | Inclusive real dates. `until` null = open-ended |
+
+**VAT use.**
+- An explicit value in the request wins. On a change, the previous terms are
+  used next. Only then does the Finance Settings default apply
+  (`effectiveDefaultVat`).
+- The Settings default is a **pre-fill only**: the resolved treatment and rate
+  are **stored on the terms row**. A later change to Settings never re-prices
+  existing terms.
+- No rate is ever assumed. If there is no default and no explicit VAT, the
+  request is 400.
+- An organisation recorded as **not VAT registered** can only use `no_vat`.
+- All VAT figures come from the F2 kernel (`calculateVat`). F3 has no VAT maths
+  of its own (drift check Z4).
+
+**Default billable quantity** is part of the terms segment, so it is
+effective-dated. Changing 18 → 20 from a date keeps 18 before that date (test
+ED7). If a change moves a service away from `per_player`, the inherited
+quantity is dropped. An explicit quantity on a non-per-player type is refused.
+
+### FIN3.3 Effective dating and history protection
+
+- Uses F2's `resolveEffective` / `findOverlaps` / `entryError`. F3 has no
+  resolver of its own.
+- **A change applies from a date onward.** `POST
+  /services/{id}/commercial/changes {effectiveFrom, changes, reason}`:
+  - sets the current open segment's `Effective Until` to `effectiveFrom − 1
+    day`;
+  - opens a new segment from `effectiveFrom`, with the changed fields merged on
+    top of the current terms.
+- **History is never rewritten:**
+  - `effectiveFrom` must be **today or later**, with today taken in the
+    organisation's timezone (`Europe/London`). Otherwise 409
+    `backdated_change_not_allowed`.
+  - It must also be **after** the current segment's start. Otherwise 409
+    `change_overlaps_current_terms`.
+  - The only edit ever made to an existing terms row is its `Effective Until`
+    (code check Z7). Every other field of an old row is immutable.
+- **Stored history is validated on every read and write:**
+  - segments must be well-formed, non-overlapping, and only the latest may be
+    open-ended;
+  - anything else is 409 `commercial_terms_overlap` / `commercial_terms_invalid`;
+  - the newest segment is never picked silently.
+- **Other rules:**
+  - A change identical to the current terms returns 200 `changed:false`, with
+    nothing written.
+  - Initial setup on a service that already has terms is 409
+    `commercial_terms_exist`.
+  - Initial setup may use any real date, including a past one, because it
+    records terms already agreed. Only **changes** are forward-only.
+
+### FIN3.4 Plain-language summaries
+
+`describeTerms` produces the one-liner Management sees. These three are real
+live API output:
+- `£50 + VAT per delivered session`
+- `£9 per player · 18 billable · £162 expected per session`
+- `£25 inc. VAT per delivered session`
+
+The other two charge types are covered by unit test CM3, which asserts
+`£30 inc. VAT per month` for a subscription and `£1,250.50 + VAT · per term fee`
+for other.
+
+Each terms object also carries `illustrativeAmount {basis, amount, net, vat,
+gross}` from the F2 kernel. For example, £50 + VAT is net 50.00, VAT 10.00,
+gross 60.00. This is **an illustration of the terms only**: it is not expected
+revenue for any occurrence (F4) and never Actual Revenue.
+
+### FIN3.5 Storage (TEST Airtable, transitional)
+
+**Tables** (TEST base only; all link to Organisation & Branding):
+- **`Finance Clients` (`tblT55ZsoCkDtTY5y`):** Finance Client ID, Organisation,
+  Client Name, Status, Billing Contact Name, Billing Email, Billing CC Emails,
+  Payment Terms Override (Days), PO Required, Revision, Last Changed By User ID,
+  Last Changed At.
+- **`Finance Client Services` (`tblleT60Kw9voiOEj`):** Finance Service ID,
+  Organisation, Client (link), Service Name, Status, Revision, Last Changed
+  By/At.
+- **`Finance Commercial Terms` (`tblXbmrM9A8VXJFSp`):** Commercial Terms ID,
+  Organisation, Service (link), Effective From, Effective Until, Payer, Charge
+  Type, Amount (Minor Units), VAT Treatment, VAT Rate (Basis Points), Default
+  Billable Quantity, Subscription Frequency, Other Description, Created By User
+  ID, Created At.
+
+**Schema changes:**
+- The Organisation links added reverse-link fields on Organisation & Branding.
+  These are additive only.
+- `finance-commercial-mapping.ts` is the only code that knows these field
+  names.
+
+**How rows are read:**
+- Each row is validated on read with the input rules.
+- A row that fails validation, links to 0 or several organisations, links to a
+  parent outside the organisation, or duplicates an id makes the whole
+  commercial dataset **409 `commercial_data_invalid`**. Bad rows are never
+  skipped.
+- **Direct Airtable edits bypass audit and history protection.** This is the
+  same known limitation as F2 Settings (FIN2.2) and ends with the Supabase
+  move.
+
+**Supabase migration `finance_f3_write_locks`:**
+- adds `public.finance_write_locks` (RLS on, service_role only);
+- adds `acquire_finance_write_lock(p_lock_key)` /
+  `release_finance_write_lock(p_lock_key, p_lock_token)`;
+- EXECUTE is granted to service_role only, and a stale lock expires after 5
+  minutes;
+- F3 uses the key `commercial:<organisationId>`, so all writes for an
+  organisation are serialised.
+
+### FIN3.6 API — TEST Edge Function `finance` v5 (`verify_jwt: true`)
+
+| Method | Path | Access | Result |
+|---|---|---|---|
+| GET | `/clients` | View/Manage | clients + service cards (`currentSummary`) + `today` |
+| POST | `/clients` | Manage | `{client:{…}, reason?}` → 201 |
+| GET | `/clients/{FCL}` | View/Manage | client + full services (current, history) |
+| POST | `/clients/{FCL}` | Manage | `{client:{…changed}, reason?}` → 200 (or `changed:false`) |
+| POST | `/clients/{FCL}/services` | Manage | `{service:{name}, commercial?:{effectiveFrom,…}, reason?}` → 201 |
+| GET | `/services/{FSV}[?on=YYYY-MM-DD]` | View/Manage | service + `commercial {configured, today, current, history[], onDate?}` |
+| POST | `/services/{FSV}` | Manage | `{service:{name?/status?}, reason?}` |
+| POST | `/services/{FSV}/commercial` | Manage | initial terms → 201 |
+| POST | `/services/{FSV}/commercial/changes` | Manage | `{effectiveFrom, changes:{…}, reason?}` → 201 |
+| GET | `/commercial/options` | View/Manage | Active services of Active clients with current terms (for Session creation) |
+
+**Rules:**
+- **Order of checks:**
+  1. 404 / 405 for the route;
+  2. 401 without auth;
+  3. 403 `management_required`;
+  4. 400 for the query or body;
+  5. authorisation via F1 `authorizeFinance`: `read` for GET, `manage` for
+     POST.
+- F1's `/access` and `/write-check` and F2's `/settings` are unchanged.
+- **Input:** tenant selectors anywhere (query, top level, nested) give 400
+  `tenant_param_rejected`. Unknown keys give 400 `unexpected_field` /
+  `unexpected_parameter`. Malformed ids give 404. `on` is accepted only on the
+  service read.
+- **Output:**
+  - Only opaque public ids (`FCL-`/`FSV-`/`FCT-`) are returned. Airtable
+    record ids, user ids and audit internals never are.
+  - Enum values (`plus_vat`, `per_player`…) are always paired with plain
+    labels and the summary.
+  - Amounts are returned as decimal text.
+- **Error codes:**
+  - 409: `duplicate_client_name`, `duplicate_service_name`, `client_inactive`,
+    `service_ended`, `commercial_terms_exist`, `backdated_change_not_allowed`,
+    `change_overlaps_current_terms`, `commercial_data_invalid`,
+    `finance_commercial_busy`.
+  - 503: stores unavailable.
+  - 500 `finance_commercial_unaudited`: only if the audit and the undo both
+    fail.
+
+**Write path** (`finance-commercial-orchestrator.ts`):
+1. authorise (Manage);
+2. take the organisation write lock;
+3. load and validate the organisation's clients, services and terms;
+4. validate the request against that snapshot;
+5. do the Airtable writes, each one registered with its undo;
+6. write **one** audit insert (a PostgREST array, so it is atomic) for every
+   event of the request;
+7. release the lock (always).
+
+If step 5 or 6 fails, every write of the request is undone: rows it created are
+deleted and patched rows are restored. The caller then gets 503.
+
+### FIN3.7 Session relationship (Finance owns commercial, Schedule owns the Session)
+
+- **TEST `Sessions`:** new field **`Finance Service ID`** (`fldciYOlVZ9yVDf59`,
+  text).
+  - It holds the opaque `FSV-` reference that a future Session-creation flow
+    sets after choosing from `GET /commercial/options`.
+  - Finance **never writes Sessions** (drift checks SE3 / Z5).
+  - The Session shows the read-only summary; price fields are never copied onto
+    it.
+- **Existing Session fields:** `Commercial Model` (`fldgLc3JRKuaudPB8`),
+  `Billing Model` (`fldftnAxnGkrA2erA`) and `Finance Key`
+  (`fldmWZ2gW9pTS07zV`) now have descriptions marking them
+  **transitional/deprecated for new logic**. No data changed. Production Session
+  fields were not touched.
+- **Options:** list only Active services of Active clients; paused and ended
+  services are excluded. A service whose terms start in the future shows
+  `commercial: null` until they start.
+
+### FIN3.8 Access and security (reuses F1 exactly)
+
+- **Access rules:**
+  - View: reads. Manage: reads and writes.
+  - No grant: 403 `finance_access_denied`.
+  - Coach / Parent: 403 `management_required`, even when holding a grant.
+  - Module off: 403 `finance_module_disabled`.
+- **The organisation always comes from the caller's profile:**
+  - rows are filtered to the caller's Organisation & Branding record;
+  - a parent link into another organisation's rows cannot resolve;
+  - tenant keys are refused.
+- **Isolation:** another organisation's client/service ids return 404.
+
+### FIN3.9 Audit (F2 `public.finance_audit_events`, append-only)
+
+**Event types** (`record_id` is the public opaque id):
+
+| Entity | Events |
+|---|---|
+| `finance_client` | `.created` / `.updated` |
+| `finance_client_service` | `.created` / `.updated` |
+| `finance_commercial_terms` | `.created` / `.changed` |
+
+**What each event holds:**
+- the organisation, actor, before and after, reason, and `context {source,
+  contract, route, changedFields, effectiveFrom, inline}`;
+- `occurred_at` is the database clock;
+- a change event's `before` holds the current segment, and its `after` holds
+  the closed segment plus the next one.
+
+**When events are written:**
+- A service created with inline terms writes 2 events in one insert.
+- Rejected, denied and no-op requests write **no** event.
+- If the audit fails, the writes are undone (FIN3.6).
+
+### FIN3.10 Live TEST verification (2026-09-29, `finance` v5, real HTTP via `pg_net`)
+
+**Deploy.** v5 was byte-verified by read-back: **13/13** bundled files are
+identical to the repo.
+
+**Callers:** `manager@test.invalid` (Manage unless noted), `coach.a`, `parent.a`.
+
+| # | Case | Result |
+|---|---|---|
+| 1 | Manage GET clients / options (empty) | 200, `[]` |
+| 2 | Coach / Parent GET + POST | 403 `management_required` ×4 |
+| 3 | No auth | 401 |
+| 4 | Tenant query / tenant top-level / tenant nested (`org_id`) | 400 `tenant_param_rejected` ×3 |
+| 5 | Bad id / wrong method / unknown query | 404 / 405 / 400 |
+| 6 | Create client "TEST Parkside Primary (F3)" | 201 `FCL-3A8982D46528`, rev 1 |
+| 7 | Service "TEST PPA cover (F3)" + inline terms from 2026-09-01 | 201 `FSV-D2E140F8755D`; **"£50 + VAT per delivered session"**; net 50.00 / VAT 10.00 / gross 60.00 |
+| 8 | Service "TEST After-school club (F3)", then `/commercial` | 201 `FSV-B2A5C5275835`; **"£9 per player · 18 billable · £162 expected per session"**; No VAT |
+| 9 | Service "TEST Holiday camp - parent paid (F3)", no VAT given | 201 `FSV-6D4E564C6E9E`; Settings pre-fill → VAT included 20%; "£25 inc. VAT per delivered session" (20.83 + 4.17); period upcoming |
+| 10 | Change PPA to £55 from 2026-11-01 | 201; old segment until 2026-10-31, new `FCT-46A785F5686C` upcoming; current still £50 |
+| 11 | `?on=2026-10-15` / `2026-11-15` / `2026-08-01` / `2026-02-30` | £50 + VAT / £55 + VAT (net 55, VAT 11, gross 66) / `null` / 400 |
+| 12 | List / options / client read | 200, 3 services, only public ids and labels |
+| 13 | Float amount / per-player without quantity / unknown field / bad payer | 400 ×4 |
+| 14 | Backdated change (2026-09-15) | 409 `backdated_change_not_allowed` |
+| 15 | Overlapping change (from 2026-11-01 again) | 409 `change_overlaps_current_terms` |
+| 16 | Duplicate client name (different case) | 409 `duplicate_client_name` |
+| 17 | Initial terms on a service with terms | 409 `commercial_terms_exist` |
+| 18 | 3 simultaneous writes | 1 processed (409 backdated), 2 × 409 `finance_commercial_busy` |
+| 19 | **View** grant: 3 reads / 3 writes | 200 (`access:view`, `?on` resolves £55) / 403 `finance_manage_required` ×3 |
+| 20 | **No grant**: reads and write | 403 `finance_access_denied` ×3 |
+| 21 | **`module_finance` off**: reads and write | 403 `finance_module_disabled` ×3; then restored ON |
+| 22 | After restore: clients / access / settings | 200; Manage; Settings complete 8/8, Coach payment day 7 |
+| 23 | Needs Attention `/cases` | 200, **Clear**, 0 cases, 0 config issues |
+
+**No partial writes and no false audit events:**
+- Audit events went from 7 to **15**: exactly the 8 successful writes (client
+  created; 3 services created; 4 terms created/changed).
+- Rows 13–21 wrote nothing.
+- Airtable holds exactly 1 client, 3 services and 4 terms rows.
+- `finance_write_locks` is empty.
+
+**Cleanup:**
+- **Grants:** the View proof grant was revoked, and a single Manage grant was
+  restored for `manager@test.invalid`. There is 1 active grant.
+- **Probe:** the temporary `f2probe` schema was dropped.
+- **Passwords:** the three TEST users' passwords were reset for the probe (TEST
+  only).
+
+### FIN3.11 Resting TEST data (kept on purpose for F4)
+
+All names start with "TEST" and end with "(F3)"; they are fixtures, not real
+customers.
+
+| Record | Id | Terms |
+|---|---|---|
+| Client TEST Parkside Primary (F3) | `FCL-3A8982D46528` | contact "TEST Business Manager", `billing.parkside@test.invalid`, CC `head.parkside@test.invalid`, 30 days, PO required |
+| TEST PPA cover (F3) | `FSV-D2E140F8755D` | £50 + VAT 20% per session 2026-09-01 → 2026-10-31; £55 + VAT from 2026-11-01 |
+| TEST After-school club (F3) | `FSV-B2A5C5275835` | £9 per player × 18, No VAT, client pays, from 2026-09-01 |
+| TEST Holiday camp - parent paid (F3) | `FSV-6D4E564C6E9E` | £25 VAT included 20%, parents pay, from 2026-10-01 |
+
+- **Why keep it:** this covers what F4 occurrence billing needs to resolve:
+  fixed, per-player, a future price change across a date boundary, a
+  parent-paid service, and all three VAT treatments.
+- **Audit:** the 8 F3 audit events are permanent (append-only).
+- **Settings:** Finance Settings are unchanged, at revision 7.
+
+### FIN3.12 Tests and regression
+
+- **`tests/support/finance-commercial.test.ts`: 86 checks.**
+
+| Section | Checks | Covers |
+|---|---|---|
+| A | 6 | access matrix |
+| T | 6 | tenant keys, unknown fields, bodies, query and routes |
+| CL | 13 | clients: create, update, duplicate, inactive, no-op, isolation, invalid or multi-organisation rows |
+| SV | 8 | multiple services, per-service payer, duplicate, pause/resume, ended frozen |
+| CM | 14 | charge types, VAT pre-fill and override, no assumed rate, unregistered organisation, validation, pence, labels |
+| ED | 13 | future change, earlier date, boundaries, old row untouched, backdated, overlap, quantity dating, identical no-op, charge-type switch, stored overlap, timezone "today" |
+| AU | 12 | event shapes, one insert, no event on rejection, undo on audit failure and mid-write failure, undo failure → 500, lock release and busy |
+| SE | 3 | options for Session creation, opaque ids, Sessions never touched |
+| Z | 11 | drift and code checks |
+
+- **Shim and support copies:**
+  - shim: `tests/e2e/financecommercialtest.js`;
+  - `finance-commercial.ts` and `finance-commercial-mapping.ts` are identical
+    copies;
+  - the repository and orchestrator copies differ only in the adjusted import.
+- **Mutation check: 18/18 caught.**
+  - The mutations:
+    - backdated change allowed;
+    - change on/before the current start allowed;
+    - closed segment overlapping by a day;
+    - stored overlap not detected;
+    - inherited quantity kept;
+    - unregistered organisation charging VAT;
+    - expected amount ignoring quantity;
+    - nested tenant key not rejected;
+    - rows not filtered by organisation;
+    - multi-organisation row accepted;
+    - View can write;
+    - audit failure not rolled back;
+    - ended service editable;
+    - inactive client takes services;
+    - identical change writes a segment;
+    - lock never released;
+    - duplicate client names allowed;
+    - options including paused services.
+  - The lock-release mutant is caught by the suite's crash line (`X0`).
+- **Other Finance suites (unchanged):** F1 56/56, F2 kernel 47/47, F2 Settings
+  92/92.
+- **Full suite (final code, `finance` v5):** `npm test` gives **70/70 files,
+  2,417 PASS / 0 FAIL** (2,331 + 86). Schedule, Coaches, Needs Attention,
+  Parent Hub and the F1/F2 suites are all green.
+
+### FIN3.13 Deferred (later Finance slices — not started)
+
+- **F4 occurrence billing resolution:** which terms apply to each delivered
+  occurrence, actual billable quantity, expected revenue. F3 only illustrates.
+- **Session linkage:**
+  - writing `Finance Service ID` from the Session creation/edit flow;
+  - the Session UI showing the summary;
+  - retiring `Commercial Model` / `Billing Model` / `Finance Key`.
+- **Later Finance work:** invoices, numbering, payments, credits, Stripe, Xero,
+  Coach Costs, suppliers, overheads, Cash Flow, Month Report, Finance Needs
+  Attention evaluators and all Finance UI.
+- **Storage and API follow-ups:**
+  - moving clients, services and terms (and Settings) from Airtable to
+    Supabase, which ends the direct-edit audit bypass;
+  - a Finance audit read API/UI;
+  - optimistic concurrency (client-sent `revision`) for stale forms;
+  - `GET /commercial/options` showing upcoming terms for services that have
+    not started yet.
+- **Client fields for later slices:** client billing address and Xero contact
+  mapping, which belong to invoicing.
