@@ -63,8 +63,12 @@ is built on top of these rules from day one, not bolted on after:
 - **Supabase Auth, RLS and secure Edge Functions are the only authority
   for access.** Airtable stores operational people, relationships and
   content — never passwords or security decisions.
-- **Google Sheets stays the source of truth for schedule and financials**
-  unless deliberately migrated later.
+- **Google Sheets stays the source of truth for schedule** unless
+  deliberately migrated later.
+- **Finance truth is the Hub's own backend/domain logic, not Google
+  Sheets** (Finance Foundation, 2026-09-29). Google Sheets is a
+  finance/reporting integration that receives Finance results; its
+  formulas never control Hub financial truth.
 - **Every private endpoint identifies the user from the authenticated
   Supabase session.** The browser never supplies a trusted `user_id`,
   coach name or role — the server always checks, every time.
@@ -375,9 +379,12 @@ shape (coach submits something, it lands in Airtable, sits pending review):
 
 - Real Supabase Auth login (`role='management'`), replacing the shared
   Financials password reused from the live Hub.
-- Financials: reuse the live Coaches Hub's Baseline/Actual/Grouping logic
-  rather than rebuild term-aware accuracy work that's already built and
-  tested there.
+- Financials: the legacy live Coaches Hub Financials page (shared
+  password, published CSVs, browser-side Baseline/Actual/Grouping P&L) is
+  NOT the implementation target and is not being reused. New Finance is
+  built backend-first per the Finance Foundation slices (TEST-ENV.md,
+  "Finance Foundation - F1" onwards), with Finance View / Manage access
+  separate from Management.
 - **A review queue** — holiday requests and parent feedback land here to be
   approved/actioned. This is the piece that actually delivers "mostly used
   Hub-side" — approving something in the Hub is what keeps David and Josh

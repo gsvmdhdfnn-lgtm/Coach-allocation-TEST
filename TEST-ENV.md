@@ -12678,3 +12678,220 @@ unchanged, and `needs-attention` stays at **v12**, not redeployed.
 
 **FOUNDATION COMPLETE IN TEST — READY FOR FINANCE FOUNDATION** still
 stands. This is a consistency correction only, not production readiness.
+
+## Finance Foundation — F1 (Finance access + core API boundary) — TEST only — 2026-09-29
+
+This is the first Finance implementation slice. It builds only the secure
+access boundary that every later Finance slice authorises through.
+
+It creates **no Finance business records**. There are no clients, rules,
+VAT, invoices, payments, costs, Stripe, Xero, Sheets, Needs Attention
+evaluators or UI. Production was not touched.
+
+### FIN1.1 Access semantics (locked)
+
+- **Three states:** none, `view` and `manage`. Finance access is
+  **separate from Management**: a Management profile with no grant has
+  no Finance access.
+- **Eligibility:** only an **active Management** profile may use a grant.
+  Coach, Parent, pending and inactive profiles are always refused, even
+  when they hold a grant row.
+- **`view`** permits Finance read actions. **`manage`** permits read and
+  write.
+- **When a grant counts:** only when it is unrevoked **and** its
+  `organisation_id` equals the caller's own profile `organisation_id`.
+- **Fails closed, never guessed:** no grant, an unknown or malformed
+  level, two active grants, or a grant for another organisation all
+  resolve to *none*.
+- **External accountant / bookkeeper access** (non-Management) is
+  deferred.
+
+### FIN1.2 Supabase storage: `public.finance_access_grants`
+
+Migration: `finance_f1_finance_access_grants`, TEST project
+`dkqubldmfyeuudecxmvh` only. This is **not** the Airtable → Supabase
+migration: only access/security facts live here, which matches the
+existing rule that Supabase holds identity and permissions.
+
+| Column | Rule |
+|---|---|
+| `id` | uuid primary key |
+| `user_id` | uuid → `auth.users(id)`, on delete cascade (same as `profiles`) |
+| `organisation_id` | text, non-blank. Explicit organisation ownership (future multi-org) |
+| `access_level` | text, `CHECK (access_level in ('view','manage'))`. Malformed values cannot be stored |
+| `granted_at`, `granted_by`, `grant_note` | audit (who / when / why); `granted_by` is required |
+| `revoked_at`, `revoked_by`, `revoke_note` | revocation audit. `revoked_at` and `revoked_by` are both set, or both empty |
+
+- **One active grant per user and organisation.** A unique partial index
+  on `(user_id, organisation_id) WHERE revoked_at IS NULL` enforces it.
+- **Grants are immutable** (trigger `finance_access_grants_immutable` →
+  `finance_access_grants_guard()`):
+  - user, organisation, level and granted-by fields cannot be changed;
+  - only the revocation fields can be set, and only once;
+  - a revoked grant can never be changed or re-activated.
+  - To change a level: revoke the old grant and insert a new one. The full
+    history stays in the table.
+- **Security pattern** (same as the lock tables):
+  - RLS is on, with **no policies** and **no anon/authenticated grants**,
+    so only the service role can read it.
+  - The `finance` function reads it server-side, filtered only by the
+    authenticated caller's user id (checked to be a UUID first).
+  - The expected advisor note is `rls_enabled_no_policy` (INFO), the same
+    as for every lock table.
+- **Why a table, not a `profiles` column:** it gives audit history
+  (who/when, revocations), explicit per-organisation ownership, and
+  immutable rows. `profiles` itself is unchanged.
+- **Assigning access:** for now this is done by SQL with the service
+  role. A Management-facing grant UI or API is deferred.
+
+### FIN1.3 Organisation and module rules
+
+- **Organisation.** It is **always** the caller's Supabase
+  `profiles.organisation_id`. It must match exactly one Active
+  "Organisation & Branding" row, using the same `resolveOrganisation()`
+  as Needs Attention (copied, and drift-checked byte-identical).
+- **Tenant selectors are refused, never ignored.** Any query parameter or
+  body key that could select an organisation, tenant or Airtable base
+  returns 400 `tenant_param_rejected`:
+  - `organisation*`, `organization*`, `org*`, `tenant*`, `base*`,
+    `airtableBase*`, compared case-insensitively.
+  - F1 routes also accept no other query parameters or body fields
+    (400 `unexpected_parameter` / `unexpected_field`).
+- **Module.** The existing Feature Controls key `module_finance`, read
+  with the same `moduleState()` as Needs Attention. Missing, disabled or
+  conflicting → Finance fails closed for every caller, read and write.
+  There is no second toggle.
+- **Isolation today is per Airtable base**, as for the rest of TEST. The
+  Feature Controls and Organisation rows are the base's own. The grant's
+  `organisation_id` gives the organisation boundary that the Supabase move
+  will rely on.
+
+### FIN1.4 API contract — TEST Edge Function `finance`
+
+**Code layout** (`supabase/functions-test/finance/`):
+- `finance-access.ts`: pure policy.
+- `repository.ts`: read-only; Airtable config and the grant store.
+- `orchestrator.ts`: `authorizeFinance()`.
+- `index.ts`: HTTP wrapper and production boot guards.
+
+Deployed **v1**, `verify_jwt: true`.
+
+**Routes:**
+
+| Route | Requirement | 200 body |
+|---|---|---|
+| `GET /finance/access` | Finance read | `{contract:"finance-access-v1", organisation:{organisationId,name}, module:{key:"module_finance",enabled:true}, access:"view"\|"manage", capabilities:{read,manage}}` |
+| `POST /finance/write-check` | Finance manage | `{contract:"finance-access-v1", action:"manage", authorized:true, persisted:false}` |
+
+`write-check` is an authorisation probe only. It writes nothing anywhere.
+Later Finance write routes will call the same `authorizeFinance(…,
+"manage")`.
+
+**Decision order** (the first failure wins):
+
+| Step | Check | On failure |
+|---|---|---|
+| 1 | Route and method | 404 / 405 |
+| 2 | Authentication | 401 (the gateway rejects invalid JWTs first) |
+| 3 | Active Management profile | 403 `management_required` |
+| 4 | Tenant or unexpected query/body keys | 400 |
+| 5 | Valid grant for the caller's own organisation | 403 `finance_access_denied` |
+| 6 | Organisation resolves | 409 `organisation_not_found` / `organisation_ambiguous` |
+| 7 | `module_finance` enabled | 403 `finance_module_disabled` |
+| 8 | Requirement met | 403 `finance_manage_required` |
+
+- A grant-store or Airtable read failure returns 503
+  (`finance_access_unavailable` / `finance_config_unavailable`). It never
+  assumes access.
+- A 500 returns only `"Unexpected error"`, with no internals.
+- **What is never exposed:** user ids, grant rows, who granted, the
+  service key, Airtable record or base ids, timezone, or any other
+  organisation.
+- **Production boot guards:** the function refuses to start if
+  `AIRTABLE_BASE_ID` is a production base (`apprptFotQuVL1mhs`,
+  `app6ex6UHY2RRO2Ak`), or if `SUPABASE_URL` is the production project
+  (`bkkukymqaxawnudoxdjs`).
+
+### FIN1.5 Live TEST verification (2026-09-29, `finance` v1)
+
+**Identities:**
+- `manager@test.invalid` (Management, ORG-TEST-001). It is the only TEST
+  Management identity, so its grants were cycled.
+- `coach.a@test.invalid`.
+- `parent.a@test.invalid`.
+
+| # | Case | Result |
+|---|---|---|
+| 1 | No auth / invalid JWT | 401 / 401 |
+| 2 | Management, no grant (read and write) | 403 `finance_access_denied` |
+| 3 | Coach / Parent | 403 `management_required` |
+| 4 | Management + View, **module off** | 403 `finance_module_disabled` |
+| 5 | Management + View, module on | GET 200 `access:"view"`, read true / manage false. POST write-check 403 `finance_manage_required` |
+| 6 | Management + Manage | GET 200 `access:"manage"`, read and manage true. POST 200 `authorized:true, persisted:false` |
+| 7 | Coach **holding** a Manage grant | GET and POST 403 `management_required` |
+| 8 | `?organisationId=ORG-TEST-999`, `?tenant=`, `?baseId=apprptFotQuVL1mhs`, body `organisation_id`, body `airtableBaseId` | 400 `tenant_param_rejected` (all five) |
+| 9 | `?debug=1` / body `{"amount":1}` | 400 `unexpected_parameter` / `unexpected_field` |
+| 10 | Wrong method / unknown route | 405 / 404 |
+| 11 | Manage grants for ORG-TEST-001 **and** ORG-TEST-999 | 200; the response is still ORG-TEST-001 (no switching) |
+| 12 | Only the ORG-TEST-999 grant active | 403 `finance_access_denied` (another organisation's grant gives nothing) |
+| 13 | Database: duplicate active grant / level `admin` / edit level in place / un-revoke | rejected (unique index / CHECK / immutability trigger ×2) |
+| 14 | Manage, module **off** | GET and POST 403 `finance_module_disabled` |
+| 15 | Module restored on | GET 200 `manage`, POST 200 |
+| 16 | Needs Attention after `module_finance` on | Clear, 14 evaluated, 24 planned, 0 config issues (unchanged) |
+
+**Resting state, deliberately restored:**
+- **`module_finance` is Enabled in TEST.** Before F1 it was disabled
+  ("NOT live in TEST"). It is now the switch for the TEST Finance API.
+  Its Feature Controls description was updated to say so. The Planned
+  finance Needs Attention rules still do not evaluate.
+- **`finance_access_grants`:** exactly one active grant, the
+  `manager@test.invalid` / ORG-TEST-001 / `manage` TEST baseline. It was
+  granted by "F1 live verification".
+- The four probe grants stay as **revoked** history, with reasons:
+  - the View grant (moved to Manage);
+  - the first Manage grant (revoked for the cross-organisation proof);
+  - the ORG-TEST-999 grant;
+  - the Coach grant.
+- No profile was changed, and no other Airtable row was touched.
+
+### FIN1.6 Tests and regression
+
+- **`tests/support/finance-access.test.ts`: 56 checks.** Sections:
+  - A: policy.
+  - T: tenant and request shape.
+  - O: organisation and module.
+  - R: orchestrator over a mocked grant store and Airtable.
+  - C: response contract, no leaks.
+  - Z: drift and code checks. Support copies are byte-identical to the
+    canonical files, `resolveOrganisation`/`moduleState` are identical to
+    Needs Attention's, and the checks also cover read-only repository, the
+    production guards, only two routes, and no Josh Evans naming.
+- Test shim: `tests/e2e/financeaccesstest.js`.
+- Support copies: `finance-access.ts`, `finance-repository.ts`,
+  `finance-orchestrator.ts`.
+- **Mutation check:** 10 of 10 security mutations were caught:
+  - revoked grants counted;
+  - organisation filter removed;
+  - View can manage;
+  - ambiguous grants allowed;
+  - inactive profile allowed;
+  - any role allowed;
+  - module gate removed;
+  - query tenant check removed;
+  - grant user filter removed;
+  - malformed level accepted.
+- No shared helper was modified; Needs Attention code is unchanged.
+- **Full suite:** `npm test` gives **67/67 files, 2,192 PASS / 0 FAIL**
+  (the 2,136 baseline plus 56 new F1 checks).
+
+### FIN1.7 Deferred (later Finance slices)
+
+- **A Management-facing grant UI/API.** Today grants are assigned by
+  service-role SQL. Assigning access will need its own Finance Manage
+  (or admin) control and audit.
+- **Finance audit events for Finance actions** (F2). The grant table
+  audits access changes only.
+- **Non-Management Finance users** (external accountant/bookkeeper).
+- **Moving `module_finance` / organisation config to Supabase** with the
+  platform organisation layer. Isolation is per base until then.
+- **A TEST-facing frontend.** There is no Finance UI.
