@@ -5,7 +5,8 @@
  *   A   access (View reads, View cannot manage, Manage, no grant, Coach/Parent, module off)
  *   T   tenant / request shape (bodies, query, routes, dangerous keys)
  *   CL  clients (create/read/update, duplicates, invalid contact/terms, isolation, inactive)
- *   SV  services (several per client, different payer/charge, Active/Paused/Ended, ended readable + frozen)
+ *   SV  services (several per client, different payer/charge, Active/Paused/Ended, ended readable, frozen except reactivation)
+ *   RE  Ended -> Active reactivation (history untouched, dated lookups, no overlap, audit, View denied, no duplicate)
  *   CM  commercial terms (fixed, per player, subscription, other, pence, VAT defaults, summaries, illustration)
  *   ED  effective dating / history (initial, future change, earlier dates, boundary, backdate/overlap, quantity)
  *   AU  audit (exactly once, content, rejected writes none, atomic batch, rollback on failure, lock)
@@ -282,8 +283,61 @@ async function main() {
     const er = await Rd({ name: "service.read", params: { serviceId: ppaId } });
     ck("SV6. Ended service remains readable with its history", er.status === "ok" && er.body.service.status === "ended" && er.body.service.commercial.current.summary === "£50 + VAT per delivered session");
     const writes = tableWrites().length;
-    ck("SV7. Ended service is frozen: reopen / rename / commercial change -> 409 service_ended, nothing written", (await W({ route: "service.update", serviceId: ppaId, patch: { status: "active" }, reason: null })).code === "service_ended" && (await W({ route: "terms.change", serviceId: ppaId, req: { effectiveFrom: "2026-11-01", changes: { amountMinor: 1 }, changedKeys: ["amount"] }, reason: null })).code === "service_ended" && tableWrites().length === writes);
+    const events = world.audit.length;
+    ck("SV7. Ended service is frozen except reactivation: rename / to paused / rename+reactivate / commercial change -> 409 service_ended, nothing written, no event", (await W({ route: "service.update", serviceId: ppaId, patch: { name: "PPA 2" }, reason: null })).code === "service_ended" && (await W({ route: "service.update", serviceId: ppaId, patch: { status: "paused" }, reason: null })).code === "service_ended" && (await W({ route: "service.update", serviceId: ppaId, patch: { status: "active", name: "PPA 2" }, reason: null })).code === "service_ended" && (await W({ route: "terms.change", serviceId: ppaId, req: { effectiveFrom: "2026-11-01", changes: { amountMinor: 1 }, changedKeys: ["amount"] }, reason: null })).code === "service_ended" && tableWrites().length === writes && world.audit.length === events);
     ck("SV8. Unknown service -> 404", (await Rd({ name: "service.read", params: { serviceId: "FSV-000000000000" } })).httpStatus === 404);
+  }
+
+  // ===== RE. Ended -> Active reactivation =====
+  {
+    const { clientId, ppaId, afterId } = await seed();
+    await W({ route: "terms.change", serviceId: ppaId, req: { effectiveFrom: "2026-10-15", changes: { amountMinor: 5500 }, changedKeys: ["amount"] }, reason: null });
+    const svcCount = world.tables[TABLES.services].length;
+    const termsSnap = () => JSON.stringify(world.tables[TABLES.terms]);
+    const before = termsSnap();
+    const hist = (r: any) => r.body.service.commercial.history.map((t: any) => `${t.termsId}|${t.effectiveFrom}|${t.effectiveUntil}|${t.amount}`).join(";");
+    const histBefore = hist(await Rd({ name: "service.read", params: { serviceId: ppaId } }));
+    const ended = await W({ route: "service.update", serviceId: ppaId, patch: { status: "ended" }, reason: "contract ended" });
+    ck("RE1. Active -> Ended: 200, status ended, revision 2, commercial terms rows untouched", ended.status === "ok" && ended.body.service.status === "ended" && ended.body.service.revision === 2 && termsSnap() === before);
+    const er = await Rd({ name: "service.read", params: { serviceId: ppaId } }, "2026-09-15");
+    ck("RE2. Ended remains readable: status ended, full history, earlier date resolves the historical terms", er.status === "ok" && er.body.service.status === "ended" && hist(er) === histBefore && er.body.service.commercial.onDate.terms.amount === "50.00");
+    ck("RE3. Ended services are not offered for new Sessions", !(await Rd({ name: "options", params: {} })).body.options.some((o: any) => o.serviceId === ppaId));
+    world.grants[MGR] = [g("view")];
+    calls = [];
+    const events = world.audit.length;
+    const v = await W({ route: "service.update", serviceId: ppaId, patch: { status: "active" }, reason: null });
+    world.grants[MGR] = [g("manage")];
+    ck("RE4. View cannot reactivate: 403 finance_manage_required, no lock, no write, no event", v.httpStatus === 403 && v.code === "finance_manage_required" && tableWrites().length === 0 && !calls.some((c) => c.url.includes("/rpc/")) && world.audit.length === events);
+    calls = [];
+    const re = await W({ route: "service.update", serviceId: ppaId, patch: { status: "active" }, reason: "restarts in September" });
+    const svcWrites = tableWrites();
+    ck("RE5. Manage reactivates Ended -> Active: 200, status active, revision 3, same service id", re.status === "ok" && re.httpStatus === 200 && re.body.changed === true && re.body.service.status === "active" && re.body.service.revision === 3 && re.body.service.serviceId === ppaId);
+    ck("RE6. Reactivation does not rewrite commercial terms: one PATCH on the service row only, terms rows byte-identical, history identical", svcWrites.length === 1 && svcWrites[0].method === "PATCH" && tableOf(svcWrites[0].url) === TABLES.services && termsSnap() === before && hist(re) === histBefore);
+    const ev = world.audit[world.audit.length - 1];
+    ck("RE7. Audit: exactly one finance_client_service.updated event, before ended -> after active, changedFields [status], lifecycle reactivated, reason", world.audit.length === events + 1 && ev.event_type === "finance_client_service.updated" && ev.record_id === ppaId && ev.before.status === "ended" && ev.after.status === "active" && ev.after.revision === 3 && JSON.stringify(ev.context.changedFields) === '["status"]' && ev.context.lifecycle === "reactivated" && ev.reason === "restarts in September");
+    const on = async (d: string) => (await Rd({ name: "service.read", params: { serviceId: ppaId } }, d)).body.service.commercial;
+    const [d1, d2] = [await on("2026-09-15"), await on("2026-10-20")];
+    ck("RE8. Lookups after reactivation: earlier dates keep the historical terms, current/future resolve the continuing terms", d1.onDate.terms.amount === "50.00" && d1.onDate.terms.effectiveUntil === "2026-10-14" && d2.onDate.terms.amount === "55.00" && d1.current.amount === "50.00");
+    ck("RE9. Reactivated service is offered for Sessions again", (await Rd({ name: "options", params: {} })).body.options.some((o: any) => o.serviceId === ppaId));
+    const w0 = tableWrites().length;
+    const e0 = world.audit.length;
+    const ov = await W({ route: "terms.change", serviceId: ppaId, req: { effectiveFrom: "2026-10-15", changes: { amountMinor: 6000 }, changedKeys: ["amount"] }, reason: null });
+    const bd = await W({ route: "terms.change", serviceId: ppaId, req: { effectiveFrom: "2026-09-01", changes: { amountMinor: 6000 }, changedKeys: ["amount"] }, reason: null });
+    ck("RE10. A new price on reactivation cannot overlap or rewrite history: on/before the current start -> 409, backdated -> 409, nothing written, no event", ov.code === "change_overlaps_current_terms" && bd.code === "backdated_change_not_allowed" && tableWrites().length === w0 && world.audit.length === e0);
+    const np = await W({ route: "terms.change", serviceId: ppaId, req: { effectiveFrom: "2026-12-01", changes: { amountMinor: 6000 }, changedKeys: ["amount"] }, reason: "new price after restart" });
+    const h3 = np.body.service.commercial.history;
+    const [n1, n2] = [await on("2026-11-15"), await on("2026-12-05")];
+    ck("RE11. A new price uses the dated-change model: 3 segments, no overlap, earlier periods resolve their own terms", np.httpStatus === 201 && h3.length === 3 && h3[1].effectiveUntil === "2026-11-30" && h3[2].effectiveFrom === "2026-12-01" && n1.onDate.terms.amount === "55.00" && n2.onDate.terms.amount === "60.00" && (await on("2026-09-15")).onDate.terms.amount === "50.00");
+    ck("RE12. No duplicate service: same service id reused, service count unchanged, re-creating the name -> 409 duplicate_service_name", world.tables[TABLES.services].length === svcCount && (await W({ route: "services.create", clientId, name: "PPA", initial: null, reason: null })).code === "duplicate_service_name");
+    const again = await W({ route: "service.update", serviceId: ppaId, patch: { status: "active" }, reason: null });
+    ck("RE13. Reactivating an already Active service is a no-op: 200 changed:false, no event", again.body.changed === false && world.audit.length === e0 + 1);
+    await W({ route: "service.update", serviceId: afterId, patch: { status: "ended" }, reason: null });
+    const afterRow = world.tables[TABLES.terms].find((r) => r.fields.Service?.[0] === world.tables[TABLES.services].find((x) => x.fields["Finance Service ID"] === afterId)!.id)!;
+    world.tables[TABLES.terms].push({ id: "recOverlapTerms01", fields: { ...afterRow.fields, "Commercial Terms ID": "FCT-DDDDDDDDDDDD" } });
+    const w1 = tableWrites().length;
+    const e1 = world.audit.length;
+    const bad = await W({ route: "service.update", serviceId: afterId, patch: { status: "active" }, reason: null });
+    ck("RE14. Reactivation never proceeds over overlapping stored terms: 409 commercial_terms_overlap, still ended, nothing written, no event", bad.httpStatus === 409 && bad.code === "commercial_terms_overlap" && tableWrites().length === w1 && world.audit.length === e1 && world.tables[TABLES.services].find((x) => x.fields["Finance Service ID"] === afterId)!.fields.Status === "Ended");
   }
 
   // ===== CM. Commercial terms =====

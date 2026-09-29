@@ -389,7 +389,11 @@ async function planWrite(
   const client = (findClient(w, s.value.clientId) as { value: Client }).value;
   const h = history(w, s.value.serviceId);
   if (!h.ok) return h;
-  if (s.value.status === "ended") return fail(409, "service_ended", "This service has ended - it is kept for history and cannot be changed");
+  // Ended = no longer operating, kept for history. The ONLY write it accepts is
+  // reactivation (status -> active, no rename); its commercial terms are never
+  // touched by the lifecycle change - a new price is a separate dated change.
+  const reactivation = s.value.status === "ended" && input.route === "service.update" && input.patch.status === "active" && (input.patch.name === undefined || input.patch.name === s.value.name);
+  if (s.value.status === "ended" && !reactivation) return fail(409, "service_ended", "This service has ended - reactivate it (status active) before changing it; its history is kept");
 
   if (input.route === "service.update") {
     const before = s.value;
@@ -405,7 +409,7 @@ async function planWrite(
       run: async (txn) => {
         await txn.patch(TABLES.services, s.recordId, serviceFields(after, meta), serviceRestoreFields(before, rawRow(raw.services, s.recordId)));
         return {
-          events: [ev(EVENTS.serviceUpdated, ENTITY_SERVICE, before.serviceId, shape(before), shape(after), `POST /services/${before.serviceId}`, { changedFields: changed })],
+          events: [ev(EVENTS.serviceUpdated, ENTITY_SERVICE, before.serviceId, shape(before), shape(after), `POST /services/${before.serviceId}`, { changedFields: changed, ...(reactivation ? { lifecycle: "reactivated" } : {}) })],
           body: { service: publicService(after, client, h.terms, today) },
         };
       },

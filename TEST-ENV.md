@@ -13382,10 +13382,18 @@ F3 is Actual Revenue.
 
 **Client Service** (`serviceId` = `FSV-…`)
 - **Fields:** `clientId`, `name`, `status`, `revision`, `updatedAt`.
-- **Lifecycle:** `active` ⇄ `paused` → `ended`.
-  - **Ended is terminal and frozen.** Reopening, renaming or changing the terms
-    returns 409 `service_ended`.
-  - An ended service stays readable, with its full history.
+- **Lifecycle:** `active` ⇄ `paused` → `ended` → `active` (reactivation;
+  corrected 2026-09-29, see FIN3.14).
+  - **Ended means "no longer operating", not "can never exist again".** An
+    ended service stays visible and readable, with its full commercial history.
+  - An ended service **can be reactivated**: `POST /services/{FSV}
+    {service:{status:"active"}}` (Manage). The same service comes back; no
+    duplicate is created.
+  - Reactivation is the **only** write an ended service accepts. Renaming, moving
+    to paused and commercial changes while ended return 409 `service_ended`,
+    and so does renaming as part of the reactivation request.
+  - Reactivation never touches the commercial terms. A new price after a
+    restart is a separate effective-dated change (FIN3.3).
 - Names are unique within a client (409 `duplicate_service_name`).
 
 **Commercial terms** (`termsId` = `FCT-…`): one effective-dated segment per
@@ -13676,23 +13684,26 @@ customers.
 | TEST PPA cover (F3) | `FSV-D2E140F8755D` | £50 + VAT 20% per session 2026-09-01 → 2026-10-31; £55 + VAT from 2026-11-01 |
 | TEST After-school club (F3) | `FSV-B2A5C5275835` | £9 per player × 18, No VAT, client pays, from 2026-09-01 |
 | TEST Holiday camp - parent paid (F3) | `FSV-6D4E564C6E9E` | £25 VAT included 20%, parents pay, from 2026-10-01 |
+| TEST Breakfast club - reactivation (F3 correction) | `FSV-681F9A8704C8` | Active (revision 3: created → ended → reactivated). £40 + VAT 2026-09-01 → 2026-10-14; £45 + VAT 2026-10-15 → 2026-11-30; £50 + VAT from 2026-12-01 |
 
 - **Why keep it:** this covers what F4 occurrence billing needs to resolve:
   fixed, per-player, a future price change across a date boundary, a
   parent-paid service, and all three VAT treatments.
-- **Audit:** the 8 F3 audit events are permanent (append-only).
+- **Audit:** the 8 F3 audit events and the 6 F3-correction audit events are
+  permanent (append-only). The trail holds 21 events in total.
 - **Settings:** Finance Settings are unchanged, at revision 7.
 
 ### FIN3.12 Tests and regression
 
-- **`tests/support/finance-commercial.test.ts`: 86 checks.**
+- **`tests/support/finance-commercial.test.ts`: 100 checks** (86 in F3, plus 14 from the FIN3.14 correction).
 
 | Section | Checks | Covers |
 |---|---|---|
 | A | 6 | access matrix |
 | T | 6 | tenant keys, unknown fields, bodies, query and routes |
 | CL | 13 | clients: create, update, duplicate, inactive, no-op, isolation, invalid or multi-organisation rows |
-| SV | 8 | multiple services, per-service payer, duplicate, pause/resume, ended frozen |
+| SV | 8 | multiple services, per-service payer, duplicate, pause/resume, ended readable and frozen except reactivation |
+| RE | 14 | Ended → Active reactivation (added by the FIN3.14 correction) |
 | CM | 14 | charge types, VAT pre-fill and override, no assumed rate, unregistered organisation, validation, pence, labels |
 | ED | 13 | future change, earlier date, boundaries, old row untouched, backdated, overlap, quantity dating, identical no-op, charge-type switch, stored overlap, timezone "today" |
 | AU | 12 | event shapes, one insert, no event on rejection, undo on audit failure and mid-write failure, undo failure → 500, lock release and busy |
@@ -13704,7 +13715,7 @@ customers.
   - `finance-commercial.ts` and `finance-commercial-mapping.ts` are identical
     copies;
   - the repository and orchestrator copies differ only in the adjusted import.
-- **Mutation check: 18/18 caught.**
+- **Mutation check: 23/23 caught** (18 in F3, plus 5 reactivation mutants from FIN3.14).
   - The mutations:
     - backdated change allowed;
     - change on/before the current start allowed;
@@ -13727,9 +13738,11 @@ customers.
   - The lock-release mutant is caught by the suite's crash line (`X0`).
 - **Other Finance suites (unchanged):** F1 56/56, F2 kernel 47/47, F2 Settings
   92/92.
-- **Full suite (final code, `finance` v5):** `npm test` gives **70/70 files,
-  2,417 PASS / 0 FAIL** (2,331 + 86). Schedule, Coaches, Needs Attention,
-  Parent Hub and the F1/F2 suites are all green.
+- **Full suite (F3, `finance` v5):** `npm test` gave **70/70 files, 2,417
+  PASS / 0 FAIL** (2,331 + 86). Schedule, Coaches, Needs Attention, Parent Hub
+  and the F1/F2 suites were all green.
+- **After the FIN3.14 correction (`finance` v6):** **70/70 files, 2,431 PASS /
+  0 FAIL** (2,417 + 14).
 
 ### FIN3.13 Deferred (later Finance slices — not started)
 
@@ -13751,3 +13764,125 @@ customers.
     not started yet.
 - **Client fields for later slices:** client billing address and Xero contact
   mapping, which belong to invoicing.
+
+### FIN3.14 Correction: Ended services can be reactivated (2026-09-29, `finance` v6)
+
+**What was wrong.** F3 treated Ended as final: every write to an ended service,
+including setting it back to Active, returned 409 `service_ended`. That
+contradicts the locked Finance Design Pack. The lifecycle is Active / Paused /
+Ended, ended services stay visible, and **an ended service can later be
+reactivated**. Example: Parkside's PPA service ends in June 2027 and restarts in
+September 2027. The same service comes back, not a duplicate.
+
+**Exact change (one guard in `finance-commercial-orchestrator.ts`, plus its
+test copy):**
+- **Reactivation is allowed.** On an ended service, `service.update` with
+  `status: "active"` and no rename (the name absent, or equal to the current
+  name) now proceeds through the normal service-update path:
+  - one PATCH of the service row, with revision + 1;
+  - one audit event.
+- **Everything else on an ended service is still refused** with 409
+  `service_ended`:
+  - rename;
+  - `status: "paused"`;
+  - rename together with reactivation;
+  - initial terms or commercial changes.
+- **Audit:** the event is the existing `finance_client_service.updated`, with
+  `before.status "ended"`, `after.status "active"`, `changedFields ["status"]`
+  and the reason. Its context also carries `lifecycle: "reactivated"`. No new
+  event type, table or field was added.
+- **Nothing else changed:** clients, payers, charge types, VAT, money, Session
+  ownership, `Finance Service ID`, F1 permissions and F2 Settings.
+
+**Commercial history on reactivation.** In F3, the service lifecycle and the
+commercial terms are separate:
+- **Ending never touched the terms.** The ended service's terms segments
+  stay exactly as they were, including the open latest one, just as for a
+  paused service.
+- **Reactivation therefore writes no terms at all:**
+  - every stored terms row is left byte-for-byte unchanged;
+  - earlier dates keep resolving their historical terms;
+  - the current or future date resolves the continuing open segment.
+- **No overlap or ambiguity is possible:**
+  - reactivation creates no segment;
+  - the stored history is validated before the reactivation is accepted, so
+    overlapping stored terms return 409 `commercial_terms_overlap` and nothing
+    is written.
+- **A new price on restart** uses the existing dated-change route (`POST
+  /services/{FSV}/commercial/changes`) after reactivation:
+  - the change must start today or later and after the current segment's start;
+  - the earlier segment is closed the day before;
+  - previous terms are never rewritten.
+
+**What F3 does not model (flagged for F4, no product decision taken here).**
+The lifecycle status is a current-state flag, not effective-dated. When a
+service was ended and reactivated is recorded only in the audit trail, as
+timestamps plus the before and after status. If F4 billing needs "the service
+was not operating between X and Y" as a billing rule, that is an F4 decision.
+F3 does not gate commercial terms by lifecycle, and it never did (paused
+services behave the same).
+
+**Tests (`finance-commercial.test.ts`, 86 → 100):**
+- SV7 now proves the ended service is frozen except for reactivation.
+- A new section, RE1–RE14, covers:
+  - Active → Ended, with terms untouched;
+  - ended still readable, with dated lookups;
+  - ended not offered for Sessions;
+  - View cannot reactivate (403, no lock, no write, no event);
+  - Manage can reactivate (200, same id, revision 3);
+  - the only write is one service PATCH, and the terms rows are byte-identical;
+  - the audit event content;
+  - lookups after reactivation;
+  - the service offered again for Sessions;
+  - overlapping and backdated changes refused (409, no write, no event);
+  - a new price after restart creating a clean third segment;
+  - no duplicate service (same id, count unchanged, duplicate name 409);
+  - a repeated reactivation being a no-op;
+  - reactivation refused over overlapping stored terms (409, still ended, no
+    event).
+- **Mutations:** 23/23 caught. The 5 new mutants are:
+  - reactivation may also rename;
+  - ended may move to paused;
+  - reactivation impossible (the old frozen rule);
+  - the audit event not marked as reactivation;
+  - the stored-history check skipped.
+- **Unchanged suites:** F1 56/56, F2 kernel 47/47, F2 Settings 92/92.
+- **Full suite:** `npm test` gives **70/70 files, 2,431 PASS / 0 FAIL**.
+
+**Deploy.** `finance` v6 was byte-verified by read-back: 13/13 bundled files
+are identical to the repo.
+
+**Live verification (v6, real HTTP via `pg_net`, `manager@test.invalid`).**
+The controlled service is `FSV-681F9A8704C8`, "TEST Breakfast club -
+reactivation (F3 correction)", under TEST Parkside Primary (F3). The four
+F3-retained records were not touched.
+
+| # | Step | Result |
+|---|---|---|
+| 1 | Create with £40 + VAT from 2026-09-01; dated change to £45 from 2026-10-15 | 201 / 201. Active; terms `FCT-A52EF09AC46D` (→ 2026-10-14) and `FCT-B125E042B258` (open) |
+| 2 | End it | 200, status ended, revision 2, both terms segments kept |
+| 3 | Read while ended: `?on=2026-09-15` / `?on=2026-10-20` / options | 200 ended: £40 + VAT / £45 + VAT; not in Session options |
+| 4 | While ended: rename / paused / terms change / rename + reactivate | 409 `service_ended` ×4; audit count unchanged (19) |
+| 5 | View grant: reactivate / read | 403 `finance_manage_required`, still ended / 200 `access:view` |
+| 6 | Manage: reactivate | **200, status active, same `FSV-681F9A8704C8`, revision 3; history identical** |
+| 7 | Audit | One `finance_client_service.updated`: ended → active, rev 3, `changedFields [status]`, `lifecycle: reactivated`, reason |
+| 8 | After reactivation: `?on=2026-09-15` / `?on=2026-10-20` / options | £40 (`FCT-A52…`) / £45 (`FCT-B125…`) / offered again |
+| 9 | Change from 2026-10-15 (overlap) / from 2026-09-15 (backdated) | 409 `change_overlaps_current_terms` / 409 `backdated_change_not_allowed`; no event |
+| 10 | New price after restart: £50 from 2026-12-01 | 201; history £40 → £45 (until 2026-11-30) → £50 from 2026-12-01; each date resolves its own terms |
+| 11 | No duplicate | Client read lists 4 services (all Active), Airtable has 4 service rows, re-creating the name gives 409 `duplicate_service_name` |
+| 12 | Airtable terms rows | `FCT-A52…` byte-identical to the pre-end snapshot. `FCT-B125…` changed only its Effective Until, set by step 10 and not by reactivation |
+| 13 | Needs Attention `/cases` | 200, **Clear**, 0 cases |
+
+- **Audit:** 15 → **21** events, exactly the 6 successful writes (service and
+  terms created, dated change, ended, reactivated, new price). The 7 rejected or
+  denied requests wrote nothing.
+- **Cleanup:**
+  - no write lock was left;
+  - the View proof grant was revoked, and exactly one Manage grant is active
+    for `manager@test.invalid`;
+  - the temporary `f2probe` schema was dropped;
+  - the manager's TEST password was reset for the probe (TEST only).
+- **Resting data:** the reactivation service is kept as a documented TEST
+  fixture (FIN3.11). It gives F4 a real ended-then-reactivated service with a
+  three-segment price history.
+
