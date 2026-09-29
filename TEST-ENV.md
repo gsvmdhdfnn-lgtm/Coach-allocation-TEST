@@ -12146,3 +12146,479 @@ over plain rows. It has no fetch, Deno or writes (RD4 / D4).
 - **Still carried:** tables read whole (fine at TEST scale), exact-case
   exceptions only, Airtable 429 watchpoint.
 - **Slice 9 has not been started.**
+
+## Needs Attention Foundation — FINAL (Slice 9: performance, contract freeze and handoff) — TEST only — 2026-09-29
+
+> **FOUNDATION COMPLETE IN TEST — READY FOR FINANCE FOUNDATION.**
+> This marks the Needs Attention foundation complete and frozen **in TEST**.
+> It does **not** mean the foundation is production-ready. Nothing here has
+> been promoted, and production was not touched (read-only throughout).
+
+Slice 9 added no rule family, activated no Planned rule and changed no
+evaluator. No code defect was found, so `needs-attention` was **not
+redeployed**. It stays at **v12**, byte-identical to
+`supabase/functions-test/needs-attention/` at `3298c0c`. This slice added:
+
+- one audit test (`tests/support/needs-attention-foundation.test.ts`, 77
+  checks, with its e2e shim);
+- a snapshot of the live catalogue
+  (`tests/support/needs-attention-catalogue.snapshot.json`);
+- this section.
+
+### NA12.1 Active catalogue (frozen v1)
+
+There are 38 catalogue rows: **15 Active** (14 evaluated plus
+`venue_missing`) and **23 Planned**. The snapshot is compared, row by row,
+with the code-side registry by CAT1–CAT12. There were 0 mismatches against
+the live base.
+
+All evaluated rules require `module_coaches`, and every rule is Client
+Customisable. W = default Warning threshold, U = default Urgent threshold.
+"Before" is measured to the event, "Overdue" from outstanding-since.
+
+| Rule | Key | Base | W | U | Override | Destination route | Case key |
+|---|---|---|---|---|---|---|---|
+| ATT-001 | no_lead_coach | Normal | 72h Before | 24h Before | Yes | schedule/occurrence-staffing | `occurrence:X` |
+| ATT-002 | learning_coach_only | Normal | 72h Before | 24h Before | Yes | schedule/occurrence-staffing | `occurrence:X` |
+| ATT-005 | session_understaffed | Normal | 72h Before | 24h Before | Yes | schedule/occurrence-staffing | `occurrence:X` |
+| ATT-013 | session_no_coach | Warning | – | 48h Before | Yes | schedule/occurrence-staffing | `occurrence:X` |
+| ATT-014 | assigned_coach_unavailable | Warning | – | 48h Before | Yes | schedule/occurrence-staffing | `occurrence:X\|coach:Y` |
+| ATT-012 | coach_schedule_conflict | Warning | – | 48h Before | Yes | coaches/schedule-conflict | `coach:X\|occurrence:A\|occurrence:B` (A<B) |
+| ATT-011 | coach_compliance_expiry | Warning (state) | – | – | Yes | coaches/compliance | `coach:X\|requirement:Y` |
+| ATT-031 | non_compliant_coach_assigned | Warning (locked minimum) | – | 48h Before | No | coaches/compliance | `occurrence:X\|coach:Y` |
+| ATT-042 | compliance_verification_pending | Normal (state) | – | – | No | coaches/compliance | `coach:X\|requirement:Y` |
+| ATT-041 | cover_open | Normal | 48h Overdue | 24h Before | No | coaches/cover-request-date | `coverdate:X` |
+| ATT-043 | coach_outcome_pending | Normal | 48h Overdue | – | No | coaches/occurrence-financial-outcome | `occurrence:X\|coach:Y` |
+| ATT-044 | work_summary_queried | Normal | 3d Overdue | – | No | coaches/work-summary | `summary:X` |
+| ATT-045 | work_summary_ready_to_finalise | Normal | 3d Overdue | – | No | coaches/work-summary | `summary:X` |
+| ATT-046 | work_summary_blocked | Normal | 3d Overdue | – | No | coaches/work-summary | `summary:X` |
+
+- **Severity.** ATT-011 uses state severity: Review Soon is Warning,
+  Expired is Urgent. ATT-042 is always Normal.
+- **Anchors.** 8 rules use a Before threshold and need an event anchor. 5
+  rules (cover, outcome, the three Work Summary rules) use Overdue and need
+  an outstanding-since anchor. CAT7 and CAT8 enforce both.
+- **Source gating.** Every evaluator runs only when its catalogue row is
+  Active and Evaluation Status is Active. It also needs a registered
+  evaluator that matches the catalogue, `module_coaches` on (exactly one
+  Enabled row), and effective Enabled. The first failing gate becomes the
+  skip reason.
+- **`venue_missing` (ATT-018)** is Active in the catalogue but has no
+  evaluator, so it is skipped with `not_implemented`. This is intentional
+  and deferred to the venue foundation, and it is visible in diagnostics.
+
+**Planned / deferred (23 rows, never evaluated):**
+
+- **Schedule:** ATT-006, 017.
+- **Coaches:** ATT-008, 015.
+- **Players & Parents:** ATT-009, 010, 019, 020, 029, 033, 035.
+- **Development:** ATT-021.
+- **Communications:** ATT-022, 023.
+- **Finance:** ATT-024, 025, 026, 034.
+- **System:** ATT-027, 032, 036, 038.
+- **Safeguarding:** ATT-030 (disabled module; must stay off until a
+  safeguarding source of truth exists).
+
+The catalogue audit found **no contradiction** between the catalogue and
+the evaluators. No catalogue text, severity, threshold or flag was
+changed.
+
+### NA12.2 Frozen v1 API contract
+
+The contract is `GET /needs-attention/cases`, with engine
+`needs-attention-slice-8`.
+
+**Access.**
+
+- Management only (active profile with role `management`). Otherwise 403.
+- No token → 401.
+- Unknown route → 404; wrong method → 405.
+
+**Full view.** Always present:
+
+- `engine`
+- `organisation{organisationId,name,timezone}`
+- `generatedAt`
+- `complete`
+- `summary{state,total,counts{Normal,Warning,Urgent},suppressed}`
+- `cases[]`
+- `configIssues[]`
+
+`?debug=1` adds `diagnostics{rulesInCatalogue, evaluated[], skipped[],
+sourcesLoaded[], reads{lists,pages}, suppressedCases[]}`. Diagnostics are
+internal and not part of the UI contract.
+
+**Summary view (`?view=summary`).** `engine, organisation, generatedAt,
+complete, summary`. There is no case data, but it is a full evaluation,
+so it costs the same reads.
+
+**Single case (`?caseKey=…`).** `engine, organisation, generatedAt,
+complete, caseKey, exists, suppressed, case|null, rule{ruleKey, ruleId,
+evaluated, skipReason}, configIssues`.
+
+- Only the configuration and that one rule's sources are read.
+- A missing case returns `exists:false` with 200, not 404.
+
+**Case object.** There are exactly 17 fields.
+
+- Always:
+  - `caseKey, ruleId, ruleKey, ruleName, category, module`
+  - `severity, severityReason`
+  - `title, detail`
+  - `anchorTime`
+  - `exceptionAllowed`
+- Navigation / action: `actionLabel`, `destination{area,route,params}`.
+- Identity:
+  - `targetIds` holds the key subjects;
+  - `relatedIds` is optional context links.
+- Rule-specific: `context`, which holds scalars only.
+
+**Ordering.** Severity descending, then catalogue Sort Order, then
+`anchorTime`, then `caseKey`.
+
+**Summary state.** Clear / Normal / Warning / Urgent (the highest
+severity).
+
+`complete:false` appears only when a source failed to load. Affected
+rules then report a config issue instead of silently returning nothing.
+
+### NA12.3 Stable identity
+
+Case identity is organisation + rule + caseKey `ruleKey|type:id[|type:id]`.
+Subjects are Airtable record ids only: never names, dates or indexes.
+
+- **Conflict pairs** are sorted, so A/B and B/A give the same key.
+- **Coach-level compliance** is keyed by requirement, not document, so
+  replacing a document does not create a new case.
+- **Cover** is keyed by the request-date row.
+- **Work Summary** is keyed by the summary row.
+
+The keys stay the same when titles, detail, severity or time change
+(ID1–ID8). Mutations KEY1 (reversed pair order) and KEY2 (separator) are
+both caught.
+
+### NA12.4 Precedence and intentional coexistence
+
+**Staffing.** Locked NA2.2 precedence, decided on valid staff only:
+
+- 0 valid staff → `session_no_coach` only;
+- Lead required and none present → `no_lead_coach`;
+- all staff are Learning Coaches and Lead is not required →
+  `learning_coach_only`;
+- counting staff ≥1 but below the Required Staff Count →
+  `session_understaffed`. This can coexist with `no_lead_coach`.
+
+**Intentional coexistence.** These are separate problems with separate
+actions, and are not collapsed:
+
+- ATT-031 (non-compliant) + ATT-014 (unavailable) + ATT-012 (conflict)
+  on the same coach and occurrence;
+- ATT-011 (coach-level expiry) + ATT-031 (assignment-level);
+- `cover_open` on a fully staffed occurrence (cover stays separate from
+  staffing);
+- `coach_outcome_pending` + `work_summary_blocked` (the pending outcome is
+  one of the block reasons).
+
+**Mutual exclusion.** A Work Summary raises at most one of queried, ready
+or blocked. Cancelled and past occurrences never raise staffing,
+availability, conflict or assignment cases. PRE1–PRE10 cover all of this.
+
+### NA12.5 Module gating (live, 2026-09-29)
+
+`module_coaches` (`recD6JSqZV7l7391m`) was set Enabled off in TEST, with
+probe data loaded (135 open cases). Result:
+
+- all 14 rules skipped `module_off`;
+- 0 cases, state Clear;
+- **only the 5 configuration tables read**, with no domain table read;
+- `configIssues: []`.
+
+The flag was switched back on and confirmed (`Enabled=true`). A missing
+row or several conflicting rows also fail closed (G1–G8).
+
+### NA12.6 Security model
+
+- **Caller.** The caller is resolved from the Supabase JWT into
+  `profiles(active, role, organisation_id)`, and must be Management.
+- **Organisation.** It comes from the profile server-side. Any
+  tenant-looking query parameter (`organisation`, `organisationId`,
+  `org`, `tenant`, …) → 400 `tenant_param_rejected`. So does a
+  tenant-looking key in an exception body. Unknown body fields → 400.
+- **Exceptions and Settings** must link exactly one Organisation, and it
+  must be the caller's. Anything else suppresses nothing and cannot be
+  revoked (404 `exception_not_found`).
+
+Live probes (TEST), all as expected:
+
+| Probe | Status |
+|---|---|
+| coach and parent on `/cases`, `/exceptions`, `/exceptions/revoke` (6 calls) | 403 |
+| `?organisationId=`, `?tenant=`, `?org=` on POST, `organisationId` in body | 400 |
+| exception for a non-existent case | 404 `case_not_found` |
+| revoke an unknown exception id | 404 `exception_not_found` |
+| no Authorization | 401 |
+| caseKey lookup for a missing case | 200 `exists:false` |
+
+Diagnostics carry only record ids, counts and rule keys, and appear only
+for Management. SEC1–SEC9 cover this offline.
+
+**Domain-table isolation.** Today it is **per Airtable base**: one base
+per organisation. Settings and Exceptions are org-scoped by link. The
+Supabase migration must add explicit organisation filtering to every
+repository query (see NA12.10).
+
+### NA12.7 Exceptions (live, 2026-09-29)
+
+The live run, on probe cases:
+
+1. Create on `session_no_coach` → 201. The case was suppressed at once,
+   with audit fields approvedBy/At and reason stored.
+2. Duplicate → 409 `exception_exists`, returning the existing row.
+3. `cover_open`, ATT-031, ATT-046 and ATT-042 → 403
+   `override_not_supported`.
+4. A second exception with `effectiveUntil` 3 minutes ahead: suppressed
+   until 10:29:50Z, visible again from 10:29:54Z.
+5. A temporary Settings row with Allow Override **off** on
+   `session_no_coach`: both live exceptions stopped suppressing
+   (`exceptionAllowed:false`, no config noise). The row was then deleted.
+6. Revoke → 200, with revoked{at, by, reason} kept. The case was visible
+   again at once.
+
+Scope:
+
+- **Exact case only:** the key must match and the Rule link must match the
+  key's rule.
+- There is no rule-wide, coach-wide or date-range scope.
+- A current real case is required to create one.
+
+**Frozen behaviour (minor debt).** With Allow Override off and an old
+Active row still present, create returns 409 `exception_exists`, not 403.
+The message says "already has an exception in force", although that row
+no longer suppresses. EXC9 records this, and it is listed in NA12.13.
+
+### NA12.8 Performance (live synthetic volume, TEST)
+
+**Data.** 170 prefixed `NA9-PERF` rows were created:
+
+- 12 coaches;
+- 10 sessions and 56 occurrences;
+- 15 Session Staff and 6 Occurrence Staff;
+- 12 Coach Availability rows and 4 Availability Exceptions;
+- 1 Requirement and 9 Coach Documents;
+- 5 cover request-dates;
+- 16 Work Summaries and 24 Allocations.
+
+This gave **135 open cases**: all 14 rules fired, 2 Urgent, 96 Warning,
+37 Normal. Every row was deleted afterwards, by id.
+
+Latency is shown as bounds. Function-edge logs are sampled: 5 of about 40
+requests were logged. The bounds use Cloudflare's arrival stamp and the
+1-second `Date` header, so each is ±1 s. The logged `execution_time_ms` is
+exact.
+
+| Call | Result | Latency |
+|---|---|---|
+| Cold full queue (`debug`) | 200, 135 cases, 19 lists | 1.8–2.8 s |
+| Warm full queue ×3 | 200 each | 2.2–3.2 / 1.2–2.2 (logged **1,645 ms**) / 1.35–2.35 s |
+| Summary view ×2 | 200, 313 bytes | 0.7–1.7 / 0.83–1.83 s |
+| Lookup `cover_open` | 200, 10 lists | 0.86–1.86 s |
+| Lookup ATT-031 | 200, 13 lists | 1.07–2.07 s |
+| Parallel burst ×5 | all 200, identical 215,007 bytes | 2.1–4.1 s each |
+| Exception create | 201 | logged 1,814 ms |
+| Auth rejections (403/400) | – | 0.25–1.25 s (logged 772 ms) |
+
+- **Reads.** A full request made **19 list calls, each table exactly once,
+  one page each** (every table under 100 rows).
+- **Duplicate work.** Shared passes (staffing, compliance, cover, Work
+  Summary, outcome) are memoised per request.
+- **No per-record queries.**
+- **Errors.** No 429s, no 5xx, no timeouts and no function errors,
+  including the burst of 5 × 19 = 95 Airtable calls.
+- **Offline.** 187 occurrences / 44 coaches → 341 cases in about 160 ms
+  in memory, with every pass run once (PERF1–PERF3).
+
+**Watchpoints (not defects; no optimisation made):**
+
+1. **Airtable rate limit.** Each full request makes 19 Airtable calls (in
+   waves of 5), and Airtable allows about 5 requests/s per base. The
+   repository retries 429 with 1/2/4/8/16 s backoff. Concurrent full
+   refreshes are the risk, so the UI should poll `view=summary` for the
+   badge.
+2. **Payload.** About 1.55 KB per case: 135 cases ≈ 210 KB.
+3. **Pages.** Tables are read whole. Each table over 100 rows adds a
+   page per 100.
+
+All three are addressed by the Supabase move (indexed, filtered queries).
+
+### NA12.9 Airtable read map
+
+All tables are read with `list` (whole table, 100/page), once per request.
+
+**Always read (configuration):**
+
+| Table | Purpose | Future Supabase query |
+|---|---|---|
+| Needs Attention Rules | Catalogue | `na_rules` (global) |
+| Needs Attention Settings | Per-org settings | `na_settings where org_id=?` |
+| Needs Attention Exceptions | Per-org exceptions | `na_exceptions where org_id=? and active and not revoked` |
+| Feature Controls | Module flags | `feature_controls where org_id=? and key like 'module_%'` |
+| Organisation & Branding | Organisation + timezone | `organisations where id=?` |
+
+**Read when an evaluator that needs it runs (all gated by
+`module_coaches`):**
+
+| Table | Read by | Future Supabase query |
+|---|---|---|
+| Session Occurrences | staffing ×4, ATT-014, ATT-012, ATT-031, cover, ATT-043, WS ×3 | `occurrences where org_id=? and start between window` |
+| Sessions | same as Session Occurrences | `sessions where org_id=?` (joined) |
+| Coaches | all 14 | `coaches where org_id=?` |
+| Session Staff | staffing ×4, ATT-014, ATT-012, ATT-031 | `session_staff where org_id=? and date overlaps window` |
+| Occurrence Staff | as Session Staff | `occurrence_staff where occurrence_id in (…)` |
+| Coach Roles | as Session Staff | `coach_roles` (small) |
+| Coach Availability | ATT-014 | `coach_availability where coach_id in (…)` |
+| Coach Availability Exceptions | ATT-014 | `coach_availability_exceptions where date in window` |
+| Coach Documents | ATT-011, ATT-042, ATT-031 | `coach_documents where org_id=?` |
+| Coach Document Requirements | ATT-011, ATT-042, ATT-031 | `document_requirements where org_id=? and active` |
+| Staff Availability Requests | cover_open | `cover_request_dates where org_id=? and status='Open'` |
+| Cover Responses | cover_open | `cover_responses where request_date_id in (…)` |
+| Coach Work Summaries | WS ×3 | `work_summaries where org_id=? and active and status<>'Finalised'` |
+| Coach Allocations | ATT-043, WS ×3 | `coach_allocations where org_id=? and occurrence in window` |
+
+A single-case lookup reads the configuration plus only that rule's
+sources: cover 10 lists, staffing 11, ATT-031 13. With the module off,
+only the 5 configuration tables are read.
+
+### NA12.10 Supabase migration contract (handoff only — nothing migrated)
+
+**Pure logic moves unchanged.** These files have no fetch, Deno or writes:
+
+- engine: `needs-attention.ts`
+- `staffing.ts`, `coach-schedule.ts`, `compliance.ts`, `cover.ts`,
+  `work-summaries.ts`
+- `exceptions.ts` (the validation and matching half)
+
+**Replace.** `repository.ts` (Airtable list/create/update) becomes a
+repository with the same `Reader` shape (`list`/`listMany` returning
+`{id, fields, createdTime}`). The alternative is to adapt the evaluators
+to typed rows, one pass at a time, with the offline tests as the oracle.
+
+**Copied helpers.** These are kept byte-identical by drift tests and should
+become shared imports when their owning functions move:
+
+- the staffing resolver (hub-content / parent-hub copies);
+- compliance status;
+- cover state;
+- Work Summary open-status and outcome-required logic;
+- coach-availability matching.
+
+**createdTime dependencies.** `cover_open` uses the request-date row's
+Airtable `createdTime` as its outstanding-since (Warning) anchor. The new
+table needs a real `created_at`. No other rule reads `createdTime`.
+
+**Organisation scoping.**
+
+- Today domain isolation comes from one base per organisation. Every
+  migrated query **must** filter by `organisation_id`, derived from the
+  caller's profile, never from the request.
+- Settings and Exceptions keep their exactly-one-organisation rule.
+- The case key stays organisation-free. Identity is organisation + rule +
+  key.
+
+**Locks.**
+
+- Exception create/revoke is serialised per org + case key through the
+  `needs_attention_exception_locks` RPC lock.
+- A database unique partial index — (org, case_key) where active and not
+  revoked — can replace it.
+- Reads take no lock.
+
+**Not done here.** No schema, table, migration or repository code was
+written.
+
+### NA12.11 Regression and mutation confidence
+
+**Tests.**
+
+- Full suite: **66 files, 2,135 PASS / 0 FAIL** (the 2,058 baseline + 77
+  new foundation checks).
+- Needs Attention alone: 8 test files, all green.
+
+**Targeted mutations (Slice 9).** Each was applied to the test mirror,
+the affected NA tests were run, and the file was restored. **12 of 12
+caught:**
+
+| Mutation | Caught by |
+|---|---|
+| ORG1 an exception from another org suppresses | exceptions, foundation, engine |
+| ORG2 another org's Settings row applied | foundation, engine |
+| GATE1 module gate ignored | all 8 NA files |
+| KEY1 conflict pair order reversed | coach-schedule, engine |
+| KEY2 case-key separator changed | all |
+| OVR1 Settings can widen override | compliance, work-summaries, engine |
+| OVR2 exceptions match with override off | exceptions, foundation, engine |
+| STAFF1 no-coach also raises no-lead | staffing (22), cover, foundation, engine |
+| COVER1 overdue anchored on session start | cover, engine |
+| COMP1 "today" computed in UTC | compliance, engine |
+| COMP2 expired on the expiry date itself | compliance, engine |
+| WS1 stored Work Summary status trusted | work-summaries (6), engine |
+
+### NA12.12 Live smoke test after cleanup (2026-09-29, v12)
+
+| Check | Result |
+|---|---|
+| Needs Attention (Management) | 200, **Clear**, 14 evaluated, 19 lists, 0 config issues |
+| Needs Attention as coach / parent | 403 / 403 |
+| `/me` (Management, coach, parent) | 200 each |
+| hub-content `/players` (coach.a) | 200, md5 `685b11e7…` (unchanged) |
+| parent-hub `/me`, `/claims/pending` | 200 |
+| coach-compliance `/summary?coachId=recYZyiLVud7yoNZS` | 200 |
+| coach-cover `/manage` | 200 |
+| coach-work-summaries `/summaries` | 200 |
+| occurrence-financial-outcomes `/outcomes` | 400 without `occurrenceId` (as designed) |
+
+Cleanup removed 170 probe rows, 2 probe exceptions and 1 temporary
+Settings row. `module_coaches` was restored on. No TEST configuration was
+left changed.
+
+### NA12.13 Known future debt (carried, not fixed)
+
+- `venue_missing` (ATT-018) is Active but unimplemented. Deferred to the
+  venue foundation.
+- The 409-vs-403 wording when Allow Override is off and an old Active
+  exception row exists (NA12.7).
+- Tables are read whole, with no per-request window filter. This is fine
+  at TEST scale and is removed by the Supabase move.
+- There is an Airtable 429 watchpoint for concurrent full refreshes. The UI
+  should poll `view=summary`.
+- The full payload is about 1.55 KB per case. A paged or filtered view can
+  come with the Management UI.
+- The placeholder routes need to be built by the Management UI:
+  - `schedule/occurrence-staffing`
+  - `coaches/schedule-conflict`
+  - `coaches/cover-request-date`
+  - `coaches/compliance`
+  - `coaches/occurrence-financial-outcome`
+  - `coaches/work-summary`
+- Finalised Work Summary drift raises no case (a Finance / reopen
+  question).
+- Copied helpers should become shared imports once their functions move.
+- Domain org-scoping is per base today. It must become an explicit filter
+  in Supabase.
+- Function-edge logs are sampled, so future latency work needs in-function
+  timing.
+
+### NA12.14 Version / checkpoint
+
+| Item | Value |
+|---|---|
+| Branch | `foundation/test-base-isolation` |
+| Code checkpoint | `3298c0c` (Slice 8). Slice 9 commit adds tests and docs only |
+| Deployed TEST `needs-attention` | **v12**, byte-identical to the repo, not redeployed in Slice 9 |
+| Engine string | `needs-attention-slice-8` (frozen v1 contract) |
+| TEST Airtable / Supabase / org | `appQktredAuGa1X7e` / `dkqubldmfyeuudecxmvh` / `ORG-TEST-001` |
+| Production | Untouched (read-only) |
+
+**FOUNDATION COMPLETE IN TEST — READY FOR FINANCE FOUNDATION.** Finance,
+Parent/Player, venue, safeguarding, notifications, the Management and
+Settings UIs, the Supabase migration and production promotion were **not**
+started.

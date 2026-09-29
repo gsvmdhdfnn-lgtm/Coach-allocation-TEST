@@ -1,0 +1,772 @@
+{
+ "_comment": "Full snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e / tblyawQ8vSEN945Qp) taken 2026-09-29 for Needs Attention Slice 9 (foundation freeze). Airtable REST shape: fields by name, selects as names, unticked checkboxes absent. Description text omitted (non-behavioural).",
+ "records": [
+  {
+   "id": "rec7MaSdZV4VE02uL",
+   "fields": {
+    "Action Label": "Review Staffing",
+    "Active": true,
+    "Category": "Staffing & Cover",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Enabled": true,
+    "Default Urgent Threshold": 24,
+    "Default Urgent Timing": "Hours Before",
+    "Default Warning Threshold": 72,
+    "Default Warning Timing": "Hours Before",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-001",
+    "Rule Key": "no_lead_coach",
+    "Rule Name": "No Lead Coach",
+    "Sort Order": 1,
+    "Supports Override": true,
+    "Supports Urgent Threshold": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "recvi3B2CVN0OV16u",
+   "fields": {
+    "Action Label": "Review Staffing",
+    "Active": true,
+    "Category": "Staffing & Cover",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Enabled": true,
+    "Default Urgent Threshold": 24,
+    "Default Urgent Timing": "Hours Before",
+    "Default Warning Threshold": 72,
+    "Default Warning Timing": "Hours Before",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-002",
+    "Rule Key": "learning_coach_only",
+    "Rule Name": "No counting coach (Learning Coach only)",
+    "Sort Order": 2,
+    "Supports Override": true,
+    "Supports Urgent Threshold": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "recmYADnOx8lkaYWK",
+   "fields": {
+    "Action Label": "Review Staffing",
+    "Active": true,
+    "Category": "Staffing & Cover",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Enabled": true,
+    "Default Urgent Threshold": 24,
+    "Default Urgent Timing": "Hours Before",
+    "Default Warning Threshold": 72,
+    "Default Warning Timing": "Hours Before",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-005",
+    "Rule Key": "session_understaffed",
+    "Rule Name": "Session understaffed",
+    "Sort Order": 5,
+    "Supports Override": true,
+    "Supports Urgent Threshold": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "recpTRDhhUMCsf9Jj",
+   "fields": {
+    "Action Label": "Confirm Session",
+    "Active": true,
+    "Category": "Sessions & Venues",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Warning Threshold": 24,
+    "Default Warning Timing": "Hours Overdue",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_schedule",
+    "Rule ID": "ATT-006",
+    "Rule Key": "occurrence_awaiting_confirmation",
+    "Rule Name": "Occurrence awaiting confirmation",
+    "Sort Order": 6,
+    "Supports Override": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "recsDp40yGEhM3zZe",
+   "fields": {
+    "Action Label": "Review Coach Signup",
+    "Active": true,
+    "Category": "Coaches & Compliance",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Warning Threshold": 2,
+    "Default Warning Timing": "Days Overdue",
+    "Destination Area": "Coaches",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-008",
+    "Rule Key": "coach_signup_pending",
+    "Rule Name": "Coach signup awaiting approval",
+    "Sort Order": 8,
+    "Supports Override": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "rectM2ooVDhB2YRdQ",
+   "fields": {
+    "Action Label": "Review Parent Claim",
+    "Active": true,
+    "Category": "Players & Parents",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Warning Threshold": 2,
+    "Default Warning Timing": "Days Overdue",
+    "Destination Area": "Players & Parents",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_players_parents",
+    "Rule ID": "ATT-009",
+    "Rule Key": "parent_claim_pending",
+    "Rule Name": "Parent claim awaiting approval",
+    "Sort Order": 9,
+    "Supports Override": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "recOnJqBfld7mXz6Z",
+   "fields": {
+    "Action Label": "Review Session Request",
+    "Active": true,
+    "Category": "Players & Parents",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Warning Threshold": 2,
+    "Default Warning Timing": "Days Overdue",
+    "Destination Area": "Players & Parents",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_players_parents",
+    "Rule ID": "ATT-010",
+    "Rule Key": "player_session_request_pending",
+    "Rule Name": "Player session request awaiting approval",
+    "Sort Order": 10,
+    "Supports Override": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "recoah2OWYf03q2pJ",
+   "fields": {
+    "Action Label": "Review Compliance",
+    "Active": true,
+    "Category": "Coaches & Compliance",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Default Enabled": true,
+    "Destination Area": "Coaches",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-011",
+    "Rule Key": "coach_compliance_expiry",
+    "Rule Name": "Coach compliance expiring or expired",
+    "Sort Order": 11,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recGSsP4HwYKP9aKY",
+   "fields": {
+    "Action Label": "Review Conflict",
+    "Active": true,
+    "Category": "Staffing & Cover",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Default Enabled": true,
+    "Default Urgent Threshold": 48,
+    "Default Urgent Timing": "Hours Before",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-012",
+    "Rule Key": "coach_schedule_conflict",
+    "Rule Name": "Coach scheduling conflict",
+    "Sort Order": 12,
+    "Supports Override": true,
+    "Supports Urgent Threshold": true
+   }
+  },
+  {
+   "id": "recOEAwFVLqQtHwxv",
+   "fields": {
+    "Action Label": "Assign Staff",
+    "Active": true,
+    "Category": "Staffing & Cover",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Default Enabled": true,
+    "Default Urgent Threshold": 48,
+    "Default Urgent Timing": "Hours Before",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-013",
+    "Rule Key": "session_no_coach",
+    "Rule Name": "Session has no staff",
+    "Sort Order": 13,
+    "Supports Override": true,
+    "Supports Urgent Threshold": true
+   }
+  },
+  {
+   "id": "reckIH3YJVQ8f0uYn",
+   "fields": {
+    "Action Label": "Review Staffing",
+    "Active": true,
+    "Category": "Staffing & Cover",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Default Enabled": true,
+    "Default Urgent Threshold": 48,
+    "Default Urgent Timing": "Hours Before",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-014",
+    "Rule Key": "assigned_coach_unavailable",
+    "Rule Name": "Assigned coach unavailable",
+    "Sort Order": 14,
+    "Supports Override": true,
+    "Supports Urgent Threshold": true
+   }
+  },
+  {
+   "id": "rech1X29XKAoZysEq",
+   "fields": {
+    "Action Label": "Confirm Staffing",
+    "Active": true,
+    "Category": "Staffing & Cover",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Warning Threshold": 24,
+    "Default Warning Timing": "Hours Overdue",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-015",
+    "Rule Key": "staffing_change_unconfirmed",
+    "Rule Name": "Staffing change not confirmed",
+    "Sort Order": 15,
+    "Supports Override": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "recttktYHnq3V1tdG",
+   "fields": {
+    "Action Label": "Review Venue",
+    "Active": true,
+    "Category": "Sessions & Venues",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Default Urgent Threshold": 48,
+    "Default Urgent Timing": "Hours Before",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_schedule",
+    "Rule ID": "ATT-017",
+    "Rule Key": "venue_unavailable",
+    "Rule Name": "Venue unavailable",
+    "Sort Order": 17,
+    "Supports Override": true,
+    "Supports Urgent Threshold": true
+   }
+  },
+  {
+   "id": "recADoSNML2AfAPvt",
+   "fields": {
+    "Action Label": "Assign Venue",
+    "Active": true,
+    "Category": "Sessions & Venues",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Enabled": true,
+    "Default Urgent Threshold": 48,
+    "Default Urgent Timing": "Hours Before",
+    "Default Warning Threshold": 7,
+    "Default Warning Timing": "Days Before",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Active",
+    "Required Module": "module_schedule",
+    "Rule ID": "ATT-018",
+    "Rule Key": "venue_missing",
+    "Rule Name": "Venue missing",
+    "Sort Order": 18,
+    "Supports Override": true,
+    "Supports Urgent Threshold": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "recrLOzfWbazw38Mb",
+   "fields": {
+    "Action Label": "Review Membership",
+    "Active": true,
+    "Category": "Players & Parents",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Destination Area": "Players & Parents",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_players_parents",
+    "Rule ID": "ATT-019",
+    "Rule Key": "session_membership_issue",
+    "Rule Name": "Session membership issue",
+    "Sort Order": 19,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "rec01t2oSfAXy4Fxi",
+   "fields": {
+    "Action Label": "Complete Register",
+    "Active": true,
+    "Category": "Players & Parents",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Warning Threshold": 24,
+    "Default Warning Timing": "Hours Overdue",
+    "Destination Area": "Players & Parents",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_players_parents",
+    "Rule ID": "ATT-020",
+    "Rule Key": "register_incomplete",
+    "Rule Name": "Register incomplete",
+    "Sort Order": 20,
+    "Supports Override": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "reclusPKycDrLGMy3",
+   "fields": {
+    "Action Label": "Review Development",
+    "Active": true,
+    "Category": "Development",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Warning Threshold": 7,
+    "Default Warning Timing": "Days Overdue",
+    "Destination Area": "Development",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_development",
+    "Rule ID": "ATT-021",
+    "Rule Key": "development_review_due",
+    "Rule Name": "Development review due",
+    "Sort Order": 21,
+    "Supports Override": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "rec4c9oTY1auhrj22",
+   "fields": {
+    "Action Label": "Send Communication",
+    "Active": true,
+    "Category": "Communications",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Destination Area": "Communications",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_communications",
+    "Rule ID": "ATT-022",
+    "Rule Key": "communication_outstanding",
+    "Rule Name": "Required communication outstanding",
+    "Sort Order": 22,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recINV5sZJFzvtLWm",
+   "fields": {
+    "Action Label": "Review Delivery",
+    "Active": true,
+    "Category": "Communications",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Destination Area": "Communications",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_communications",
+    "Rule ID": "ATT-023",
+    "Rule Key": "communication_failed",
+    "Rule Name": "Communication delivery failed",
+    "Sort Order": 23,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recJDIykVr1p8VIxA",
+   "fields": {
+    "Action Label": "Review Invoicing",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-024",
+    "Rule Key": "invoicing_period_ready",
+    "Rule Name": "Invoicing period ready",
+    "Sort Order": 24,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recKtMEnMzUrywXuP",
+   "fields": {
+    "Action Label": "Review Finance Sync",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-025",
+    "Rule Key": "finance_sync_failed",
+    "Rule Name": "Finance sync failed",
+    "Sort Order": 25
+   }
+  },
+  {
+   "id": "recb1qqwqbsJV1c8j",
+   "fields": {
+    "Action Label": "Review Payment",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-026",
+    "Rule Key": "payment_revenue_mismatch",
+    "Rule Name": "Payment or revenue mismatch",
+    "Sort Order": 26,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recr7WYkkXsUVpwDW",
+   "fields": {
+    "Action Label": "Review System Health",
+    "Active": true,
+    "Category": "System & Data",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Destination Area": "Settings & System",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_system",
+    "Rule ID": "ATT-027",
+    "Rule Key": "system_sync_failed",
+    "Rule Name": "System or data sync failed",
+    "Sort Order": 27
+   }
+  },
+  {
+   "id": "recjAGuwiEpUdSZl2",
+   "fields": {
+    "Action Label": "Review Access",
+    "Active": true,
+    "Category": "Players & Parents",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Destination Area": "Players & Parents",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_players_parents",
+    "Rule ID": "ATT-029",
+    "Rule Key": "parent_player_access_incomplete",
+    "Rule Name": "Parent/Player access incomplete",
+    "Sort Order": 29,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recNFbBZlHL29X8Km",
+   "fields": {
+    "Action Label": "Review Safeguarding",
+    "Active": true,
+    "Category": "Coaches & Compliance",
+    "Client Customisable": true,
+    "Default Base Severity": "Urgent",
+    "Destination Area": "Needs Attention",
+    "Evaluation Status": "Planned",
+    "Locked Minimum Severity": "Urgent",
+    "Required Module": "module_safeguarding",
+    "Rule ID": "ATT-030",
+    "Rule Key": "safeguarding_action_open",
+    "Rule Name": "Open safeguarding or welfare action",
+    "Sort Order": 30
+   }
+  },
+  {
+   "id": "recUZydYGcj82QbMK",
+   "fields": {
+    "Action Label": "Review Compliance",
+    "Active": true,
+    "Category": "Coaches & Compliance",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Default Enabled": true,
+    "Default Urgent Threshold": 48,
+    "Default Urgent Timing": "Hours Before",
+    "Destination Area": "Coaches",
+    "Evaluation Status": "Active",
+    "Locked Minimum Severity": "Warning",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-031",
+    "Rule Key": "non_compliant_coach_assigned",
+    "Rule Name": "Non-compliant coach assigned",
+    "Sort Order": 31,
+    "Supports Urgent Threshold": true
+   }
+  },
+  {
+   "id": "recPnVKLnL23XCHN5",
+   "fields": {
+    "Action Label": "Review Sync",
+    "Active": true,
+    "Category": "System & Data",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Destination Area": "Settings & System",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_system",
+    "Rule ID": "ATT-032",
+    "Rule Key": "session_change_not_propagated",
+    "Rule Name": "Session change not fully updated",
+    "Sort Order": 32
+   }
+  },
+  {
+   "id": "recsYzpZIyg9Cii4q",
+   "fields": {
+    "Action Label": "Review Player",
+    "Active": true,
+    "Category": "Players & Parents",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Destination Area": "Players & Parents",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_players_parents",
+    "Rule ID": "ATT-033",
+    "Rule Key": "player_information_incomplete",
+    "Rule Name": "Player information incomplete",
+    "Sort Order": 33,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "reckfjLSqbPRpkMyi",
+   "fields": {
+    "Action Label": "Review Billing Setup",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-034",
+    "Rule Key": "session_billing_setup_missing",
+    "Rule Name": "Session billing setup missing",
+    "Sort Order": 34,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recxq1eNgKyFmwAVO",
+   "fields": {
+    "Action Label": "Review Capacity",
+    "Active": true,
+    "Category": "Sessions & Venues",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_players_parents",
+    "Rule ID": "ATT-035",
+    "Rule Key": "session_over_capacity",
+    "Rule Name": "Session over capacity",
+    "Sort Order": 35,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "rech0mSEcy4ORpiYL",
+   "fields": {
+    "Action Label": "Review Housekeeping",
+    "Active": true,
+    "Category": "System & Data",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Destination Area": "Settings & System",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_system",
+    "Rule ID": "ATT-036",
+    "Rule Key": "data_housekeeping_failed",
+    "Rule Name": "Data housekeeping failed",
+    "Sort Order": 36
+   }
+  },
+  {
+   "id": "recaQDswjnhEbfElT",
+   "fields": {
+    "Action Label": "Review Session",
+    "Active": true,
+    "Category": "System & Data",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Destination Area": "Schedule & Sessions",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_system",
+    "Rule ID": "ATT-038",
+    "Rule Key": "expected_occurrence_missing",
+    "Rule Name": "Expected occurrence missing",
+    "Sort Order": 38,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "reclUeUtXCP3UcbmQ",
+   "fields": {
+    "Action Label": "Resolve Cover",
+    "Active": true,
+    "Category": "Staffing & Cover",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Enabled": true,
+    "Default Urgent Threshold": 24,
+    "Default Urgent Timing": "Hours Before",
+    "Default Warning Threshold": 48,
+    "Default Warning Timing": "Hours Overdue",
+    "Destination Area": "Coaches",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-041",
+    "Rule Key": "cover_open",
+    "Rule Name": "Cover open",
+    "Sort Order": 41,
+    "Supports Urgent Threshold": true,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "rec0vxRVy1m7W3EdI",
+   "fields": {
+    "Action Label": "Review Compliance",
+    "Active": true,
+    "Category": "Coaches & Compliance",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Enabled": true,
+    "Destination Area": "Coaches",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-042",
+    "Rule Key": "compliance_verification_pending",
+    "Rule Name": "Compliance needs Management review",
+    "Sort Order": 42
+   }
+  },
+  {
+   "id": "rec00IKBwihcKHx2M",
+   "fields": {
+    "Action Label": "Record Coach Outcome",
+    "Active": true,
+    "Category": "Coaches & Compliance",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Enabled": true,
+    "Default Warning Threshold": 48,
+    "Default Warning Timing": "Hours Overdue",
+    "Destination Area": "Coaches",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-043",
+    "Rule Key": "coach_outcome_pending",
+    "Rule Name": "Coach outcome pending",
+    "Sort Order": 43,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "rechnmv1LKwdbKWBY",
+   "fields": {
+    "Action Label": "Review Query",
+    "Active": true,
+    "Category": "Coaches & Compliance",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Enabled": true,
+    "Default Warning Threshold": 3,
+    "Default Warning Timing": "Days Overdue",
+    "Destination Area": "Coaches",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-044",
+    "Rule Key": "work_summary_queried",
+    "Rule Name": "Work summary queried",
+    "Sort Order": 44,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "rec61LC0S5eige37U",
+   "fields": {
+    "Action Label": "Finalise Summary",
+    "Active": true,
+    "Category": "Coaches & Compliance",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Enabled": true,
+    "Default Warning Threshold": 3,
+    "Default Warning Timing": "Days Overdue",
+    "Destination Area": "Coaches",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-045",
+    "Rule Key": "work_summary_ready_to_finalise",
+    "Rule Name": "Work summary ready to finalise",
+    "Sort Order": 45,
+    "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "recrHin89iSvwLDbw",
+   "fields": {
+    "Action Label": "Resolve Pending Items",
+    "Active": true,
+    "Category": "Coaches & Compliance",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Default Enabled": true,
+    "Default Warning Threshold": 3,
+    "Default Warning Timing": "Days Overdue",
+    "Destination Area": "Coaches",
+    "Evaluation Status": "Active",
+    "Required Module": "module_coaches",
+    "Rule ID": "ATT-046",
+    "Rule Key": "work_summary_blocked",
+    "Rule Name": "Work summary blocked",
+    "Sort Order": 46,
+    "Supports Warning Threshold": true
+   }
+  }
+ ]
+}
