@@ -556,10 +556,12 @@ function resolveOccurrenceRoleName(row: { fields: Record<string, any> }, sourceR
  * "who is actually staffing this ONE occurrence" - the display-tier twin
  * of hub-content/player-access.ts's resolveOccurrenceStaffing() (same
  * two-layer algorithm: base = effective-dated Session Staff for the
- * session, keyed by coach id; then each usable Occurrence Staff row for
- * this exact occurrence is applied on top - a `Cover` row with a
- * resolvable Session Staff Source first removes that source row's own
- * coach, then every usable row sets its own coach's entry, additive or
+ * session, keyed by coach id; then each Occurrence Staff row for this
+ * exact occurrence is applied on top - a `Cover` row with a resolvable
+ * Session Staff Source first removes that source row's own coach (even if
+ * the Cover row itself is Absent - Cover-replacement correction,
+ * 2026-09-28: the replaced coach does not return), then every usable row
+ * sets its own coach's entry, additive or
  * role-overriding as appropriate; finally - Staffing Absent correction,
  * 2026-09-28 - every coach with an Absent row for this occurrence is
  * removed, with or without cover). Returns role NAMES (not capabilities),
@@ -586,7 +588,6 @@ function resolveOccurrenceRoster(
   }
 
   for (const row of occurrenceStaffRowsForOccurrence) {
-    if (!isUsableOccurrenceStaffRow(row)) continue;
     const coachId = firstLink(row.fields, "Coach");
     if (!coachId) continue;
 
@@ -599,6 +600,7 @@ function resolveOccurrenceRoster(
       if (sourceCoachId && sourceCoachId !== coachId) roster.delete(sourceCoachId);
     }
 
+    if (!isUsableOccurrenceStaffRow(row)) continue;
     roster.set(coachId, resolveOccurrenceRoleName(row, sourceRow, roleById));
   }
 

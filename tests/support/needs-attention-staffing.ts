@@ -23,6 +23,9 @@
  * player-access.ts), so every Needs Attention rule built on this pass
  * (staffing, compliance-on-assignment, availability, conflicts) treats an
  * absent coach as not assigned, with or without cover.
+ * Cover-replacement correction (2026-09-28): a Cover row still displaces the
+ * coach it replaces when the Cover row itself is marked Absent, so the
+ * replaced recurring coach is never treated as restored.
  *
  * Everything below the copied block is built ON that resolver: one shared
  * pass per request analyses every eligible occurrence once, and the four
@@ -164,7 +167,6 @@ export function resolveOccurrenceStaffing(
   }
 
   for (const row of occurrenceStaffRowsForOccurrence) {
-    if (!isUsableOccurrenceStaffRow(row)) continue;
     const coachId = firstLink(row.fields, "Coach");
     if (!coachId) continue;
 
@@ -177,6 +179,7 @@ export function resolveOccurrenceStaffing(
       if (sourceCoachId && sourceCoachId !== coachId) roster.delete(sourceCoachId);
     }
 
+    if (!isUsableOccurrenceStaffRow(row)) continue;
     const caps = resolveOccurrenceRoleCaps(row, sourceRow, roleCapsByNameMap, roleCapsById);
     roster.set(coachId, { coachId, roleCaps: caps, fromOccurrenceStaff: true });
   }

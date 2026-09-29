@@ -125,7 +125,6 @@ function resolveOccurrenceRoster(
     roster.set(coachId, roleName);
   }
   for (const row of occurrenceStaffRowsForOccurrence) {
-    if (!isUsableOccurrenceStaffRow(row)) continue;
     const coachId = firstLink(row.fields, "Coach");
     if (!coachId) continue;
     const assignmentType = selectName(row.fields["Assignment Type"]);
@@ -135,6 +134,7 @@ function resolveOccurrenceRoster(
       const sourceCoachId = firstLink(sourceRow.fields, "Coach");
       if (sourceCoachId && sourceCoachId !== coachId) roster.delete(sourceCoachId);
     }
+    if (!isUsableOccurrenceStaffRow(row)) continue;
     roster.set(coachId, resolveOccurrenceRoleName(row, sourceRow, roleById));
   }
   for (const row of occurrenceStaffRowsForOccurrence) {
@@ -397,6 +397,26 @@ const coachById = {
   ck("AB2. Absent + cover: parents see the cover coach only", withCover.join(",") === "Joe Cover", withCover.join(","));
   const otherDate = resolveSessionCoachNames("sessAbs", "2026-10-17", staff, coachAbs, roleById, { occurrenceStaffRows: [], sessionStaffById });
   ck("AB3. Other dates unchanged: Danny shows normally", otherDate.join(",") === "Danny Absent", otherDate.join(","));
+}
+
+// --- Cover-replacement correction (2026-09-28): an absent cover coach does not bring the replaced coach back ---
+{
+  const coachCv = {
+    danny: { fields: { "Coach Name": "Danny Regular" } },
+    sam: { fields: { "Coach Name": "Sam Cover" } },
+    joe: { fields: { "Coach Name": "Joe Second Cover" } },
+  };
+  const ssDanny = { id: "ssCvDanny", fields: { Session: ["sessCv"], Coach: ["danny"], Role: ["lead"], Active: true } };
+  const staff = buildSessionStaffBySessionId([ssDanny]);
+  const sessionStaffById = buildSessionStaffById([ssDanny]);
+  const coverSamAbsent = { id: "osCvSam", fields: { Coach: ["sam"], "Session Occurrence": ["occCv"], "Assignment Type": "Cover", "Session Staff Source": [ssDanny.id], "Planned Role Snapshot": "Lead Coach", Attendance: "Absent" } };
+  const coverJoe = { id: "osCvJoe", fields: { Coach: ["joe"], "Session Occurrence": ["occCv"], "Assignment Type": "Cover", "Session Staff Source": [ssDanny.id], "Planned Role Snapshot": "Lead Coach" } };
+  const empty = resolveSessionCoachNames("sessCv", "2026-10-10", staff, coachCv, roleById, { occurrenceStaffRows: [coverSamAbsent], sessionStaffById });
+  ck("CV1. Cover row itself marked Absent: parents see neither the absent cover coach nor the replaced recurring coach", empty.length === 0, empty.join(","));
+  const refilled = resolveSessionCoachNames("sessCv", "2026-10-10", staff, coachCv, roleById, { occurrenceStaffRows: [coverSamAbsent, coverJoe], sessionStaffById });
+  ck("CV2. A second valid cover fills the slot: parents see only the second cover coach", refilled.join(",") === "Joe Second Cover", refilled.join(","));
+  const otherDate = resolveSessionCoachNames("sessCv", "2026-10-17", staff, coachCv, roleById, { occurrenceStaffRows: [], sessionStaffById });
+  ck("CV3. Other dates unchanged: Danny shows normally", otherDate.join(",") === "Danny Regular", otherDate.join(","));
 }
 
 console.log(R.map(([s, n, x]) => `${s}  ${n}${x ? "  -- " + x : ""}`).join("\n"));

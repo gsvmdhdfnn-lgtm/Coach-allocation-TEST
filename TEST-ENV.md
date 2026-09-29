@@ -11552,6 +11552,11 @@ requirement). `/cases?debug=1` then returned:
 
 ### Follow-up flagged (not changed)
 
+> **SUPERSEDED / RESOLVED (2026-09-28)** by "Staffing correction — Cover
+> replacement stays in force when the cover coach is Absent" below: the
+> replaced recurring coach no longer reappears. This paragraph is kept as
+> the historical record of what was flagged.
+
 If a **Cover** row is itself marked Absent (the cover coach did not
 attend), that Cover row is unusable, so it no longer removes its source
 coach. The recurring coach it replaced therefore reappears on the roster
@@ -11559,3 +11564,218 @@ unless they also have their own Absent row. This is pre-existing
 behaviour. The cover workflow's own writes are unaffected: it sets only
 the requester's rows Absent. The behaviour should be decided explicitly
 before production.
+
+## Staffing correction — Cover replacement stays in force when the cover coach is Absent — TEST only — 2026-09-28
+
+A small follow-up to the Occurrence Staff Absent correction (9816e94). It
+resolves the "Follow-up flagged" edge case above. No Needs Attention
+Slice 8 work was done. Production was not touched. Session Staff was
+never mutated.
+
+### The rule (locked)
+
+**A cover/replacement remains the displacement decision for that occurrence even if the replacement coach later becomes Absent; the original recurring coach does not automatically return.**
+
+- Once a recurring coach has been replaced by a Cover row for an
+  occurrence, that replacement decision stays in force for that
+  occurrence.
+- If the cover coach later becomes Absent, the cover coach is removed. The
+  original recurring coach does **not** come back, and the slot is unfilled
+  unless another valid replacement is added.
+- The replacement relationship and the absence state are handled
+  independently. Reversing a replacement never depends on whether the
+  replacement coach is currently valid, active or absent.
+
+### Root cause
+
+In the overlay loop, `if (!isUsableOccurrenceStaffRow(row)) continue;` ran
+**before** the Cover displacement. A Cover row that was itself marked
+Absent was therefore skipped entirely, so it no longer removed its Session
+Staff Source coach, and the replaced recurring coach reappeared.
+
+- Cover row Planned plus a separate Absent row for the cover coach was
+  already correct (empty roster). Only the single-row form (the Cover row's
+  own Attendance = Absent) brought the recurring coach back.
+- The cover workflow never writes Absent onto a Cover row (it only sets the
+  requester's own rows Absent at fill time), so no workflow depended on the
+  old order.
+
+### Resolver change (final semantics)
+
+`resolveOccurrenceStaffing` (and parent-hub's `resolveOccurrenceRoster`):
+
+1. **Base:** Session Staff rows that apply on the date. Unchanged.
+2. **Overlay:** for each Occurrence Staff row with a linked Coach:
+   - **Displacement (moved before the usability gate):** if it is a Cover
+     row whose Session Staff Source resolves, remove the source coach
+     (unless it is the same coach), **whatever the row's Attendance**.
+   - **Addition:** then, only if the row is usable (not Absent), set its
+     coach with role Actual > Planned snapshot > the source's Role.
+     Unchanged.
+3. **Absence:** remove every coach with an Absent row. Unchanged.
+
+Unchanged edge cases:
+- a Cover row with no linked Coach is ignored entirely;
+- a Cover row whose source does not resolve removes nobody;
+- a same-coach Cover row is a role override, not a removal;
+- Additional / Temporary Role rows never displace anyone.
+
+The identical reorder was applied to all four copies:
+- `hub-content/player-access.ts` (canonical);
+- the copied blocks in `coach-cover/staffing.ts` and
+  `needs-attention/staffing.ts`;
+- `parent-hub/index.ts` `resolveOccurrenceRoster`.
+
+The test mirrors were updated to match (`tests/support/player-access.ts`,
+`coach-cover-staffing.ts`, `needs-attention-staffing.ts`, and the
+session-coaches copy).
+
+`resolveRequesterAssignment` (coach-cover) is unchanged. A recurring coach
+displaced by a Cover row, including one whose cover coach is now Absent,
+stays null, so no cover request can be raised for them on that date. A
+working cover coach can still request cover. Filling it sets their Cover
+row Absent and adds a new Cover row citing the original Session Staff
+source, so the roster becomes the new cover coach only.
+
+### Affected functions (deployed TEST, byte-verified: every file sha matches the repo)
+
+| Function | Version | ezbr_sha256 |
+|---|---|---|
+| hub-content | v11 | `885c5bc24e207641d751926db255ed5117b41717e0ea03eae4b687231a54c3d3` |
+| parent-hub | v13 | `fe98e9ae44b1e265764702dcedf387d9f398d980d73b03b57be6ba852fdd81a6` |
+| needs-attention | v10 | `b5b581716536f41d7652990799a92b3aef7400193cd1feb898b8745c479c9824` |
+| coach-cover | v5 | `b828fa5c2ae2a5c97b273e2936d68bac22ce393aab45195298621065d8999e4c` |
+
+Only these four functions contain a resolver copy that changed. No other
+function was redeployed. `ENGINE_VERSION` is unchanged
+(`needs-attention-slice-7`). verify_jwt stays true for all four.
+
+### Tests
+
+New `tests/support/cover-absent.test.ts` (42 checks; e2e shim
+`tests/e2e/coverabsenttest.js`). Fixture: Danny is the only recurring Lead
+on a session that Requires Lead Coach (Required Staff Count 1). Sam and Joe
+are cover coaches. OA is Mon 5 Oct, OB is 12 Oct, and OX is another
+session overlapping OA.
+
+- **Resolver (0–5b):**
+  - cover replaces Danny;
+  - the cover coach Absent (single-row and two-row forms) leaves Danny
+    removed and the roster empty;
+  - a second cover (either order) gives Joe only;
+  - other dates and occurrences are unchanged.
+- **10a:** the hub-content, coach-cover and needs-attention resolvers agree
+  on every scenario.
+- **Existing behaviour (9a–9f):**
+  - unresolvable source;
+  - same-coach override;
+  - Additional rows;
+  - an Absent non-Cover row;
+  - a coachless Cover row.
+- **Player access (8a–8e):**
+  - the absent cover coach gets no access;
+  - Danny does not regain access;
+  - Joe gets exactly the Lead role;
+  - the other date is unchanged.
+- **Cover workflow (9g–9l):**
+  - Danny and absent Sam are not requesters;
+  - a working Sam is;
+  - the fill writes a new Cover row citing Danny's source;
+  - the post-fill roster is Joe only;
+  - a normal recurring requester is unchanged.
+- **Real NA orchestrator over in-memory Airtable (NA0, NA1, 6, 7a–7e, 5c,
+  6b, 4c, NA2):**
+  - `session_no_coach` on OA only;
+  - no ATT-031, ATT-014 or ATT-012 for Danny or Sam on OA;
+  - OX cases remain;
+  - OB unchanged;
+  - the second cover resolves the case;
+  - zero writes.
+- **Drift (10b–10d):**
+  - the player-access mirror equals the canonical file;
+  - all four copies and the session-coaches copy displace before the
+    usability gate, and none keeps the old order;
+  - the overlay loop is byte-identical in hub-content, coach-cover and
+    needs-attention.
+
+`session-coaches.test.ts` adds parent-display checks CV1–CV3:
+- an absent cover shows no names;
+- a second cover shows only Joe;
+- another date shows Danny.
+
+**Mutation check:** 8/8 mutations were caught. Reverting to the old order
+in each function copy and in each test copy made at least one check fail.
+
+Full suite: **64 files / 1,977 PASS / 0 FAIL**. The baseline was 63 /
+1,932; the difference is +42 new checks and +3 CV checks.
+
+### Live TEST verification (prefix `CVA-PROBE`, real deployed routes via pg_net)
+
+Setup:
+- Session A: Required Staff Count 1, Requires Lead Coach, with Danny
+  (Lead) as Session Staff.
+- Occurrences: O1 (Fri 2 Oct, 17:00–18:00 UK) and O2 (Mon 5 Oct).
+- Session B: O3 on 2 Oct, 17:30–18:30 (overlaps O1), with Danny (Lead)
+  and Sam (Coach).
+- Danny and Sam both have an Unavailable exception on 2 Oct.
+- One temporary required Enhanced DBS requirement, so that ATT-031 is
+  observable.
+- Archie (parent.a's child) was given one temporary Player Session Link on
+  Session A, so that parent-hub's display for O1 (the next occurrence) is
+  observable.
+
+| Step | Needs Attention (probe cases) | parent-hub coaches (SA, next = 2 Oct) |
+|---|---|---|
+| 1. Before | No staffing case. Danny: ATT-012 O1/O3, ATT-014 O1 + O3, ATT-031 O1/O2/O3. Sam: ATT-014 O3, ATT-031 O3 | `["CVA-PROBE Danny"]` |
+| 2. **Cover** Sam for Danny on O1 (source = Danny's SA Session Staff row) | No staffing case. All of Danny's O1 cases gone. Sam now carries ATT-012 O1/O3, ATT-014 O1, ATT-031 O1. O2/O3 unchanged | `["CVA-PROBE Sam"]` |
+| 3. Sam's **Cover row set Attendance = Absent** | `session_no_coach` on O1 ("No staff are assigned"). **Danny does not reappear**: no ATT-012/014/031 for Danny on O1. Sam's O1 cases gone. O2 (Danny ATT-031) and O3 unchanged | `[]` |
+| 4. Add a second **Cover** row: Joe for Danny on O1 | Staffing case resolved. Joe carries ATT-031 O1. Still nothing for Danny or Sam on O1. O2/O3 unchanged | `["CVA-PROBE Joe"]` |
+
+All calls returned 200 with `complete: true`. The 6 ATT-031 cases for
+existing TEST coaches (raised by the temporary requirement, as in NA
+Slice 6) were stable across all four steps.
+
+**coach-cover (v5), after step 4:** `POST /requests` (manager) asking
+cover for Danny on O1 returned **409 `invalid_dates`** ("The coach is not
+assigned to this occurrence"), with nothing created. Danny stays
+displaced in the cover workflow as well.
+
+**hub-content player access (v11), run on 29 Sep after UK midnight.**
+hub-content applies Occurrence Staff only to an occurrence dated today
+(UK). Setup:
+- a third probe Session C with Alex Test (coach.a) as Lead Session Staff;
+- occurrence O4 dated 29 Sep;
+- a temporary Player Session Link for Archie on Session C.
+
+`GET /hub-content/players` as coach.a:
+
+| Step | Archie @ CVA-PROBE-SC in coach.a's rows | parent-hub SC coaches (next = 29 Sep) |
+|---|---|---|
+| Before (no Occurrence Staff) | present, `permanent`, Lead (`can_edit_idp: true`) | – |
+| Cover Sam for Alex on O4 (source = Alex's SC Session Staff row) | **gone** | – |
+| Sam's Cover row set **Absent** | **still gone**: Alex does not regain access through his recurring row | `[]` |
+| Second Cover (Joe) added | still gone (Joe now holds the slot) | `["CVA-PROBE Joe"]` |
+
+coach.a's TEST-A rows (Archie, Bella) were unchanged throughout.
+
+**Cleanup:** all 23 probe records were deleted by their exact ids:
+- 3 coaches;
+- 3 sessions;
+- 4 occurrences;
+- 4 Session Staff rows;
+- 4 Occurrence Staff rows;
+- 2 exceptions;
+- 1 requirement;
+- 2 Player Session Links.
+
+`CVA-PROBE` searches across Sessions, Coaches, Occurrence Staff and
+Session Occurrences return nothing. `/cases?debug=1` then returned:
+- **Clear**, complete, 0 cases, 0 config issues;
+- 10 rules evaluated, 17 tables each read once.
+
+**Regression:** these all returned 200:
+- `/me` for manager, coach and parent;
+- hub-content `/players` (md5 `685b11e7…`, unchanged);
+- parent-hub `/me` and `/claims/pending`;
+- coach-compliance `/summary`;
+- coach-cover `/manage` (0 dates, 0 groups).

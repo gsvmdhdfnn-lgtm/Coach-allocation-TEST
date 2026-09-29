@@ -505,6 +505,9 @@ export function roleCapsByRoleName(coachRoleRows: any[]): Record<string, CoachRo
  * row still never ADDS anyone, but it is no longer merely "ignored" - it
  * now also REMOVES its coach from the occurrence's resolved roster; see
  * isAbsentOccurrenceStaffRow() and resolveOccurrenceStaffing() below.
+ * Cover-replacement correction (2026-09-28): "usable" now gates only
+ * whether a row ADDS its coach; a Cover row's displacement of the coach it
+ * replaces applies even when the Cover row itself is Absent.
  */
 function isUsableOccurrenceStaffRow(row: { fields: Record<string, any> }): boolean {
   if (!firstLink(row.fields, "Coach")) return false;
@@ -589,9 +592,17 @@ export interface ResolvedOccurrenceCoach {
  *     `dateIso` (sessionStaffAppliesOnDate(), Coaches Slice 2, unchanged) -
  *     exactly what would resolve with no Occurrence Staff involved at
  *     all, keyed by coach id.
- *  2. OVERLAY: each USABLE Occurrence Staff row for this exact occurrence
- *     (isUsableOccurrenceStaffRow()) is applied on top, in the order
- *     given:
+ *  2. OVERLAY: each Occurrence Staff row for this exact occurrence with a
+ *     linked Coach is applied on top, in the order given:
+ *       - Cover-replacement correction (2026-09-28): the Cover
+ *         DISPLACEMENT below is decided for every Cover row with a linked
+ *         Coach, whatever its own Attendance. A replacement decision stays
+ *         in force for this occurrence even if the replacement coach is
+ *         later marked Absent - the replaced recurring coach does NOT come
+ *         back. Only the step that ADDS the row's own coach requires a
+ *         USABLE row (isUsableOccurrenceStaffRow()). SUPERSEDES the earlier
+ *         order, which skipped an Absent Cover row entirely and so let the
+ *         replaced coach reappear.
  *       - `Assignment Type = "Cover"` with a `Session Staff Source` that
  *         resolves to a real Session Staff row: that source row's own
  *         coach is REMOVED from the base roster first (unless it is the
@@ -655,7 +666,6 @@ export function resolveOccurrenceStaffing(
   }
 
   for (const row of occurrenceStaffRowsForOccurrence) {
-    if (!isUsableOccurrenceStaffRow(row)) continue;
     const coachId = firstLink(row.fields, "Coach");
     if (!coachId) continue;
 
@@ -668,6 +678,7 @@ export function resolveOccurrenceStaffing(
       if (sourceCoachId && sourceCoachId !== coachId) roster.delete(sourceCoachId);
     }
 
+    if (!isUsableOccurrenceStaffRow(row)) continue;
     const caps = resolveOccurrenceRoleCaps(row, sourceRow, roleCapsByNameMap, roleCapsById);
     roster.set(coachId, { coachId, roleCaps: caps, fromOccurrenceStaff: true });
   }

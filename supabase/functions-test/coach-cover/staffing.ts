@@ -16,6 +16,10 @@
  * below keeps a recurring coach who is removed ONLY by their own Absent
  * row(s) recognisable as the requester whose slot cover replaces, so the
  * cover workflow behaves exactly as before for an already-absent coach.
+ * Cover-replacement correction (2026-09-28): a Cover row's displacement of
+ * the coach it replaces now holds even when the Cover row itself is later
+ * marked Absent - the replaced recurring coach does not return, so they are
+ * still not a requester for that date (see player-access.ts).
  */
 
 // ===== COPIED FROM hub-content/player-access.ts - DO NOT EDIT HERE =====
@@ -147,7 +151,6 @@ export function resolveOccurrenceStaffing(
   }
 
   for (const row of occurrenceStaffRowsForOccurrence) {
-    if (!isUsableOccurrenceStaffRow(row)) continue;
     const coachId = firstLink(row.fields, "Coach");
     if (!coachId) continue;
 
@@ -160,6 +163,7 @@ export function resolveOccurrenceStaffing(
       if (sourceCoachId && sourceCoachId !== coachId) roster.delete(sourceCoachId);
     }
 
+    if (!isUsableOccurrenceStaffRow(row)) continue;
     const caps = resolveOccurrenceRoleCaps(row, sourceRow, roleCapsByNameMap, roleCapsById);
     roster.set(coachId, { coachId, roleCaps: caps, fromOccurrenceStaff: true });
   }
