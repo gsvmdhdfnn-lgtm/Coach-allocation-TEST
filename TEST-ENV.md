@@ -12167,10 +12167,23 @@ redeployed**. It stays at **v12**, byte-identical to
 
 ### NA12.1 Active catalogue (frozen v1)
 
-There are 38 catalogue rows: **15 Active** (14 evaluated plus
-`venue_missing`) and **23 Planned**. The snapshot is compared, row by row,
-with the code-side registry by CAT1–CAT12. There were 0 mismatches against
-the live base.
+There are 38 catalogue rows: **14 Active** and **24 Planned**, with 0
+Retired. (This was corrected on 2026-09-29, see NA12.15. It was
+previously 15 Active / 23 Planned, with `venue_missing` Active.) The
+snapshot is compared, row by row, with the code-side registry by
+CAT1–CAT13. There were 0 mismatches against the live base.
+
+**Frozen status definition.**
+
+- **Active** means a live evaluator exists and the Needs Attention engine
+  evaluates the rule. Every Active row has a registered evaluator, and
+  every registered evaluator has an Active row (CAT3/CAT4).
+- **Planned** means designed and catalogued for future implementation,
+  but not evaluated.
+- **Retired** means intentionally no longer used.
+
+The engine's `not_implemented` skip reason remains as a safety net for an
+Active row without an evaluator. No catalogue row triggers it.
 
 All evaluated rules require `module_coaches`, and every rule is Client
 Customisable. W = default Warning threshold, U = default Urgent threshold.
@@ -12203,13 +12216,14 @@ Customisable. W = default Warning threshold, U = default Urgent threshold.
   evaluator that matches the catalogue, `module_coaches` on (exactly one
   Enabled row), and effective Enabled. The first failing gate becomes the
   skip reason.
-- **`venue_missing` (ATT-018)** is Active in the catalogue but has no
-  evaluator, so it is skipped with `not_implemented`. This is intentional
-  and deferred to the venue foundation, and it is visible in diagnostics.
+- **`venue_missing` (ATT-018)** is **Planned**. It is deferred to the
+  Venue foundation, which will implement its evaluator and set it Active.
+  It is skipped as `planned`. Its key, description, severity, module,
+  thresholds, route and override flag are unchanged.
 
-**Planned / deferred (23 rows, never evaluated):**
+**Planned / deferred (24 rows, never evaluated):**
 
-- **Schedule:** ATT-006, 017.
+- **Schedule:** ATT-006, 017, 018 (`venue_missing`, Venue foundation).
 - **Coaches:** ATT-008, 015.
 - **Players & Parents:** ATT-009, 010, 019, 020, 029, 033, 035.
 - **Development:** ATT-021.
@@ -12582,8 +12596,9 @@ left changed.
 
 ### NA12.13 Known future debt (carried, not fixed)
 
-- `venue_missing` (ATT-018) is Active but unimplemented. Deferred to the
-  venue foundation.
+- `venue_missing` (ATT-018) is Planned. Its evaluator is deferred to the
+  Venue foundation, which should set it Active only when the evaluator
+  ships.
 - The 409-vs-403 wording when Allow Override is off and an old Active
   exception row exists (NA12.7).
 - Tables are read whole, with no per-request window filter. This is fine
@@ -12622,3 +12637,44 @@ left changed.
 Parent/Player, venue, safeguarding, notifications, the Management and
 Settings UIs, the Supabase migration and production promotion were **not**
 started.
+
+### NA12.15 Catalogue status correction — `venue_missing` Active → Planned (2026-09-29)
+
+`venue_missing` / ATT-018 (`recADoSNML2AfAPvt`) was **Active** with no
+evaluator, and was skipped as `not_implemented`. That contradicts the
+frozen status meaning, under which Active means a live evaluator exists.
+
+**Change.** Its Evaluation Status was changed from Active to **Planned**
+in TEST Airtable. That was the only field changed. Key, description,
+severity, module, thresholds, route, override, Default Enabled and Sort
+Order are unchanged. No evaluator was added. Engine and registry code are
+unchanged, and `needs-attention` stays at **v12**, not redeployed.
+
+**Repository mirrors.** These were updated to the corrected status:
+
+- `needs-attention-catalogue.snapshot.json` and
+  `needs-attention-catalogue.fixture.json`;
+- the foundation test: CAT4 now requires the Active rows to be exactly the
+  14 registered evaluators, CAT5 expects 24 Planned, and the new CAT13
+  pins `venue_missing` as Planned and otherwise unchanged. COV2 expects
+  all 24 skips to be `planned`;
+- `needs-attention.test.ts` #84: 24 planned, 0 not_implemented.
+
+**Final counts.** 38 rows: **14 Active** (all with live evaluators),
+**24 Planned**, 0 Retired. There are 0 catalogue/registry mismatches.
+
+**Live TEST, before and after.**
+
+- Before: Clear, 14 evaluated, skipped = 23 planned + 1 not_implemented
+  (`venue_missing`), 19 lists, 0 config issues.
+- After: Clear, the same 14 evaluated, skipped = **24 planned**, 0
+  not_implemented, 19 lists, 0 config issues.
+- A `caseKey` lookup for `venue_missing` returns
+  `rule.evaluated:false, skipReason:"planned"` and `exists:false`.
+- No new case appeared.
+
+**Regression.** Full suite 66/66 files, 2,136 PASS / 0 FAIL (baseline
+2,135 plus CAT13).
+
+**FOUNDATION COMPLETE IN TEST — READY FOR FINANCE FOUNDATION** still
+stands. This is a consistency correction only, not production readiness.

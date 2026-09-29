@@ -235,8 +235,10 @@ async function main() {
     ck("CAT2. The older 6-field catalogue fixture used by the per-slice suites agrees with the full snapshot", oldOk && OLD_FIXTURE.rules.length === 38);
     const activeStatus = rows.filter((f) => f["Evaluation Status"] === "Active").map((f) => f["Rule Key"]);
     ck("CAT3. Registry = exactly the 14 frozen active rules, each Rule ID matching its catalogue row", IMPLEMENTED_EVALUATORS.length === 14 && sameSet([...reg.keys()], ACTIVE_RULES) && IMPLEMENTED_EVALUATORS.every((e) => ruleRow(e.ruleKey).fields["Rule ID"] === e.ruleId));
-    ck("CAT4. Every Evaluation Status = Active row is registered except venue_missing (ATT-018, deferred venue rule, intentionally unregistered)", sameSet(activeStatus.filter((k) => !reg.has(k)), ["venue_missing"]) && activeStatus.length === 15);
-    ck("CAT5. No Planned / Retired row has an evaluator (23 Planned rows stay dormant)", rows.filter((f) => f["Evaluation Status"] !== "Active").every((f) => !reg.has(f["Rule Key"])) && rows.filter((f) => f["Evaluation Status"] === "Planned").length === 23);
+    ck("CAT4. Active means a live evaluator exists: the 14 Evaluation Status = Active rows are exactly the 14 registered evaluators (no Active row lacks one)", activeStatus.length === 14 && sameSet(activeStatus, [...reg.keys()]) && activeStatus.every((k) => reg.has(k)));
+    ck("CAT5. No Planned / Retired row has an evaluator (24 Planned rows stay dormant)", rows.filter((f) => f["Evaluation Status"] !== "Active").every((f) => !reg.has(f["Rule Key"])) && rows.filter((f) => f["Evaluation Status"] === "Planned").length === 24);
+    const vm = ruleRow("venue_missing").fields;
+    ck("CAT13. venue_missing (ATT-018) is Planned (deferred to the Venue foundation), unregistered, and otherwise unchanged (module_schedule, Normal, 7 Days / 48 Hours Before, overrideable)", vm["Evaluation Status"] === "Planned" && !reg.has("venue_missing") && vm["Rule ID"] === "ATT-018" && vm["Required Module"] === "module_schedule" && vm["Default Base Severity"] === "Normal" && vm["Default Warning Threshold"] === 7 && vm["Default Warning Timing"] === "Days Before" && vm["Default Urgent Threshold"] === 48 && vm["Default Urgent Timing"] === "Hours Before" && vm["Supports Override"] === true);
     ck("CAT6. Every registered rule: Active, Default Enabled, module_coaches, Destination Area set, Action Label set", ACTIVE_RULES.every((k) => { const f = ruleRow(k).fields; return f.Active === true && f["Default Enabled"] === true && f["Required Module"] === "module_coaches" && !!f["Destination Area"] && !!f["Action Label"]; }));
     ck("CAT7. Supports Override frozen: 7 overrideable (staffing x4, expiry, unavailable, conflict); 7 not (cover ATT-041, ATT-031, ATT-042, ATT-043..046)", ACTIVE_RULES.every((k) => (ruleRow(k).fields["Supports Override"] === true) === OVERRIDEABLE.has(k)));
     const beforeRules = ACTIVE_RULES.filter((k) => [ruleRow(k).fields["Default Warning Timing"], ruleRow(k).fields["Default Urgent Timing"]].some((t) => typeof t === "string" && t.endsWith("Before")));
@@ -259,7 +261,7 @@ async function main() {
   {
     const counts = Object.fromEntries(ACTIVE_RULES.map((k) => [k, byRule(full, k).length]));
     ck("COV1. All 14 active rules fire in one request with the exact expected counts (18 cases)", JSON.stringify(counts) === JSON.stringify(Object.fromEntries(ACTIVE_RULES.map((k) => [k, EXPECTED_COUNTS[k]]))) && full.cases.length === 18, JSON.stringify(counts));
-    ck("COV2. complete = true, no config issues, 14 evaluated, 24 skipped (23 planned + venue_missing not_implemented)", full.complete === true && full.configIssues.length === 0 && full.diagnostics.evaluated.length === 14 && full.diagnostics.skipped.length === 24 && full.diagnostics.skipped.filter((s: any) => s.reason === "not_implemented").map((s: any) => s.ruleKey).join() === "venue_missing");
+    ck("COV2. complete = true, no config issues, 14 evaluated, 24 skipped - all planned (incl. venue_missing), none not_implemented", full.complete === true && full.configIssues.length === 0 && full.diagnostics.evaluated.length === 14 && full.diagnostics.skipped.length === 24 && full.diagnostics.skipped.every((s: any) => s.reason === "planned") && full.diagnostics.skipped.some((s: any) => s.ruleKey === "venue_missing"));
   }
 
   // ===================================================================

@@ -1,5 +1,5 @@
 {
- "_comment": "Full snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e / tblyawQ8vSEN945Qp) taken 2026-09-29 for Needs Attention Slice 9 (foundation freeze). Airtable REST shape: fields by name, selects as names, unticked checkboxes absent. Description text omitted (non-behavioural).",
+ "_comment": "Full snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e / tblyawQ8vSEN945Qp) taken 2026-09-29 for Needs Attention Slice 9 (foundation freeze). Airtable REST shape: fields by name, selects as names, unticked checkboxes absent. Description text omitted (non-behavioural). ATT-018 venue_missing corrected Active -> Planned on 2026-09-29 (catalogue status correction: Active means a live evaluator exists).",
  "records": [
   {
    "id": "rec7MaSdZV4VE02uL",
@@ -301,7 +301,7 @@
     "Default Warning Threshold": 7,
     "Default Warning Timing": "Days Before",
     "Destination Area": "Schedule & Sessions",
-    "Evaluation Status": "Active",
+    "Evaluation Status": "Planned",
     "Required Module": "module_schedule",
     "Rule ID": "ATT-018",
     "Rule Key": "venue_missing",

@@ -108,7 +108,7 @@
   {
    "ruleId": "ATT-018",
    "ruleKey": "venue_missing",
-   "evaluationStatus": "Active",
+   "evaluationStatus": "Planned",
    "requiredModule": "module_schedule",
    "defaultEnabled": true,
    "active": true
