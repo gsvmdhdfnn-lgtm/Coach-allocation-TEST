@@ -11779,3 +11779,370 @@ Session Occurrences return nothing. `/cases?debug=1` then returned:
 - parent-hub `/me` and `/claims/pending`;
 - coach-compliance `/summary`;
 - coach-cover `/manage` (0 dates, 0 groups).
+
+---
+
+## Needs Attention Foundation — Slice 8 (coach outcome and Work Summary rules) — TEST only — 2026-09-29
+
+**Scope.** Four catalogue rules are now evaluated:
+
+| Rule Key | Rule ID | Case title prefix | Action Label | Warning (catalogue) |
+|---|---|---|---|---|
+| `coach_outcome_pending` | ATT-043 | Coach outcome needed | Record Coach Outcome | 48 Hours Overdue |
+| `work_summary_queried` | ATT-044 | Work summary queried | Review Query | 3 Days Overdue |
+| `work_summary_ready_to_finalise` | ATT-045 | Work summary ready to finalise | Finalise Summary | 3 Days Overdue |
+| `work_summary_blocked` | ATT-046 | Work summary blocked | Resolve Pending Items | 3 Days Overdue |
+
+All four are Active, module `module_coaches`, base severity Normal, no
+Urgent threshold, Destination Area Coaches, **Supports Override = No**.
+None of these catalogue values was changed.
+
+**Not in scope:**
+- Finance: invoices, payroll, payments, revenue, parent refunds, venue
+  credits, margin, VAT, finance sync and school invoicing.
+- Parent and Venue financial outcomes (Occurrence Financial Outcomes are
+  never read).
+- A generic `session_change_followup` rule.
+- The Settings UI, Players / Parents, safeguarding, notifications, caching
+  and the Supabase migration.
+- Production. Slice 9 has not been started.
+
+**Pre-checks passed:**
+- HEAD = origin = `108673b`, clean tree;
+- deployed coach-work-summaries, occurrence-financial-outcomes and
+  needs-attention v10 were byte-identical to the repo;
+- the live queue was Clear: 10 rules evaluated, 0 config issues, the four
+  Slice 8 rules skipped as `not_implemented`;
+- the TEST Coach Work Summaries and Coach Allocations tables were empty.
+
+**Mapping check (no STOP needed).** Every stored Work Summary status and
+every coach-side outcome state maps onto exactly one of the four rules,
+or onto "no case", without inventing a state. This is the NA2.6 contract
+(below) applied as written.
+
+### NA11.1 Files
+
+| File | Change |
+|---|---|
+| `needs-attention/work-summaries.ts` | **New.** Two verbatim copied blocks from coach-work-summaries (`work-summaries.ts` statuses/constants/`classifyAllocation`/`isFrozen`/`openStatusFor`; `orchestrator.ts` `evaluate()` loop), the NA2.6 effective-status mapping, one shared Work Summary pass, one shared coach-outcome pass, four evaluators and case shaping. Pure (no I/O) |
+| `needs-attention/registry.ts` | Registers `WORK_SUMMARY_EVALUATORS` after the Slice 7 rules |
+| `needs-attention/needs-attention.ts` | `ENGINE_VERSION` = `needs-attention-slice-8` (nothing else) |
+| `tests/support/needs-attention-work-summaries.ts` | Hand-kept copy (import paths only; D1 drift-checked) |
+| `tests/support/needs-attention-work-summaries.test.ts` + `tests/e2e/needsattentionworksummariestest.js` | **New**, 80 checks |
+| `tests/support/needs-attention.test.ts` | Registry / engine version / reads / drift checks evolved for Slice 8 (109 checks) |
+| `tests/support/needs-attention-compliance.test.ts`, `needs-attention-coach-schedule.test.ts` | Fixture catalogue gains ATT-043 to 046 and the two Work Summary tables; R1 / R3 expect 19 lists |
+| `tests/support/needs-attention-engine.ts`, `needs-attention-registry.ts` | Regenerated copies |
+
+coach-work-summaries, occurrence-financial-outcomes and every other
+function were **not** changed or redeployed. The repository,
+orchestrator, exceptions, lock client and index are unchanged.
+
+### NA11.2 Effective status: recomputed, never trusted (NA2.6)
+
+Stored `Coach Work Summaries.Status` is only rewritten by the domain's
+prepare / refresh / finalise routes, so it can be stale. Needs Attention
+recomputes the status exactly as `applyRefresh()` would and **never
+writes anything back**:
+
+```
+effective = Finalised                              if stored = Finalised
+          = Queried                                if stored = Queried
+          = openStatusFor(pending, period, today)  otherwise
+openStatusFor = Not ready if pending > 0 or Period End >= today, else Needs review
+```
+
+- `pending` comes from the domain's own `classifyAllocation`, run over the
+  coach's allocations through the copied `evaluate()` loop. The pending
+  reasons, in order, are multiple_coaches, cost_not_confirmed,
+  invalid_final_cost, coach_outcome_undecided and not_yet_worked. Undated
+  allocations are listed but never block.
+- `today` is the domain's `ukToday()` (Europe/London), the same date the
+  finalise route checks.
+- A stored status that disagrees with the effective one is flagged
+  `storedStatusStale: true` in the payload and noted in the detail text.
+  It is never used to decide the rule.
+
+### NA11.3 Rule mapping: one case per summary at most
+
+| Effective status | Period | Rule |
+|---|---|---|
+| Queried | any | `work_summary_queried` |
+| Needs review | ended | `work_summary_ready_to_finalise` |
+| Not ready | ended (Period End < today) | `work_summary_blocked` |
+| Not ready | still in progress | no case (`period_in_progress`) |
+| Finalised | — | no case (skipped) |
+
+- **Queried** clears when the query is resolved at source: finalised,
+  reopened (status back to open, recomputed), or the row deactivated.
+- **Ready** is the effective Needs review state. It is never inferred from
+  the calendar alone: the period must have ended **and** nothing may be
+  pending.
+- **Blocked** needs an ended period and pending items. It is never raised
+  for a period still in progress.
+- Because each summary has exactly one effective status, one summary can
+  never carry two contradictory cases (tests I1 / M3, live step 5).
+- **Skipped:** inactive summaries (`Active` unticked), Finalised, and rows
+  with no Coach, no valid Period Start/End or an unrecognised Status. The
+  last group is reported as config issue `work_summary_invalid`; it is
+  never forced into a rule.
+- **Frozen** (Queried after finalisation, not reopened) is reported in
+  the payload (`frozen`, `previouslyFinalised`). It raises the same queried
+  case.
+- Inactive **coaches** still get their summaries evaluated (the decision
+  is still owed); `coachActive` is in the payload. A summary linking a
+  coach missing from Coaches gets config issue
+  `work_summary_coach_missing`, and the case is still shown.
+
+### NA11.4 Coach outcome boundary (ATT-043)
+
+- **Source of truth:** `Coach Allocations.Coach Outcome` (Coaches Slice 6).
+- **Trigger:** classifyAllocation's own two lines, copied and
+  drift-tested. The linked Session Occurrence Status is **Cancelled or
+  Postponed**, and Coach Outcome is not one of **Paid / Partial / Unpaid**.
+  An unrecognised stored outcome counts as undecided and is quoted in the
+  detail.
+- **Coach side only.** Parent and Venue outcomes live in Occurrence
+  Financial Outcomes (Finance). That table and its Lines / History are
+  never read (tests RD2 / DR8, live read list).
+- **Rescheduled** (`Schedule Change State`) alone is **not** a trigger:
+  the occurrence still runs. A Postponed occurrence with a replacement
+  still needs this date's coach decision; the replacement id is in the
+  payload.
+- One case per **(occurrence, coach)**:
+  - an allocation linked to several coaches raises one case per coach, plus
+    config issue `coach_outcome_allocation_multiple_coaches`;
+  - duplicate undecided allocations for the same pair become one case
+    listing both, plus `coach_outcome_duplicate_allocations`;
+  - an allocation with no coach gives config issue
+    `coach_outcome_allocation_no_coach` and no case.
+- **Clears** as soon as a recognised outcome is stored, or the occurrence
+  is no longer Cancelled / Postponed.
+
+### NA11.5 Case identity
+
+- `coach_outcome_pending|occurrence:<occurrence id>|coach:<coach id>`.
+  The catalogue description previously said "allocation"; it now documents
+  this key. That was the only catalogue text change.
+- `work_summary_queried|summary:<summary record id>`
+- `work_summary_ready_to_finalise|summary:<summary record id>`
+- `work_summary_blocked|summary:<summary record id>`
+
+Keys use record ids only (never labels or dates), so they stay stable
+across renames and status changes. A summary moving from blocked to ready
+changes rule and therefore key. That is intended: it is a different thing
+to do.
+
+### NA11.6 Severity and exceptions
+
+Severity uses the generic engine and catalogue thresholds; no rule timing
+lives in the engine.
+
+| Rule | `outstandingSince` anchor |
+|---|---|
+| ATT-043 | Occurrence Start Date & Time. If untimed: 00:00 local on its Date |
+| ATT-044 | `Queried At`. If missing: config issue `work_summary_query_time_unknown`, and the case stays Normal |
+| ATT-045 / 046 | 00:00 local on the day after Period End (`periodEndedAt`, DST-correct) |
+
+Boundaries are inclusive (tests O16 / R9).
+
+All four rules have **Supports Override = No**. An exception create for
+any Slice 8 case returns **403 `override_not_supported`**: tests E1 to E3,
+and live for all four keys. The flags were not changed to simplify
+testing. The Slice 5 behaviour for overrideable rules is unchanged (E3:
+`session_no_coach` still 201).
+
+### NA11.7 Payload and placeholder destinations
+
+- **Work Summary cases:**
+  - `destination.route` `coaches/work-summary`, params `{summaryId,
+    coachId}`;
+  - `targetIds` `{summaryId, coachId}`;
+  - `relatedIds` `{pendingAllocationIds, undatedAllocationIds}`.
+  - Context:
+    - summary and Work Summary ID;
+    - coach id / name / active;
+    - period start / end / `periodEndedAt`;
+    - stored and effective status, `storedStatusStale`, `frozen`,
+      `previouslyFinalised`, `finalisedAt`, `reopenedAt`;
+    - `queriedAt` and `queryNote` (queried rule only; note capped at 280
+      characters);
+    - `pendingCount` plus one count per pending reason;
+    - `eligibleCount`, `undatedCount`, `canFinaliseNow`, `evaluatedAsOf`.
+- **Coach outcome cases:**
+  - `destination.route` `coaches/occurrence-financial-outcome`, params
+    `{occurrenceId, coachId, allocationId (when single)}`;
+  - `targetIds` add `sessionId` / `allocationId`.
+  - Context:
+    - occurrence / session names, status, Schedule Change State,
+      replacement id;
+    - date, start and local start;
+    - coach name / active;
+    - `allocationCount`, `currentCoachOutcome`, `outcomeOptions`
+      ("Paid, Partial, Unpaid");
+    - `costStatus` and `finalCoachCost` of that one allocation.
+- **No totals.** No Grand Total, line totals, rates or other financial
+  aggregates enter any case (R5 / P1).
+- **Wording:**
+  - "nothing is pending" (no work in the period);
+  - "its 1 item of work is resolved";
+  - "all N items of work are resolved";
+  - the query date is shown in the organisation timezone.
+- **Placeholder routes.** Both routes are placeholders: there is no UI
+  yet, and no "mark complete" action exists. Cases disappear only when the
+  source data is fixed.
+
+### NA11.8 Gating, reads and performance
+
+- **Gating.** The rules run only when `module_coaches` is enabled and each
+  rule's effective Enabled is on. When they do not run, Coach Work
+  Summaries and Coach Allocations are **not read** at all (tests G1 to G6).
+- **Reads.** Coach Work Summaries and Coach Allocations are new sources.
+  Session Occurrences, Sessions and Coaches are shared with the staffing
+  rules and loaded once. A full request is now **19 list operations**
+  (5 config + 14 domain), each table once. A single-rule `caseKey` lookup
+  is 10.
+- **Passes.** One shared Work Summary pass and one shared coach-outcome
+  pass per request (memoised). Allocations are indexed by coach once.
+  There are no per-summary, per-coach or per-occurrence queries (RD1 to
+  RD4).
+- **Live latency** (function edge logs, `execution_time_ms`, v12):
+
+  | Call | Latency |
+  |---|---|
+  | First call after deploy | 2.94 s |
+  | Warm full queue (`debug=1`) | 1.56 / 1.58 / 1.69 / 1.82 s |
+  | Single-rule lookups | 1.20 / 1.31 s |
+  | Coach 403 | 0.33 s |
+
+  That is in line with Slice 7 (about 1.56 s warm with 17 lists).
+- **429 watchpoint.** No 429 was seen. The 19 lists still go in waves of
+  5 with the existing backoff, but real-scale Airtable volume remains a
+  watchpoint until the Supabase migration.
+
+### NA11.9 Verification
+
+**Unit tests**
+- `needs-attention-work-summaries.test.ts`: **80 / 80**.
+  - Pure mapping: M1 to M6.
+  - Queried: Q1 to Q9.
+  - Ready: R1 to R10, including stale in both directions, the inclusive
+    3-day boundary and the wording.
+  - Blocked: B1 to B5; exclusions: X1 to X3.
+  - Coach outcome: O1 to O16, including Rescheduled, Paid / Partial /
+    Unpaid, the Parent/Venue boundary, duplicates and the 48 h boundary.
+  - Identity: I1 to I4; payload: P1; reads and purity: RD1 to RD4.
+  - Gating and lookups: G1 to G6; exceptions: E1 to E3; drift and
+    boundaries: DR1 to DR8.
+- `needs-attention.test.ts` 109 / 109; compliance 80 / 80; coach-schedule
+  55 / 55.
+- **Full suite: 65 / 65 files, 2,058 PASS, 0 FAIL.** The baseline was 64
+  files / 1,977.
+
+**Mutation check.** Ten mutants were applied to the tested copy:
+- stored status trusted;
+- blocked while the period is open;
+- inactive summaries evaluated;
+- Rescheduled triggers an outcome;
+- Partial not accepted;
+- queried case anchored on period end;
+- summary key uses the coach id;
+- the "0 items" wording regression;
+- query date read as UTC;
+- the Finalised skip removed.
+
+**9 / 9 behavioural mutants are caught.** The Finalised skip is an
+equivalent mutant: a Finalised summary maps to no rule either way. The
+UTC mutant was first missed; Q9 was added for it.
+
+**Deploys.** needs-attention **v11** was the first Slice 8 deploy. The
+live probe then showed "all 0 items of work are resolved" and a UTC query
+date, which were fixed. **v12** is current: 12 files, `verify_jwt` true,
+ezbr `ca98c9cf6f667f4deeb76b627e45d9efdbf1b47a6be041cb4e2f8a92a1c2f563`.
+**Byte-verified: every file matches the repo.**
+
+**Live TEST verification** (prefix `S8-PROBE`, real deployed routes via
+pg_net, manager token; "today" 2026-09-29 Europe/London).
+
+Probe set:
+- coach `S8-PROBE Wendy` and session `S8-PROBE-S1`;
+- O1: 18 Aug, Completed;
+- O2: 25 Aug, Cancelled;
+- A1: O1, Cost Status Draft;
+- A2: O2, Confirmed £30, no Coach Outcome;
+- WSQ: 1–7 Aug, Queried, note, Queried At 20 Sep;
+- WSR: 8–14 Aug, stored "Not ready", nothing pending;
+- WSB: 15–21 Aug, stored "Needs review", A1 pending.
+
+| Step | Result |
+|---|---|
+| 1. Queried | `work_summary_queried|summary:<WSQ>`, Review Query, `coaches/work-summary`, note + date in payload; Warning (about 9 days > 3) |
+| 3. Ready | `work_summary_ready_to_finalise|summary:<WSR>` although stored "Not ready" (`storedStatusStale` true); Warning |
+| 4. Blocked | `work_summary_blocked|summary:<WSB>` although stored "Needs review": "1 item still pending (1 cost not confirmed)"; no ready case for WSB |
+| 6. Coach outcome | `coach_outcome_pending|occurrence:<O2>|coach:<Wendy>`, Record Coach Outcome, `coaches/occurrence-financial-outcome` with allocationId; Warning (> 48 h) |
+| Exceptions | all four keys → **403 `override_not_supported`**; nothing written |
+| 2. Resolve queried (Finalised) | queried case gone |
+| 5. Fix blocked (A1 Confirmed + £30) | blocked case gone; WSB is now ready (stored "Needs review", not stale): never both |
+| 7. Coach Outcome = Paid | coach outcome case gone |
+| v12 re-check | wording "nothing is pending" / "its 1 item of work is resolved" |
+| Query after finalise, Queried At 28 Sep 23:30Z | queried case, text "on 29 Sep 2026" (London date), `frozen` and `previouslyFinalised` true, Normal (< 3 days) |
+| Reopen (status Not ready, Reopened At set) | queried case gone; recomputed ready (stored "Not ready" stale, `frozen` false) |
+| Deactivate WSR | its case disappears |
+| 8. Stale status | covered by steps 3, 4 and the reopen: the stored value never decided a rule |
+| `caseKey` lookups | resolved queried key `exists: false`; new ready key `exists: true`; 10 lists each |
+| Coach token on `/cases` | 403 |
+
+Every full request read 19 lists, 14 rules were evaluated and there were
+0 config issues.
+
+**9. Cleanup:** all 9 probe records were deleted by id (3 summaries,
+2 allocations, 2 occurrences, 1 session, 1 coach). The final queue is
+**Clear**: 14 evaluated, 19 lists, 0 config issues, every Slice 8 rule 0
+candidates. Needs Attention Exceptions is unchanged.
+
+**Regression (live):**
+- `/me` 200 for management, coach and parent;
+- hub-content `/players` 200, md5 `685b11e7…` unchanged;
+- parent-hub `/me` and `/claims/pending` 200;
+- coach-compliance `/summary?coachId=recYZyiLVud7yoNZS` 200;
+- coach-cover `/manage` 200;
+- coach-work-summaries `/summaries` 200;
+- occurrence-financial-outcomes `/outcomes` answers (400 without
+  `occurrenceId`, as designed).
+
+### NA11.10 Separation for the later Supabase migration
+
+`work-summaries.ts` is pure: copied domain functions, passes and shaping
+over plain rows. It has no fetch, Deno or writes (RD4 / D4).
+
+- **Reads to replace.** Coach Work Summaries and Coach Allocations become
+  repository queries returning the same field shapes:
+  - Work Summary ID, Coach, Period Start / End, Status, Active, Queried
+    At, Query / Reopen Note, Finalised At, Reopened At;
+  - Allocation ID, Coach, Session Occurrence, Cost Status, Final Coach
+    Cost, Coach Outcome, Rate Type Snapshot, Paid Units, Rate Amount
+    Snapshot.
+
+  The Session Occurrences / Sessions / Coaches rows are shared.
+- **Copies to delete.** When coach-work-summaries itself moves, the
+  copied blocks should be replaced by one shared import. Until then the
+  drift tests keep them byte-identical.
+- **Not migrated here.** No schema, table or migration was created.
+
+### NA11.11 Deferred, flagged, and the Slice 9 handoff
+
+- **Finalised drift not raised.** A Finalised summary whose allocations
+  changed after finalisation raises no case. The frozen lines are the
+  record; reconciling them is a Finance / reopen workflow question, not
+  a Slice 8 rule.
+- **`evaluate()` stays copied.** Moving the domain's `evaluate()` loop
+  into coach-work-summaries/work-summaries.ts, so it can be copied from
+  one file, was left alone: the domain function was not touched.
+- **Catalogue text only.** The four Description texts were updated to the
+  implemented behaviour, with the ATT-043 key documented as occurrence +
+  coach. No severity, threshold, override flag, locked minimum or Settings
+  row was changed.
+- **Placeholder routes** `coaches/work-summary` and
+  `coaches/occurrence-financial-outcome` await the Management UI.
+- **Still carried:** tables read whole (fine at TEST scale), exact-case
+  exceptions only, Airtable 429 watchpoint.
+- **Slice 9 has not been started.**

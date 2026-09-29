@@ -41,7 +41,7 @@ export const TIMINGS = ["Hours Before", "Days Before", "Hours Overdue", "Days Ov
 export type Timing = (typeof TIMINGS)[number];
 export const EVALUATION_STATUSES = ["Active", "Planned", "Retired"] as const;
 
-export const ENGINE_VERSION = "needs-attention-slice-7";
+export const ENGINE_VERSION = "needs-attention-slice-8";
 export const RULE_KEY_RE = /^[a-z][a-z0-9_]*$/;
 export const SUBJECT_TYPE_RE = /^[a-z][a-z0-9_]*$/;
 /** A subject id may be a record id or an ISO date - never a label: no '|', no whitespace. */

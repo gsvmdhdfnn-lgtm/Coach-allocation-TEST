@@ -117,6 +117,11 @@ const RULES = [
   rule("non_compliant_coach_assigned", "ATT-031", { sev: "Warning", urg: [48, "Hours Before"], locked: "Warning", sort: 31, override: false, area: "Coaches", action: "Review Compliance" }),
   rule("coach_schedule_conflict", "ATT-012", { sev: "Warning", urg: [48, "Hours Before"], sort: 12, action: "Review Conflict" }),
   rule("assigned_coach_unavailable", "ATT-014", { sev: "Warning", urg: [48, "Hours Before"], sort: 14 }),
+  // Slice 8 rules (real TEST values: rec00IKBwihcKHx2M, rechnmv1LKwdbKWBY, rec61LC0S5eige37U, recrHin89iSvwLDbw); no work summaries / allocations here, so they raise nothing.
+  rule("coach_outcome_pending", "ATT-043", { warn: [48, "Hours Overdue"], sort: 43, override: false, area: "Coaches", action: "Record Coach Outcome" }),
+  rule("work_summary_queried", "ATT-044", { warn: [3, "Days Overdue"], sort: 44, override: false, area: "Coaches", action: "Review Query" }),
+  rule("work_summary_ready_to_finalise", "ATT-045", { warn: [3, "Days Overdue"], sort: 45, override: false, area: "Coaches", action: "Finalise Summary" }),
+  rule("work_summary_blocked", "ATT-046", { warn: [3, "Days Overdue"], sort: 46, override: false, area: "Coaches", action: "Resolve Pending Items" }),
 ];
 const ruleRec = (k: string) => RULES.find((r) => r.fields["Rule Key"] === k)!;
 
@@ -176,6 +181,8 @@ function world(o: World) {
     "Coach Document Requirements": [],
     [AVAILABILITY_TABLES.recurring]: o.weekly ?? [],
     [AVAILABILITY_TABLES.exceptions]: o.dated ?? [],
+    "Coach Work Summaries": [],
+    "Coach Allocations": [],
   };
   requests = [];
 }
@@ -264,7 +271,7 @@ async function main() {
     ck("C4. Key = coach + occurrence ids sorted ascending; exactly one conflict case overall", c?.caseKey === `coach_schedule_conflict|coach:${ALEX.id}|occurrence:${[OA.id, OB.id].sort()[0]}|occurrence:${[OA.id, OB.id].sort()[1]}` && cf.length === 1);
     ck("C5. Payload: both occurrences, sessions, times, roles, overlap window 16:45-17:00 (15 min), anchor = earlier start", c.context.sessionNameA && c.context.sessionNameB && [c.context.roleA, c.context.roleB].sort().join(",") === "Coach,Lead Coach" && c.context.overlapMinutes === 15 && c.context.overlapStart === bst(MON, "16:45") && c.context.overlapEnd === bst(MON, "17:00") && c.anchorTime === OA.fields["Start Date & Time"] && /16:45-17:00 \(15 min\)/.test(c.detail) && c.actionLabel === "Review Conflict" && c.destination.route === "coaches/schedule-conflict");
     ck("I1. Interaction: Alex has BOTH unavailable cases AND the conflict case - neither suppresses the other", !!c && !!find(b, kUn(OA.id, ALEX.id)) && !!find(b, kUn(OB.id, ALEX.id)));
-    ck("R1. Reads: 17 lists, each once (+ Coach Availability, Coach Availability Exceptions); one staffing, one availability, one conflict pass", Object.keys(b.diagnostics.reads.lists).length === 17 && Object.values(b.diagnostics.reads.lists).every((n: any) => n === 1) && staffingPassStats.passes === 1 && availabilityPassStats.passes === 1 && conflictPassStats.passes === 1);
+    ck("R1. Reads: 19 lists, each once (+ Coach Availability, Coach Availability Exceptions, + Slice 8 Coach Work Summaries, Coach Allocations); one staffing, one availability, one conflict pass", Object.keys(b.diagnostics.reads.lists).length === 19 && Object.values(b.diagnostics.reads.lists).every((n: any) => n === 1) && staffingPassStats.passes === 1 && availabilityPassStats.passes === 1 && conflictPassStats.passes === 1);
     ck("R2. Queue complete; the only config issue is Kim's ambiguous availability", b.complete === true && b.configIssues.length === 1 && b.configIssues[0].code === "availability_ambiguous", JSON.stringify(b.configIssues));
     ck("P1. No player data or availability internals beyond ids / reason codes in the payload", !/player/i.test(JSON.stringify(b.cases.filter((x: any) => x.ruleKey === "assigned_coach_unavailable" || x.ruleKey === "coach_schedule_conflict"))));
 

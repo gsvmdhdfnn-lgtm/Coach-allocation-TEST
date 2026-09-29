@@ -19,8 +19,12 @@
  * non_compliant_coach_assigned combines that pass with the shared staffing
  * pass. Slice 7 adds assigned_coach_unavailable and coach_schedule_conflict
  * (coach-schedule.ts): one shared availability pass and one shared conflict
- * pass, both built on the shared staffing pass. Later slices append their
- * own registrations; gated-off rules never cause any domain read.
+ * pass, both built on the shared staffing pass. Slice 8 adds
+ * coach_outcome_pending and the three Work Summary rules (work-summaries.ts):
+ * one shared coach-outcome pass and one shared Work Summary pass (effective
+ * status recomputed from the domain's own copied rules, never stored Status).
+ * Later slices append their own registrations; gated-off rules never cause
+ * any domain read.
  *
  * Drift protection: validateRegistry() (needs-attention.ts) reports
  * duplicate registrations, registrations with no catalogue row, and Rule
@@ -32,5 +36,6 @@ import { STAFFING_EVALUATORS } from "./staffing.ts";
 import { COVER_EVALUATOR } from "./cover.ts";
 import { COMPLIANCE_EVALUATORS } from "./compliance.ts";
 import { COACH_SCHEDULE_EVALUATORS } from "./coach-schedule.ts";
+import { WORK_SUMMARY_EVALUATORS } from "./work-summaries.ts";
 
-export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS, COVER_EVALUATOR, ...COMPLIANCE_EVALUATORS, ...COACH_SCHEDULE_EVALUATORS];
+export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS, COVER_EVALUATOR, ...COMPLIANCE_EVALUATORS, ...COACH_SCHEDULE_EVALUATORS, ...WORK_SUMMARY_EVALUATORS];
