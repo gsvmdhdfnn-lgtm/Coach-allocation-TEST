@@ -12,7 +12,9 @@
  *   - VAT: registration state, VAT number, default rate, default treatment
  *     (a default only - per-service treatment arrives in F3);
  *   - default payment terms (days);
- *   - Coach payment rule: day N of the month after the work (1-28).
+ *   - Coach payment rule: day N (1-31) of the month after the work; in a
+ *     shorter month it resolves to that month's last day (see
+ *     resolveCoachPaymentDate). The stored day itself never changes.
  * Optional integrations (Stripe / Xero / Sheets) are not settings here and
  * never affect completeness. No credentials are stored.
  */
@@ -93,6 +95,9 @@ const TREATMENT_CHOICES: Record<VatTreatment, string> = { plus_vat: "Plus VAT", 
 // Per-field validation (shared by request input AND stored values)
 // ---------------------------------------------------------------------
 
+export const COACH_PAYMENT_DAY_MIN = 1;
+export const COACH_PAYMENT_DAY_MAX = 31;
+
 export type FieldCheck = { ok: true; value: unknown } | { ok: false; error: string };
 
 const CONTROL_RE = /[\u0000-\u0009\u000B-\u001F\u007F]/;
@@ -126,7 +131,7 @@ export const FIELD_VALIDATORS: Record<SettingsKey, (v: unknown) => FieldCheck> =
   defaultVatRateBasisPoints: (v) => (v === null || isRateBasisPoints(v) ? { ok: true, value: v } : { ok: false, error: "must be whole basis points 0-10000 (2000 = 20%) or null" }),
   defaultVatTreatment: (v) => (v === null || isVatTreatment(v) ? { ok: true, value: v } : { ok: false, error: `must be one of ${VAT_TREATMENTS.join(", ")} or null` }),
   defaultPaymentTermsDays: (v) => int(v, 0, 365),
-  coachPaymentDayOfFollowingMonth: (v) => int(v, 1, 28),
+  coachPaymentDayOfFollowingMonth: (v) => int(v, COACH_PAYMENT_DAY_MIN, COACH_PAYMENT_DAY_MAX),
 };
 
 /** Rules across fields, checked on the MERGED result of an update. Empty object = consistent. */
@@ -204,6 +209,35 @@ export function applyPatch(current: FinanceSettings, patch: SettingsPatch): Fina
 
 export function changedKeys(before: FinanceSettings, after: FinanceSettings): SettingsKey[] {
   return SETTINGS_KEYS.filter((k) => before[k] !== after[k]);
+}
+
+// ---------------------------------------------------------------------
+// Coach payment day -> calendar date
+// ---------------------------------------------------------------------
+
+/** Gregorian month length (leap years included) - no month is special-cased. setUTCFullYear avoids Date.UTC's 0-99 => 1900s mapping. */
+export function daysInMonth(year: number, month: number): number {
+  const d = new Date(0);
+  d.setUTCFullYear(year, month, 0);
+  return d.getUTCDate();
+}
+
+/**
+ * The actual payment date in the target (payment) month for a configured
+ * Coach payment day. Day 1-31 is valid; when the month is shorter than the
+ * configured day, the month's last day is used (31 -> 30 April, 31 or 30 ->
+ * 28/29 February). Pure: the configured day is never altered, only the date
+ * computed from it. Choosing the target month ("the month after the work")
+ * and any bundling are the caller's concern (F12).
+ */
+export function resolveCoachPaymentDate(configuredDay: unknown, year: unknown, month: unknown): { ok: true; date: string; day: number } | { ok: false; error: string } {
+  if (typeof configuredDay !== "number" || !Number.isInteger(configuredDay) || configuredDay < COACH_PAYMENT_DAY_MIN || configuredDay > COACH_PAYMENT_DAY_MAX) {
+    return { ok: false, error: `Coach payment day must be a whole number ${COACH_PAYMENT_DAY_MIN}-${COACH_PAYMENT_DAY_MAX}` };
+  }
+  if (typeof year !== "number" || !Number.isInteger(year) || year < 1 || year > 9999) return { ok: false, error: "year must be a whole number 1-9999" };
+  if (typeof month !== "number" || !Number.isInteger(month) || month < 1 || month > 12) return { ok: false, error: "month must be a whole number 1-12" };
+  const day = Math.min(configuredDay, daysInMonth(year, month));
+  return { ok: true, day, date: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}` };
 }
 
 // ---------------------------------------------------------------------

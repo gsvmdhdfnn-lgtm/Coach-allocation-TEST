@@ -12965,13 +12965,13 @@ brackets.
 | `defaultVatRateBasisPoints` (Default VAT Rate (Basis Points)) | integer 0–10000 (2000 = 20%). Required when registered; empty when not. **No rate is ever assumed** |
 | `defaultVatTreatment` (Default VAT Treatment: Plus VAT / VAT Included / No VAT) | `plus_vat` \| `vat_included` \| `no_vat`. Required when registered. When not registered it must be empty or `no_vat` (the effective default is then `no_vat`). It is the organisation **default only**; per-service treatment arrives in F3 |
 | `defaultPaymentTermsDays` (Default Payment Terms (Days)) | integer 0–365. Required |
-| `coachPaymentDayOfFollowingMonth` (Coach Payment Day) | integer **1–28**: coaches are paid on day N of the month after the work. 29–31 are refused so that no month is ambiguous. There is no bundling (F12). Required |
+| `coachPaymentDayOfFollowingMonth` (Coach Payment Day) | integer **1–31** (corrected; see FIN2.11): coaches are paid on day N of the month after the work. In a shorter month the date resolves to that month's last day (`resolveCoachPaymentDate`). The stored day never changes. 0, negatives, >31 and non-integers are refused. There is no bundling (F12). Required |
 
 **Meta fields.** `Revision`, `Last Changed By User ID` and `Last Changed At`
 are written by the API only.
 
 **Stored values are validated on every read** with the same validators as
-input. An unknown select label, a fractional rate, day 31, or a cross-field
+input. An unknown select label, a fractional rate, day 32 or 7.5, or a cross-field
 contradiction makes the row 409 `finance_settings_invalid`, naming the
 field. It is never treated as blank.
 
@@ -13133,7 +13133,7 @@ Fresh JWTs for `manager@test.invalid`, `coach.a@test.invalid` and
 | 2 | Manage, first valid POST (legal name, address, terms 30) | 200 `changed:true`, rev 1, 3/5. Exactly 1 `finance_settings.created` event (org, actor, before null, after, reason, changed fields); lock released |
 | 3 | F1 `GET /access` / `POST /write-check` | 200 / 200 (unchanged) |
 | 4 | Cross-field invalid (not registered + VAT number + day 7) | 400 `invalid_settings` {vatNumber}. Airtable row unchanged (no day 7 written); audit count still 1 |
-| 5 | Invalid values (day 31, rate 20.5) / unknown `revision` | 400 `invalid_settings` (both fields) / 400 `unexpected_field` |
+| 5 | Invalid values (day 31, rate 20.5) / unknown `revision` | 400 `invalid_settings` (both fields) / 400 `unexpected_field`. At the time day 31 was outside the old 1–28 range; it is now valid (FIN2.11), and 32 is the rejected case |
 | 6 | Tenant: `?organisationId=`, body `organisationId`, `settings.baseId` | 400 `tenant_param_rejected` ×3 |
 | 7 | No-op update (same values, padded text) | 200 `changed:false`, rev 1, no event |
 | 8 | Two simultaneous updates | one 200 (rev 2, 1 event), one 409 `finance_settings_busy`; no lock left |
@@ -13241,3 +13241,84 @@ VAT and money are proven by the unit tests (FIN2.9), not over HTTP.
 - **Optimistic concurrency** (client-sent `revision`) for the future UI. The
   server lock prevents lost updates between concurrent writes, but not stale
   forms.
+
+### FIN2.11 Correction: Coach payment day 1–31 (2026-09-29, `finance` v4)
+
+**Product decision.** The Coach payment day supports **1–31**. When the
+configured day does not exist in a month, the payment falls on that month's
+**last valid calendar day**. The 1–28 limit in the original F2 was never a
+locked decision.
+
+**Exact change.** Only these parts of F2 changed:
+
+- **`finance-settings.ts`:**
+  - `COACH_PAYMENT_DAY_MIN = 1` and `COACH_PAYMENT_DAY_MAX = 31`;
+  - the field validator now accepts 1–31 and still refuses 0, negatives, >31,
+    non-integers, strings, booleans, arrays and objects;
+  - stored values are validated the same way on read, so a stored 32 or 7.5
+    returns 409.
+- **New pure helper `resolveCoachPaymentDate(configuredDay, year, month)`:**
+  - returns `{ok, day, date:"YYYY-MM-DD"}`, where `day = min(configuredDay,
+    daysInMonth(year, month))`;
+  - `daysInMonth` uses normal Gregorian month lengths and leap years
+    (`setUTCFullYear(year, month, 0)`); no month is hard-coded, and it avoids
+    `Date.UTC` treating years 0–99 as 1900s;
+  - an invalid day, month (outside 1–12) or year (outside 1–9999) is refused;
+  - it is pure, so the stored configured day is never altered. A stored 31 stays
+    31 and resolves to 28 or 29 in February and 30 in April, June, September
+    and November.
+  - Choosing the target month ("the month after the work") and any bundling
+    belong to the caller (F12).
+- **Airtable field description:** the `Coach Payment Day` description (TEST)
+  now says 1–31 with the last-day fallback.
+- **Unchanged:** Settings shape, API, audit, lock, completeness and all other
+  validation.
+
+**Tests (`tests/support/finance-settings.test.ts`, 80 → 92 checks).**
+- New section D (12 checks):
+  - day 1; day 7 in every month of 2026 and 2028; day 28;
+  - 29, 30 and 31 against February in non-leap and leap years;
+  - 30-day months with 31; 31-day months with 31;
+  - the century rule (1900/2100/100 not leap, 2000/4 leap);
+  - invalid day (0 / −1 / 32 / 7.5 / NaN / "7" / null);
+  - invalid month and year;
+  - the stored day is unchanged after resolution.
+- P9 is rewritten: 1, 7, 28, 29, 30 and 31 are accepted; 0, −1, 32, 7.5, "7",
+  true, [7] and {} are refused. P8, S13 and U19 now use 32 or 7.5 as the invalid
+  day.
+- **Mutations:** 6/6 new mutations caught:
+  - range back to 28;
+  - 32 accepted;
+  - no short-month fallback;
+  - hard-coded 28-day February;
+  - naive leap rule;
+  - fractional day accepted by the helper.
+- The original 18 F2 mutations are still 18/18.
+- The kernel (47) and F1 (56) checks are unchanged.
+- **Full suite:** `npm test` gives **69/69 files, 2,331 PASS / 0 FAIL** (2,319 + 12).
+
+**Deploy.** `finance` v4 was byte-verified by read-back: 8/8 bundled files are
+identical to the repo.
+
+**Live verification (v4, real HTTP via `pg_net`, `manager@test.invalid`
+Manage).**
+
+| Case | Result |
+|---|---|
+| day 32 | 400 `invalid_settings` "must be between 1 and 31" (no write, no event) |
+| day 7.5 | 400 `invalid_settings` "must be a whole number or null" |
+| day 29 | 200, rev 4 |
+| day 30 | 200, rev 5 |
+| day 31 | 200, rev 6 |
+| restore day 7 | 200, rev 7, complete 8/8 |
+
+- Each accepted change wrote exactly one `finance_settings.updated` event, with
+  the correct before and after day.
+- No lock was left, and the temporary `f2probe` helper schema was dropped.
+
+**Resting baseline.**
+- Finance Settings are unchanged except for the revision, which is now **7**.
+- The Coach payment day is back at **7**.
+- The audit trail has 7 events. The four new ones (revs 4–7) are the probe and
+  its restore. The table is append-only, so they are permanent history.
+- The grants and `module_finance` are unchanged.

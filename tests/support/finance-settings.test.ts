@@ -3,6 +3,7 @@
  * Run: node --experimental-strip-types tests/support/finance-settings.test.ts
  *
  *   S   pure Settings domain (field validation, cross-field rules, completeness, stored mapping)
+ *   D   Coach payment day -> calendar date (1-31, shorter months fall back to their last day)
  *   P   POST /settings body parsing (unknown / tenant / dangerous / malformed input)
  *   G   GET /settings through the orchestrator (access matrix, missing vs invalid vs unavailable, isolation, reads write nothing)
  *   U   UPDATE through the orchestrator (one write + exactly one audit event, no-op, invalid, lock, failure + compensation)
@@ -23,9 +24,11 @@ import {
   changedKeys,
   completeness,
   crossFieldErrors,
+  daysInMonth,
   effectiveDefaultVat,
   fromStoredRow,
   parseUpdateBody,
+  resolveCoachPaymentDate,
   toStoredFields,
 } from "./finance-settings.ts";
 import { SETTINGS_RETRY_DELAYS_MS } from "./finance-settings-repository.ts";
@@ -207,12 +210,32 @@ async function main() {
     const round = fromStoredRow(storedRow(FULL)) as any;
     ck("S11. Stored row -> domain round-trip is exact (select labels, numbers, multiline)", round.ok && JSON.stringify(round.state.settings) === JSON.stringify(FULL) && round.state.revision === 3 && round.state.configured);
     ck("S12. Stored unknown select label -> invalid (fails closed, not blank)", !(fromStoredRow(storedRow(FULL, { [FIELD_NAMES.defaultVatTreatment]: "Exempt" })) as any).ok && !(fromStoredRow(storedRow(FULL, { [FIELD_NAMES.vatRegistered]: "Yes" })) as any).ok);
-    ck("S13. Stored fractional rate / day 31 / negative revision -> invalid", [{ [FIELD_NAMES.defaultVatRateBasisPoints]: 2000.5 }, { [FIELD_NAMES.coachPaymentDayOfFollowingMonth]: 31 }, { Revision: -1 }].every((o) => !(fromStoredRow(storedRow(FULL, o)) as any).ok));
+    ck("S13. Stored fractional rate / day 32 / day 7.5 / negative revision -> invalid", [{ [FIELD_NAMES.defaultVatRateBasisPoints]: 2000.5 }, { [FIELD_NAMES.coachPaymentDayOfFollowingMonth]: 32 }, { [FIELD_NAMES.coachPaymentDayOfFollowingMonth]: 7.5 }, { Revision: -1 }].every((o) => !(fromStoredRow(storedRow(FULL, o)) as any).ok));
     ck("S14. Stored cross-field contradiction -> invalid", !(fromStoredRow(storedRow({ ...notReg, vatNumber: "GB1" })) as any).ok);
     ck("S15. Stored blank optional fields read as null (Airtable omits empty cells)", (fromStoredRow(storedRow({ ...FULL, companyNumber: null })) as any).state.settings.companyNumber === null);
     ck("S16. changedKeys lists only real differences; applyPatch touches only patched keys", changedKeys(FULL, applyPatch(FULL, { defaultPaymentTermsDays: 30, vatNumber: "GB123456789" })).join() === "defaultPaymentTermsDays" && applyPatch(FULL, {}).invoiceLegalName === FULL.invoiceLegalName);
     const ev = buildSettingsAuditEvent({ organisationId: ORG, actorUserId: MGR, recordId: "recX", before: { configured: false, recordId: null, revision: 0, updatedAt: null, settings: EMPTY_SETTINGS }, after: FULL, revision: 1, changed: ["invoiceLegalName"], reason: "r" });
     ck("S17. Audit event for a first write: created, before null, after + revision, context lists changed fields, no client timestamp", ev.event_type === "finance_settings.created" && ev.before === null && (ev.after as any).revision === 1 && JSON.stringify((ev.context as any).changedFields) === '["invoiceLegalName"]' && !("occurred_at" in ev));
+  }
+
+  // ===== D. Coach payment day -> calendar date =====
+  {
+    const d = (day: unknown, y: unknown, m: unknown) => resolveCoachPaymentDate(day, y, m) as any;
+    ck("D1. Day 1 -> the 1st", d(1, 2026, 3).date === "2026-03-01");
+    ck("D2. Day 7 (TEST baseline) -> the 7th in every month of 2026 and 2028", [2026, 2028].every((y) => Array.from({ length: 12 }, (_, i) => i + 1).every((m) => d(7, y, m).day === 7)));
+    ck("D3. Day 28 -> the 28th, including February", d(28, 2026, 2).date === "2026-02-28" && d(28, 2028, 2).date === "2028-02-28");
+    ck("D4. Day 29 -> 28 Feb in a non-leap year, 29 Feb in a leap year, 29th elsewhere", d(29, 2026, 2).date === "2026-02-28" && d(29, 2028, 2).date === "2028-02-29" && d(29, 2026, 4).date === "2026-04-29");
+    ck("D5. Day 30 -> 28/29 February, 30th in April and in 31-day months", d(30, 2027, 2).date === "2027-02-28" && d(30, 2024, 2).date === "2024-02-29" && d(30, 2026, 4).date === "2026-04-30" && d(30, 2026, 1).date === "2026-01-30");
+    ck("D6. Day 31 in 30-day months -> the 30th (Apr, Jun, Sep, Nov)", [4, 6, 9, 11].every((m) => d(31, 2026, m).day === 30));
+    ck("D7. Day 31 in 31-day months -> the 31st (Jan, Mar, May, Jul, Aug, Oct, Dec)", [1, 3, 5, 7, 8, 10, 12].every((m) => d(31, 2026, m).day === 31));
+    ck("D8. Day 31 in February -> 28 (non-leap) / 29 (leap)", d(31, 2026, 2).date === "2026-02-28" && d(31, 2028, 2).date === "2028-02-29");
+    ck("D9. Gregorian century rule, not a hard-coded February: 1900/2100/100 not leap, 2000/4 leap (no 2-digit-year quirk)", d(31, 1900, 2).day === 28 && d(31, 2000, 2).day === 29 && d(31, 2100, 2).day === 28 && daysInMonth(2000, 2) === 29 && daysInMonth(100, 2) === 28 && daysInMonth(4, 2) === 29);
+    ck("D10. Invalid configured day (0 / -1 / 32 / 7.5 / NaN / \"7\" / null) -> refused, no date", [0, -1, 32, 7.5, NaN, "7", null, undefined].every((x) => d(x, 2026, 1).ok === false && d(x, 2026, 1).date === undefined));
+    ck("D11. Invalid target month / year -> refused", [0, 13, 1.5, "1"].every((m) => d(7, 2026, m).ok === false) && [0, 10000, 2026.5, "2026"].every((y) => d(7, y, 1).ok === false));
+    const stored = { ...FULL, coachPaymentDayOfFollowingMonth: 31 };
+    const before = JSON.stringify(stored);
+    const feb = d(stored.coachPaymentDayOfFollowingMonth, 2026, 2);
+    ck("D12. Resolving never changes the stored configured day (31 stays 31 after a 28 Feb resolution)", feb.day === 28 && JSON.stringify(stored) === before && stored.coachPaymentDayOfFollowingMonth === 31);
   }
 
   // ===== P. POST /settings body parsing =====
@@ -225,9 +248,9 @@ async function main() {
     ck("P5. Unknown settings fields -> unexpected_field (Revision, record ids, audit, actor, typos)", ["revision", "Revision", "recordId", "id", "lastChangedBy", "actor_user_id", "audit", "stripeSecretKey", "vatrate"].every((k) => code({ settings: { [k]: 1 } }) === "unexpected_field"));
     ck("P6. Dangerous keys (__proto__, constructor, prototype) -> unexpected_field, never merged", code('{"settings":{"__proto__":{"polluted":1}}}') === "unexpected_field" && code({ settings: { constructor: 1 } }) === "unexpected_field" && ({} as any).polluted === undefined);
     ck("P7. Unknown top-level field -> unexpected_field", code({ settings: { invoiceLegalName: "x" }, force: true }) === "unexpected_field");
-    const bad = parse({ settings: { defaultVatRateBasisPoints: 20.5, coachPaymentDayOfFollowingMonth: 31, defaultPaymentTermsDays: "30", vatRegistered: "yes", defaultVatTreatment: "exempt", invoiceLegalName: 5 } }) as any;
+    const bad = parse({ settings: { defaultVatRateBasisPoints: 20.5, coachPaymentDayOfFollowingMonth: 32, defaultPaymentTermsDays: "30", vatRegistered: "yes", defaultVatTreatment: "exempt", invoiceLegalName: 5 } }) as any;
     ck("P8. Every invalid field is reported together; nothing partially accepted", bad.code === "invalid_settings" && Object.keys(bad.fields).length === 6 && bad.patch === undefined);
-    ck("P9. Coach payment day bounds 1-28 (0 / 29 refused); payment terms 0-365", code({ settings: { coachPaymentDayOfFollowingMonth: 0 } }) === "invalid_settings" && code({ settings: { coachPaymentDayOfFollowingMonth: 29 } }) === "invalid_settings" && parse({ settings: { coachPaymentDayOfFollowingMonth: 28, defaultPaymentTermsDays: 0 } }).ok && code({ settings: { defaultPaymentTermsDays: 366 } }) === "invalid_settings");
+    ck("P9. Coach payment day 1-31 accepted (1, 7, 28, 29, 30, 31); 0 / -1 / 32 / 7.5 / \"7\" / null-ish junk refused; payment terms 0-365", [1, 7, 28, 29, 30, 31].every((d) => (parse({ settings: { coachPaymentDayOfFollowingMonth: d } }) as any).patch?.coachPaymentDayOfFollowingMonth === d) && [0, -1, 32, 7.5, "7", true, [7], {}].every((d) => code({ settings: { coachPaymentDayOfFollowingMonth: d } }) === "invalid_settings") && parse({ settings: { defaultPaymentTermsDays: 0 } }).ok && code({ settings: { defaultPaymentTermsDays: 366 } }) === "invalid_settings");
     ck("P10. VAT rate in whole basis points 0-10000; floats and strings refused", parse({ settings: { defaultVatRateBasisPoints: 0 } }).ok && parse({ settings: { defaultVatRateBasisPoints: 10000 } }).ok && ["20", 20.0001, 10001, -1].every((v) => code({ settings: { defaultVatRateBasisPoints: v } }) === "invalid_settings"));
     ck("P11. null clears a field; blank text clears to null", (parse({ settings: { companyNumber: null } }) as any).patch.companyNumber === null && (parse({ settings: { companyNumber: "   " } }) as any).patch.companyNumber === null);
     ck("P12. Over-long text, control characters, >8 address lines refused", code({ settings: { invoiceLegalName: "x".repeat(201) } }) === "invalid_settings" && code({ settings: { invoiceLegalName: "a\u0000b" } }) === "invalid_settings" && code({ settings: { invoiceLegalName: "a\nb" } }) === "invalid_settings" && code({ settings: { invoiceAddress: "1\n2\n3\n4\n5\n6\n7\n8\n9" } }) === "invalid_settings");
@@ -344,7 +367,7 @@ async function main() {
     r = await upd({ invoiceLegalName: "First Ltd" });
     ck("U18. Audit write fails on a first write -> the created row is deleted, 503, no event", r.httpStatus === 503 && world.settings.length === 0 && world.audit.length === 0 && settingsWrites().map((c) => c.method).join() === "POST,DELETE");
 
-    reset({ settings: [storedRow(FULL, { [FIELD_NAMES.coachPaymentDayOfFollowingMonth]: 30 })] });
+    reset({ settings: [storedRow(FULL, { [FIELD_NAMES.coachPaymentDayOfFollowingMonth]: 32 })] });
     r = await upd({ coachPaymentDayOfFollowingMonth: 7 });
     ck("U19. Stored settings invalid -> 409; update refused (no overwrite of unknown state), no event", r.httpStatus === 409 && r.code === "finance_settings_invalid" && settingsWrites().length === 0 && world.audit.length === 0 && world.lockHeld === null);
 
