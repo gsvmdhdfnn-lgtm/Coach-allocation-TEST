@@ -14161,7 +14161,9 @@ occurrences, 1 eligible (60.00 gross), 1 not billable, 4 not eligible; a
 - F5 invoice drafting (and "already invoiced" as an eligibility input).
 - Parent-paid revenue, subscription periods and "other" charges.
 - A Schedule "Confirm Session" write path (Confirmation State is read, never
-  written, by Finance).
+  written, by Finance). *Since delivered as a Schedule prerequisite - see
+  "Schedule prerequisite - delivery confirmation writer" below; Finance
+  still only reads these fields.*
 - Organisation links on Schedule tables (multi-tenant Schedule data).
 
 ### FIN4.11 Correction — "Exception Recorded" is not a blanket block (2026-09-29, `finance` v8)
@@ -14282,3 +14284,208 @@ rejection or unresolved case wrote an event.
 - That Schedule writer — "Confirm Session" / record a change and its
   delivery outcome — is a Schedule slice. It stays deferred and unchanged:
   Finance still only reads these fields.
+
+## Schedule prerequisite - delivery confirmation writer (before Finance F5) - 2026-09-29
+
+TEST only. `session-occurrences` **v10**. Production untouched. Finance F5 not
+started. No Finance code changed.
+
+### Why
+
+F4 reads the Schedule facts Status and Confirmation State to decide
+eligibility. The F4 audit found that no normal Hub workflow wrote either of
+them: every value was set by hand on fixtures. This slice adds that one
+missing Schedule writer, which is Management's confirmation of a passed
+occurrence.
+
+### Audit findings (before any change)
+
+- **Existing fields only.** Session Occurrences already holds everything
+  needed, so no field or table was added:
+  - Status: Scheduled / Completed / Cancelled / Postponed;
+  - Confirmation State: Awaiting Confirmation / Confirmed / Exception Recorded;
+  - Confirmed At, Confirmed By User ID, Confirmed By Name Snapshot;
+  - Exception At;
+  - Exception Reason: Weather / Venue / Staffing / Safeguarding / Emergency /
+    Client / Other.
+- **No dormant confirmation logic** was found in the repo or the frontend.
+  Needs Attention ATT-006 ("Confirm Session") is Planned and off.
+- **Session History stays structural only.** Slice 9 explicitly keeps
+  Confirmation State out of it. The occurrence-level audit convention is the
+  record's own "Confirmed By / At" stamps, the same pattern as Register
+  Completed By and the Occurrence Financial Outcomes "Decided By" fields.
+- **Deploy drift.** Deployed v9 differed from the repo in `repository.ts` and
+  `daily-top-up.ts`. The difference was comment text only; the code was
+  identical. v10 was deployed from the repo, so it now matches 14/14.
+
+### Confirmation model
+
+| Management answer | Written (one PATCH) | Meaning |
+|---|---|---|
+| Went as planned | Confirmation State **Confirmed**, Status **Completed**, Confirmed At / By / Name | Delivered as planned; no exception is created |
+| Something changed, delivered = **yes** + Exception Reason | **Exception Recorded**, Status **Completed**, Exception Reason, Exception At, Confirmed At / By / Name | Ran, with a change. Any one-off commercial difference is a Finance override, not decided here |
+| Something changed, delivered = **no** + Exception Reason | **Exception Recorded**, Status **Cancelled**, Exception Reason, Exception At, Confirmed At / By / Name | Did not run |
+
+**How delivery is recorded:**
+- The structured delivery truth is Status: Completed means delivered;
+  Cancelled means not delivered.
+- It is never taken from Operational Notes or any other free text. The
+  endpoint has no notes parameter.
+- Commercial outcomes stay Finance-owned.
+- Schedule Change State and Session master data are never touched.
+
+### Guards (all 409, nothing written)
+
+- **Not passed yet** → `occurrence_not_passed`. "Passed" means the End
+  (else Start) instant is before now. With no times, the date must be before
+  today in the **organisation's own timezone** (Organisation & Branding
+  Timezone, not hard-coded). This is the same rule F4 uses.
+- **Cancelled or Postponed** → `occurrence_not_confirmable`. These cannot be
+  confirmed through the normal route.
+- **Only an unconfirmed Scheduled occurrence can be confirmed.** "Completed
+  but unconfirmed" is not produced by any normal flow and is refused.
+- **Already confirmed:**
+  - identical repeat → 200 `changed:false`, no write, stamps kept;
+  - any different answer → `occurrence_already_confirmed`.
+- **Bad data:** occurrence ambiguous, or not linked to exactly one Session.
+- **Bad requests (400):** invalid confirmation value, missing or unknown
+  reason, `delivered` not a boolean, contradictions (e.g. went_as_planned +
+  delivered:false), unknown fields.
+
+### API
+
+```
+POST /functions/v1/session-occurrences/confirm-occurrence
+{ "occurrenceId": "<Occurrence ID>", "confirmation": "went_as_planned" }
+{ "occurrenceId": "<Occurrence ID>", "confirmation": "something_changed", "delivered": true|false, "exceptionReason": "Weather|Venue|Staffing|Safeguarding / Emergency|Client|Other" }
+```
+
+**Access:**
+- 401 with no or invalid JWT.
+- 403 `management_required` for Coach, Parent, inactive or pending users.
+- The organisation always comes from the caller's profile `organisation_id`
+  (one Active Organisation & Branding row).
+- Any tenant-looking key is 400 `tenant_param_rejected`.
+- The production guard is unchanged.
+- There are no Finance permission checks.
+
+**Response:**
+- Contains `before` and `occurrence` (after) views.
+- Contains no Airtable record ids.
+
+**Code** (Schedule-owned):
+- `occurrence-confirmation.ts` (pure rules);
+- `confirmation-repository.ts` (a filtered read by Occurrence ID, re-checked
+  in code, plus a single PATCH);
+- `confirmation-orchestrator.ts`;
+- a route in `index.ts`.
+
+**Concurrency:**
+- Uses the existing per-Session `generation_locks` lock, shared with
+  generation and propagation.
+- The occurrence is re-read under the lock before deciding.
+- The lock is always released.
+
+### History / audit
+
+- **Recorded:** who (Confirmed By User ID + Name Snapshot), when (Confirmed
+  At, plus Exception At for a change), new state, and reason.
+- **Written with the facts:** the stamps are in the same single PATCH, so
+  they land together or not at all.
+- **Previous state:** a confirmation is write-once from the single
+  unconfirmed Scheduled state, so the previous state is always that state.
+  Each successful response returns `before` explicitly.
+- **Nothing extra:** rejected writes and no-op repeats write nothing. No
+  Session History row is written, and no second audit system was created.
+
+### Finance F4 compatibility (no Finance change)
+
+- Went as planned → eligible.
+- Changed + delivered → eligible.
+- Changed + not delivered → not eligible (`cancelled`).
+- Awaiting → not eligible yet.
+- Notes are still ignored.
+
+This was proven in unit tests through the unchanged `finance-billing.ts`, and
+live over HTTP.
+
+### Tests
+
+- **`tests/support/occurrence-confirmation.test.ts`: 102/102.** Shim
+  `tests/e2e/occurrenceconfirmationtest.js`. Covers:
+  - AC access (Coach / Parent / inactive / pending, tenant keys, profile
+    organisation, route 401/403 order);
+  - WP went as planned;
+  - SC something changed (delivered yes / no, reason validation, free text
+    never delivery truth);
+  - IT invalid transitions;
+  - TZ organisation timezone;
+  - HI history;
+  - LK lock (busy, release, re-read under lock, concurrent identical
+    confirmations → exactly one PATCH);
+  - F4 integration;
+  - Z drift / code checks.
+- **Mutations: 25/25 caught.**
+- **Other suites:**
+  - Finance: F1 56/56, F2 kernel 47/47, F2 Settings 92/92, F3 100/100,
+    F4 105/105.
+  - Schedule: propagation 43/43, session-repository 19/19,
+    session-generator 37/37, daily-top-up 7/7.
+  - Occurrence Financial Outcomes: 37/37.
+- **Full suite:** `npm test` → **72/72 files, 2,638 PASS / 0 FAIL**.
+
+### Live TEST verification (2026-09-29, real HTTP via `pg_net`)
+
+| Check | Result |
+|---|---|
+| Coach / Parent token | 403 `management_required` |
+| No JWT | 401 |
+| Tenant key `organisationId` | 400 `tenant_param_rejected` |
+| Confirmation value `"confirmed"` | 400 |
+| Went as planned, After-school 21 Sep (`recT3soLEi6Im8TEt:2026-09-21`), from Awaiting | 200. Before: Awaiting / Scheduled. After: Confirmed / Completed, by Morgan Manager. F4 was `awaiting_confirmation` before; after: **eligible, £162.00** |
+| Something changed, delivered, Staffing, PPA 21 Sep | 200. Exception Recorded / Completed / Staffing. F4: **eligible, net 50 + VAT 10 = £60** |
+| Something changed, not delivered, Weather, After-school 22 Sep | 200. Exception Recorded / Cancelled / Weather. F4: **not_eligible / cancelled** |
+| Future, After-school 6 Oct | 409 `occurrence_not_passed` |
+| Cancelled, PPA 22 Sep / Postponed, PPA 18 Sep | 409 `occurrence_not_confirmable` |
+| Identical repeat of the 21 Sep confirmation | 200 `changed:false`, original Confirmed At kept |
+| Different answer for the 21 Sep occurrence | 409 `occurrence_already_confirmed` |
+| No free-text inference: After-school 23 Sep, notes "Delivered in full - all 18 attended", never confirmed | F4: **not_eligible / awaiting_confirmation** |
+| Stored history (Airtable re-read) | Exactly 3 occurrences stamped (actor, time, reason). Refused / future / postponed / free-text rows untouched. Session History still 0 rows |
+| Needs Attention before / after | **Clear, 0** both times. No existing rule responded to the three confirmations |
+| Finance audit | 29 → 29. Confirmation writes nothing to Finance |
+
+### Resting TEST data
+
+- **Six new occurrences** on the Inactive F4 Sessions (so the generator
+  ignores them):
+  - After-school 21 Sep (Confirmed / Completed);
+  - After-school 22 Sep (Exception / Cancelled, Weather);
+  - After-school 23 Sep (Awaiting, "Delivered in full" notes);
+  - After-school 6 Oct (Awaiting, future);
+  - PPA 21 Sep (Exception / Completed, Staffing);
+  - PPA 18 Sep (Postponed).
+- **Baseline:**
+  - `module_finance` ON;
+  - exactly one active Finance grant (Manage);
+  - no `generation_locks` / `finance_write_locks` rows;
+  - `f2probe` dropped;
+  - TEST user passwords were reset for the probe (TEST only).
+
+### Deferred (Schedule, not built here)
+
+- **Correcting or reopening a confirmation.** A different answer on an
+  already-confirmed occurrence is refused (409). No correction path exists
+  and none was invented. Whether and how Management may change a
+  confirmation is a product decision for a later Schedule slice.
+- **UI:** Management's Confirm Session screen.
+- **Needs Attention ATT-006** (`occurrence_awaiting_confirmation`) stays
+  Planned / off.
+- **A free-text context note** for "Other". Operational Notes remain
+  separately editable; this endpoint takes structured facts only.
+- **Organisation links on Schedule tables** (existing deferral). The caller's
+  organisation is resolved from their profile, but Schedule rows are not yet
+  organisation-scoped.
+- **Coach work-summary outcome after not-delivered.** When a not-delivered
+  occurrence has coach allocations, the existing Work Summary / Needs
+  Attention "outcome required for Cancelled" rules will legitimately ask for
+  a coach outcome.

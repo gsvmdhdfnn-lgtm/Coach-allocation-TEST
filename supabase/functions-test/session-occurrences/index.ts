@@ -8,6 +8,13 @@
  * the caller, validate the request body, translate the orchestrator's
  * outcome into an HTTP response, and boot-refuse against production.
  *
+ * Schedule prerequisite before Finance F5 (see TEST-ENV.md): POST
+ * /confirm-occurrence is Management's "Went as planned" / "Something
+ * changed" confirmation of a passed occurrence. All of its logic lives in
+ * occurrence-confirmation.ts (pure) / confirmation-repository.ts /
+ * confirmation-orchestrator.ts; this file only authenticates, parses the
+ * body and maps the outcome to HTTP.
+ *
  * Deliberately manual for now: one Session per call, no "generate all
  * Sessions", no cron/scheduled trigger, no frontend wiring. That's later
  * slices - this one exists purely so the already-proven Slice 3
@@ -22,6 +29,8 @@ import { propagateForSession, type PropagateChanges } from "./propagation-orches
 import { triggerSessionSaved } from "./session-trigger.ts";
 import { runDailyTopUp } from "./daily-top-up.ts";
 import { parseHHMM, weekdayIndexFromName } from "./schedule-utils.ts";
+import { parseConfirmBody } from "./occurrence-confirmation.ts";
+import { confirmOccurrence } from "./confirmation-orchestrator.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
 const AIRTABLE_BASE_ID = Deno.env.get("AIRTABLE_BASE_ID")!;
@@ -72,7 +81,7 @@ function jsonResponse(body: unknown, status = 200) {
  */
 async function resolveCaller(
   authHeader: string | null
-): Promise<{ role: string; airtablePersonId: string | null; active: boolean; userId: string; displayName: string | null } | null> {
+): Promise<{ role: string; airtablePersonId: string | null; active: boolean; userId: string; displayName: string | null; organisationId: string | null } | null> {
   if (!authHeader) return null;
   const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: authHeader } },
@@ -81,7 +90,7 @@ async function resolveCaller(
   if (userError || !userData?.user) return null;
   const { data: profile, error: profileError } = await userClient
     .from("profiles")
-    .select("role, airtable_person_id, active, display_name")
+    .select("role, airtable_person_id, active, display_name, organisation_id")
     .eq("user_id", userData.user.id)
     .single();
   if (profileError || !profile) return null;
@@ -94,6 +103,9 @@ async function resolveCaller(
     // Session History's Changed By Name Snapshot (Slice 9) must never be
     // left empty just because a profile never set a display name.
     displayName: profile.display_name || userData.user.email || null,
+    // The caller's own organisation - the ONLY organisation a confirmation
+    // is ever resolved against (never anything from the request).
+    organisationId: typeof profile.organisation_id === "string" ? profile.organisation_id : null,
   };
 }
 
@@ -430,6 +442,26 @@ async function handleDailyTopUp(req: Request): Promise<Response> {
   }
 }
 
+/**
+ * Management confirms a passed occurrence: "Went as planned" or "Something
+ * changed" (with delivered yes/no + Exception Reason). Same 401/403 order
+ * as every other Management route here; the organisation comes only from
+ * the caller's profile - a tenant-looking body key is 400, never ignored.
+ */
+async function handleConfirmOccurrence(req: Request): Promise<Response> {
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!caller.active || caller.role !== "management") {
+    return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  }
+  if ([...new URL(req.url).searchParams.keys()].length) return jsonResponse({ error: "This route accepts no query parameters", code: "unexpected_parameter" }, 400);
+  const parsed = parseConfirmBody(await req.text());
+  if (!parsed.ok) return jsonResponse({ error: parsed.error, code: parsed.code }, 400);
+  const out = await confirmOccurrence({ airtable: airtableConfig, lock: lockClient }, caller, parsed.req);
+  if (out.status === "ok") return jsonResponse(out.body, out.httpStatus);
+  return jsonResponse({ error: out.error, code: out.code }, out.httpStatus);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -450,6 +482,10 @@ Deno.serve(async (req) => {
     if (route === "trigger-session-saved") {
       if (req.method !== "POST") return jsonResponse({ error: "Method not allowed - use POST" }, 405);
       return await handleTriggerSessionSaved(req);
+    }
+    if (route === "confirm-occurrence") {
+      if (req.method !== "POST") return jsonResponse({ error: "Method not allowed - use POST" }, 405);
+      return await handleConfirmOccurrence(req);
     }
     if (route === "daily-top-up") {
       if (req.method !== "POST") return jsonResponse({ error: "Method not allowed - use POST" }, 405);
