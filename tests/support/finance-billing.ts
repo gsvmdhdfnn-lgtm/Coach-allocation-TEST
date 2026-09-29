@@ -123,48 +123,60 @@ export function publicOverride(o: Override) {
 // Eligibility from Schedule facts
 // ---------------------------------------------------------------------
 
-export type EligibilityStatus = "eligible" | "cancelled" | "postponed" | "not_yet_delivered" | "schedule_exception_recorded" | "awaiting_confirmation";
+export type EligibilityStatus = "eligible" | "cancelled" | "postponed" | "not_yet_delivered" | "exception_delivery_unresolved" | "awaiting_confirmation";
 export const ELIGIBILITY_LABELS: Record<EligibilityStatus, string> = {
   eligible: "Delivered and confirmed",
   cancelled: "Cancelled - not delivered",
   postponed: "Postponed - the replacement occurrence is billed on its own date",
   not_yet_delivered: "Not delivered yet",
-  schedule_exception_recorded: "An exception was recorded for this occurrence - Management must resolve it before it can be billed",
+  exception_delivery_unresolved:
+    "Something changed was recorded, but Schedule does not yet say whether the session was delivered (Completed) or not (Cancelled / Postponed) - Finance does not guess",
   awaiting_confirmation: "Delivered but not confirmed yet",
 };
 
 export type ScheduleEligibility =
-  | { ok: true; status: EligibilityStatus; delivered: boolean; confirmed: boolean }
+  | { ok: true; status: EligibilityStatus; delivered: boolean | null; confirmed: boolean; changeRecorded: boolean }
   | { ok: false; error: string };
 
 /**
  * Encodes the Schedule contracts as they stand (see TEST-ENV.md, Session
- * Occurrences / Slice 6):
+ * Occurrences / Slice 6, and F4 correction FIN4.11):
  *   - Status is Scheduled / Completed / Cancelled / Postponed. Cancelled and
  *     Postponed never ran (a postponed occurrence's replacement is its own
  *     occurrence, billed on its own date).
- *   - Delivered = Completed, or a Scheduled occurrence whose time has passed
- *     (Schedule itself treats a past Scheduled occurrence as having happened
- *     and never requires anything to mark it Completed).
- *   - Confirmed = Confirmation State "Confirmed" (the Schedule "Confirm
- *     Session" action). "Exception Recorded" means something went wrong and
- *     is never silently billed; blank or "Awaiting Confirmation" is not yet
- *     confirmed.
+ *   - Confirmation State is the operational confirmation path. Blank /
+ *     "Awaiting Confirmation" = not resolved yet. "Confirmed" = went as
+ *     planned. "Exception Recorded" = something changed - a RESOLVED
+ *     confirmation that on its own says nothing about whether the session
+ *     ran, so it is never a blanket "not billable".
+ *   - Delivered, for "Confirmed": Completed, or a Scheduled occurrence whose
+ *     time has passed (it went as planned, and Schedule treats a past
+ *     Scheduled occurrence as having happened).
+ *   - Delivered, for "Exception Recorded": ONLY the structured Schedule
+ *     status says so - Completed = delivered with a change (eligible; any
+ *     one-off commercial difference is an explicit Finance override);
+ *     Cancelled / Postponed = not delivered. A still-Scheduled past
+ *     occurrence with an exception is UNRESOLVED (the change may have been
+ *     that it did not run) - never guessed from time, reason or free text.
  */
 export function scheduleEligibility(occ: OccurrenceFacts, now: Date, today: string): ScheduleEligibility {
   if (!(SCHEDULE_STATUSES as readonly string[]).includes(occ.status ?? "")) return { ok: false, error: `Occurrence status "${occ.status ?? ""}" is not a Schedule status` };
   if (occ.confirmationState !== null && !(CONFIRMATION_STATES as readonly string[]).includes(occ.confirmationState)) {
     return { ok: false, error: `Confirmation State "${occ.confirmationState}" is not a Schedule confirmation state` };
   }
-  const confirmed = occ.confirmationState === "Confirmed";
-  if (occ.status === "Cancelled") return { ok: true, status: "cancelled", delivered: false, confirmed };
-  if (occ.status === "Postponed") return { ok: true, status: "postponed", delivered: false, confirmed };
+  const changeRecorded = occ.confirmationState === "Exception Recorded";
+  const confirmed = occ.confirmationState === "Confirmed" || changeRecorded;
+  if (occ.status === "Cancelled") return { ok: true, status: "cancelled", delivered: false, confirmed, changeRecorded };
+  if (occ.status === "Postponed") return { ok: true, status: "postponed", delivered: false, confirmed, changeRecorded };
   const endsAt = occ.end ?? occ.start;
-  const delivered = occ.status === "Completed" || (endsAt !== null ? Date.parse(endsAt) <= now.getTime() : occ.date < today);
-  if (!delivered) return { ok: true, status: "not_yet_delivered", delivered, confirmed };
-  if (occ.confirmationState === "Exception Recorded") return { ok: true, status: "schedule_exception_recorded", delivered, confirmed };
-  if (!confirmed) return { ok: true, status: "awaiting_confirmation", delivered, confirmed };
-  return { ok: true, status: "eligible", delivered, confirmed };
+  const timePassed = endsAt !== null ? Date.parse(endsAt) <= now.getTime() : occ.date < today;
+  if (occ.status !== "Completed" && !timePassed) return { ok: true, status: "not_yet_delivered", delivered: false, confirmed, changeRecorded };
+  if (changeRecorded) {
+    if (occ.status === "Completed") return { ok: true, status: "eligible", delivered: true, confirmed, changeRecorded };
+    return { ok: true, status: "exception_delivery_unresolved", delivered: null, confirmed, changeRecorded };
+  }
+  if (!confirmed) return { ok: true, status: "awaiting_confirmation", delivered: true, confirmed, changeRecorded };
+  return { ok: true, status: "eligible", delivered: true, confirmed, changeRecorded };
 }
 
 // ---------------------------------------------------------------------
@@ -218,7 +230,7 @@ export interface Resolution {
   service: ServiceContext | null;
   lifecycleOnDate: LifecyclePeriod | null;
   terms: Terms | null;
-  eligibility: { status: EligibilityStatus | null; delivered: boolean | null; confirmed: boolean | null; billable: boolean | null };
+  eligibility: { status: EligibilityStatus | null; delivered: boolean | null; confirmed: boolean | null; changeRecorded: boolean | null; billable: boolean | null };
   quantity: { value: number; source: "default_commercial_quantity" | "occurrence_override" | "per_session"; override: Override | null } | null;
   unitAmount: { minor: Minor; source: "commercial_terms" | "occurrence_override"; override: Override | null } | null;
   expected: { netMinor: Minor; vatMinor: Minor; grossMinor: Minor; amountMinor: Minor } | null;
@@ -250,7 +262,7 @@ export function resolveOccurrenceBilling(input: {
     service: null,
     lifecycleOnDate: null,
     terms: null,
-    eligibility: { status: null, delivered: null, confirmed: null, billable: null },
+    eligibility: { status: null, delivered: null, confirmed: null, changeRecorded: null, billable: null },
     quantity: null,
     unitAmount: null,
     expected: null,
@@ -263,7 +275,7 @@ export function resolveOccurrenceBilling(input: {
   if (!isIsoDate(occ.date)) return done("configuration_error", "The occurrence has no valid date");
   const sched = scheduleEligibility(occ, input.now, input.today);
   if (!sched.ok) return done("configuration_error", sched.error);
-  r.eligibility = { status: sched.status, delivered: sched.delivered, confirmed: sched.confirmed, billable: null };
+  r.eligibility = { status: sched.status, delivered: sched.delivered, confirmed: sched.confirmed, changeRecorded: sched.changeRecorded, billable: null };
 
   if (occ.financeServiceRef === null) return done("missing_finance_service", "Link the session to a Finance Service to resolve its billing");
   if (!SERVICE_REF_PATTERN.test(occ.financeServiceRef)) return done("configuration_error", "The session's Finance Service ID is not a valid FSV- reference");
@@ -345,7 +357,8 @@ export function traceLines(r: Resolution): string[] {
   if (calc && r.expected) lines.push(`Calculation: ${calc} -> net £${formatMinor(r.expected.netMinor)}, VAT £${formatMinor(r.expected.vatMinor)}, gross £${formatMinor(r.expected.grossMinor)}`);
   if (r.eligibility.status) {
     const e = r.eligibility;
-    lines.push(`Eligibility: delivered ${e.delivered ? "yes" : "no"}, confirmed ${e.confirmed ? "yes" : "no"}, billable ${e.billable === null ? "not assessed" : e.billable ? "yes" : "no"} (${ELIGIBILITY_LABELS[e.status as EligibilityStatus]})`);
+    if (e.changeRecorded) lines.push(`Schedule recorded that something changed${o.exceptionReason ? ` (${o.exceptionReason})` : ""}: status ${o.status ?? "unknown"}`);
+    lines.push(`Eligibility: delivered ${e.delivered === null ? "unresolved" : e.delivered ? "yes" : "no"}, confirmed ${e.confirmed ? "yes" : "no"}, billable ${e.billable === null ? "not assessed" : e.billable ? "yes" : "no"} (${ELIGIBILITY_LABELS[e.status as EligibilityStatus]})`);
   }
   if (r.deferral) lines.push(`Deferred: ${DEFERRAL_LABELS[r.deferral]}`);
   lines.push(`Outcome: ${OUTCOME_LABELS[r.outcome]}${r.detail ? ` - ${r.detail}` : ""}`);

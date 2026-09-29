@@ -6,6 +6,7 @@
  *   FX  fixed / per-player expected value (F2 money kernel, pence, VAT)
  *   HI  history (terms effective on the occurrence date, before/after a change)
  *   EL  eligibility (confirmed, unconfirmed, awaiting, exception, cancelled, postponed, not yet delivered, bad data)
+ *   EX  F4 correction: Exception Recorded ("something changed") is a resolved confirmation, not a blanket "not billable"
  *   MC  missing / broken configuration (no Finance Service, malformed ref, other org, no terms, overlapping terms, paused)
  *   LG  lifecycle gap (before ending, in the ended gap, after reactivation)
  *   DF  deferred models (parent-paid, subscription, other)
@@ -320,7 +321,7 @@ async function main() {
       ["Completed + confirmed", { status: "Completed" }, "eligible", "eligible"],
       ["unconfirmed (blank)", { conf: null }, "not_eligible", "awaiting_confirmation"],
       ["Awaiting Confirmation", { conf: "Awaiting Confirmation" }, "not_eligible", "awaiting_confirmation"],
-      ["Exception Recorded", { conf: "Exception Recorded", exception: "Weather" }, "not_eligible", "schedule_exception_recorded"],
+      ["Exception Recorded, still Scheduled", { conf: "Exception Recorded", exception: "Weather" }, "not_eligible", "exception_delivery_unresolved"],
       ["Cancelled", { status: "Cancelled" }, "not_eligible", "cancelled"],
       ["Postponed", { status: "Postponed" }, "not_eligible", "postponed"],
     ];
@@ -328,7 +329,7 @@ async function main() {
     for (const [i, [, o]] of cases.entries()) got.push((await OB(addOcc(S.after, `2026-09-${String(10 + i).padStart(2, "0")}`, o))).body.billing);
     ck("EL1. Delivered + confirmed -> eligible (Scheduled in the past, or Completed)", got[0].outcome === "eligible" && got[1].outcome === "eligible");
     ck("EL2. Unconfirmed / awaiting -> not_eligible awaiting_confirmation, with the value still shown as expected but no billable value", got[2].outcome === "not_eligible" && got[2].eligibility.status === "awaiting_confirmation" && got[3].eligibility.status === "awaiting_confirmation" && got[2].expected.net === "162.00" && got[2].billableValue === null && got[2].eligibleForInvoicing === false);
-    ck("EL3. Exception Recorded -> not_eligible (never silently billed)", got[4].outcome === "not_eligible" && got[4].eligibility.status === "schedule_exception_recorded" && got[4].occurrence.exceptionReason === "Weather");
+    ck("EL3. Exception Recorded on a still-Scheduled past occurrence -> explicitly unresolved delivery (never guessed; not a blanket rule - see EX)", got[4].outcome === "not_eligible" && got[4].eligibility.status === "exception_delivery_unresolved" && got[4].eligibility.delivered === null && got[4].occurrence.exceptionReason === "Weather");
     ck("EL4. Cancelled / Postponed -> not_eligible, no billable value", got[5].eligibility.status === "cancelled" && got[6].eligibility.status === "postponed" && got[5].billableValue === null && got[6].billableValue === null);
     const fut = (await OB(addOcc(S.after, "2026-10-20"))).body.billing;
     ck("EL5. A future occurrence (even pre-confirmed) is not yet delivered -> not_eligible", fut.outcome === "not_eligible" && fut.eligibility.status === "not_yet_delivered" && fut.eligibility.delivered === false);
@@ -339,6 +340,54 @@ async function main() {
     ck("EL7. An unknown Schedule status / confirmation state is a configuration error, never guessed", se({ status: "Done" }).ok === false && se({ confirmationState: "Yes" }).ok === false);
     const badOcc = (await OB(addOcc(S.after, "2026-09-20", { status: "Held" }))).body.billing;
     ck("EL8. ...and resolves as configuration_error with the reason (no amount)", badOcc.outcome === "configuration_error" && /not a Schedule status/.test(badOcc.detail) && badOcc.billableValue === null);
+  }
+
+  // ===== EX. F4 correction: Exception Recorded = something changed (resolved), billable if delivered =====
+  {
+    const ids = await seed();
+    const X = { conf: "Exception Recorded", exception: "Client" };
+    const r = async (id: string) => (await OB(id)).body.billing;
+    const aw = await r(addOcc(S.after, "2026-09-01", { conf: "Awaiting Confirmation" }));
+    const cf = await r(addOcc(S.after, "2026-09-02"));
+    ck("EX1. Awaiting confirmation remains not eligible", aw.outcome === "not_eligible" && aw.eligibility.status === "awaiting_confirmation" && aw.billableValue === null);
+    ck("EX2. Confirmed (went as planned) + delivered -> eligible", cf.outcome === "eligible" && cf.billableValue.gross === "162.00");
+    const exDel = await r(addOcc(S.after, "2026-09-03", { ...X, status: "Completed" }));
+    ck("EX3. Exception Recorded is NOT automatically not eligible", exDel.outcome !== "not_eligible" && exDel.eligibility.status !== "exception_delivery_unresolved");
+    ck("EX4. Exception Recorded + delivered (Status Completed) -> eligible with the normal billable value; the change is traced", exDel.outcome === "eligible" && exDel.eligibleForInvoicing === true && exDel.billableValue.net === "162.00" && exDel.eligibility.confirmed === true && exDel.eligibility.delivered === true && exDel.eligibility.changeRecorded === true && exDel.trace.some((l: string) => /something changed \(Client\)/.test(l)));
+    const exFixed = await r(addOcc(S.ppa, "2026-09-03", { ...X, status: "Completed" }));
+    ck("EX5. Exception Recorded + delivered on fixed terms -> £50 + VAT = 60.00 (VAT unchanged)", exFixed.outcome === "eligible" && exFixed.billableValue.net === "50.00" && exFixed.billableValue.vat === "10.00" && exFixed.billableValue.gross === "60.00");
+    const o1 = addOcc(S.after, "2026-09-04", { ...X, status: "Completed" });
+    const nb = await create(o1, '{"override":{"kind":"not_billable"},"reason":"Session cut to 20 minutes - agreed no charge"}');
+    ck("EX6. Exception Recorded + not-billable override -> not_billable, reason kept, no billable value", nb.httpStatus === 201 && nb.body.billing.outcome === "not_billable" && nb.body.billing.detail === "Session cut to 20 minutes - agreed no charge" && nb.body.billing.billableValue === null);
+    const o2 = addOcc(S.after, "2026-09-05", { ...X, status: "Completed" });
+    const q = await create(o2, '{"override":{"kind":"quantity","quantity":15},"reason":"Only 15 pupils after the change"}');
+    ck("EX7. Exception Recorded + quantity override -> the override is used (£9 x 15 = 135.00)", q.body.billing.outcome === "eligible" && q.body.billing.billableValue.net === "135.00" && q.body.billing.quantity.source === "occurrence_override" && q.body.billing.quantity.value === 15);
+    const o3 = addOcc(S.after, "2026-09-06", { ...X, status: "Completed" });
+    const a = await create(o3, '{"override":{"kind":"amount","amount":"8.00"},"reason":"Shortened session - agreed rate"}');
+    ck("EX8. Exception Recorded + amount override -> the override is used (£8 x 18 = 144.00)", a.body.billing.outcome === "eligible" && a.body.billing.billableValue.net === "144.00" && a.body.billing.unitAmount.source === "occurrence_override");
+    const [c, p] = [await r(addOcc(S.after, "2026-09-07", { ...X, status: "Cancelled" })), await r(addOcc(S.after, "2026-09-08", { ...X, status: "Postponed" }))];
+    ck("EX9. Exception Recorded + Cancelled / Postponed -> still not eligible (not delivered)", c.outcome === "not_eligible" && c.eligibility.status === "cancelled" && p.eligibility.status === "postponed" && c.billableValue === null && p.billableValue === null);
+    const fut = await r(addOcc(S.after, "2026-10-21", { ...X }));
+    const unres = await r(addOcc(S.after, "2026-09-09", { ...X }));
+    ck("EX10. Exception Recorded + future -> not yet delivered; + past but still Scheduled -> explicitly unresolved (delivered: unresolved), expected value still traceable, no billable value", fut.eligibility.status === "not_yet_delivered" && unres.outcome === "not_eligible" && unres.eligibility.status === "exception_delivery_unresolved" && unres.eligibility.delivered === null && unres.billableValue === null && unres.expected.net === "162.00" && unres.trace.some((l: string) => l.includes("delivered unresolved")));
+    const noteId = addOcc(S.after, "2026-09-11", { ...X });
+    world.tables[BILLING_TABLES.occurrences].find((o) => o.fields["Occurrence ID"] === noteId)!.fields["Operational Notes"] = "Delivered in full, all 18 there";
+    ck("EX11. Free text is never used to infer delivery (Operational Notes saying 'delivered' leaves it unresolved)", (await r(noteId)).eligibility.status === "exception_delivery_unresolved");
+    await W({ route: "service.update", serviceId: ids.after, patch: { status: "ended" }, effectiveFrom: "2026-11-01", reason: "gap" });
+    await W({ route: "service.update", serviceId: ids.after, patch: { status: "active" }, effectiveFrom: "2026-12-01", reason: "back" });
+    const gapId = addOcc(S.after, "2026-11-12", { ...X, status: "Completed" });
+    const afterGapId = addOcc(S.after, "2026-12-03", { ...X, status: "Completed" });
+    ck("EX12. Lifecycle gap unchanged: Exception + Completed inside the ended period -> commercially_inactive; after reactivation -> eligible", (await r(gapId)).outcome === "commercially_inactive" && (await r(afterGapId)).outcome === "eligible");
+    const events = world.audit.length;
+    calls = [];
+    await r(unres.occurrence.occurrenceId);
+    await SB("TEST-AFTER", "2026-09-01", "2026-09-30");
+    const dup = await create(o2, '{"override":{"kind":"quantity","quantity":16},"reason":"competing"}');
+    const na = await create(addOcc(S.none, "2026-09-12", { ...X, status: "Completed" }), '{"override":{"kind":"not_billable"},"reason":"x"}');
+    ck("EX13. Unresolved / rejected cases create no audit events and no writes (reads, a duplicate override 409, an override with no Finance Service 409)", dup.code === "billing_override_exists" && na.code === "billing_override_not_applicable" && world.audit.length === events && tableWrites().length === 0);
+    const f = (o: Partial<OccurrenceFacts>): OccurrenceFacts => ({ occurrenceId: "x", sessionId: null, sessionName: null, financeServiceRef: null, date: "2026-09-28", start: null, end: null, status: "Scheduled", confirmationState: "Exception Recorded", exceptionReason: "Weather", scheduleChangeState: null, problem: null, ...o });
+    const se = (o: Partial<OccurrenceFacts>) => scheduleEligibility(f(o), new Date("2026-09-29T12:00:00Z"), "2026-09-29") as any;
+    ck("EX14. Pure rule: Exception + Completed -> eligible (confirmed, changeRecorded); Exception + past Scheduled -> unresolved; Confirmed unchanged", se({ status: "Completed" }).status === "eligible" && se({ status: "Completed" }).changeRecorded === true && se({ status: "Completed" }).confirmed === true && se({}).status === "exception_delivery_unresolved" && se({ confirmationState: "Confirmed" }).status === "eligible" && se({ confirmationState: "Confirmed" }).changeRecorded === false);
   }
 
   // ===== MC. Missing / broken configuration =====

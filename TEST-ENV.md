@@ -13979,9 +13979,10 @@ exceptions and the expected value. F3 terms are never overwritten by F4.
 |---|---|
 | Status Cancelled | `cancelled` — not eligible |
 | Status Postponed | `postponed` — not eligible (its replacement is its own occurrence) |
-| Scheduled and end (or start) time still in the future; no times and date ≥ today | `not_yet_delivered` |
-| Delivered (Completed, or Scheduled whose time has passed) + Confirmation State `Exception Recorded` | `schedule_exception_recorded` — never silently billed |
-| Delivered + Confirmation blank / Awaiting Confirmation | `awaiting_confirmation` |
+| Not Completed and end (or start) time still in the future; no times and date ≥ today | `not_yet_delivered` |
+| `Exception Recorded` (something changed) + Status **Completed** | `eligible` — delivered with a change; any one-off commercial difference is a Finance override (FIN4.11) |
+| `Exception Recorded` + Status still **Scheduled** and its time has passed | `exception_delivery_unresolved` — not eligible *yet*; Schedule has not said whether it ran, and Finance does not guess (FIN4.11) |
+| Delivered (Completed, or Scheduled whose time has passed) + Confirmation blank / Awaiting Confirmation | `awaiting_confirmation` |
 | Delivered + `Confirmed` | `eligible` |
 | Unknown Status / Confirmation value | `configuration_error` |
 
@@ -14123,6 +14124,8 @@ occurrences, 1 eligible (60.00 gross), 1 not billable, 4 not eligible; a
   fixtures (nothing in TEST writes it yet).
 - **Overrides:** `FOB-7A77B8025BDD` (quantity 20, active), `FOB-FE80A969B0D3`
   (not billable, active), `FOB-63BA87355515` (amount, removed — history).
+- **Added by the F4 correction (FIN4.11):** 5 more occurrences (20 in total)
+  and 2 more active overrides — see FIN4.11 "Resting TEST data".
 - **Lifecycle:** 6 backfill rows + 2 Breakfast periods (Ended 1–30 Nov, Active
   from 1 Dec).
 - **Baseline:** `module_finance` ON; exactly one active grant (Manage) for
@@ -14160,3 +14163,122 @@ occurrences, 1 eligible (60.00 gross), 1 not billable, 4 not eligible; a
 - A Schedule "Confirm Session" write path (Confirmation State is read, never
   written, by Finance).
 - Organisation links on Schedule tables (multi-tenant Schedule data).
+
+### FIN4.11 Correction — "Exception Recorded" is not a blanket block (2026-09-29, `finance` v8)
+
+One semantic correction only; every other F4 behaviour is unchanged.
+
+**What was wrong.** F4 treated Confirmation State `Exception Recorded` as
+automatically not eligible. In Schedule, `Exception Recorded` only means
+*something changed* (weather, venue, staffing, client, …). It is a
+**resolved** confirmation, and on its own it says nothing about whether the
+session ran. A session delivered with a change may still be billable.
+
+**The rule now (locked):**
+
+| Situation | Result |
+|---|---|
+| Awaiting confirmation (blank / `Awaiting Confirmation`) | not eligible yet (`awaiting_confirmation`) — unchanged |
+| `Confirmed` + delivered | may be eligible — unchanged |
+| `Exception Recorded` + Status **Completed** | **delivered with a change → eligible**, subject to the normal checks (service active on the date, terms, not-billable override) |
+| `Exception Recorded` + Status **Cancelled** / **Postponed** | not delivered → not eligible (`cancelled` / `postponed`) — cancellation and postponement stay non-normal billing outcomes |
+| `Exception Recorded` + still **Scheduled**, time passed | **`exception_delivery_unresolved`**: not eligible *yet*, an explicit unresolved outcome. The change may have been that it did not run, and Schedule has not said. |
+| `Exception Recorded` + not yet happened | `not_yet_delivered` |
+| Partially delivered / one-off commercial difference | the existing Finance overrides: quantity, amount, or not billable. No partial-value rule was invented. |
+
+**How delivery is decided for an exception:** only from the structured
+Schedule **Status**. Completed = delivered; Cancelled/Postponed = not
+delivered. It is never inferred from the time having passed, the Exception
+Reason, Operational Notes or any other free text. (Live proof: an exception
+still marked Scheduled with Operational Notes "Delivered in full" stays
+unresolved.)
+
+**Code** (`finance-billing.ts` only; the function, mapping, repository and
+orchestrator are otherwise unchanged):
+- `scheduleEligibility()` now returns `changeRecorded` and `delivered`
+  (`null` = unresolved), and treats `Exception Recorded` as a resolved
+  confirmation.
+- New eligibility status `exception_delivery_unresolved`, with a
+  plain-language label.
+- The resolution's `eligibility` gains `changeRecorded`. When a change was
+  recorded, the trace adds "Schedule recorded that something changed
+  (reason): status …".
+- VAT, lifecycle, terms, override, audit and summary logic: untouched.
+
+**Tests.**
+- `tests/support/finance-billing.test.ts` → **105/105**.
+  - New section EX (14 checks):
+    - awaiting stays not eligible; confirmed eligible;
+    - exception + Completed eligible (£162, trace names the reason);
+    - fixed £50 + VAT = £60 (VAT unchanged);
+    - exception + not-billable stays not billable;
+    - exception + quantity 15 → £135; exception + amount £8 → £144;
+    - exception + Cancelled/Postponed not eligible; exception + future →
+      `not_yet_delivered`;
+    - exception + past Scheduled unresolved: delivered null, expected value
+      shown, no billable value;
+    - free text "Delivered in full" ignored;
+    - lifecycle gap unchanged (12 Nov `commercially_inactive`, 3 Dec eligible);
+    - reads, a duplicate (409) and a no-service write (409) create no audit
+      event and no write;
+    - pure rule checks.
+  - EL3 now expects `exception_delivery_unresolved`.
+- **Mutations 35/35 caught.** New: blanket rule restored; past Scheduled
+  exception guessed as delivered; exception not treated as a confirmation;
+  Completed ignored before the time passes.
+- F1 56/56, F2 kernel 47/47, F2 Settings 92/92, F3 100/100, Occurrence
+  Financial Outcomes 37/37.
+- Full suite `npm test` → **71/71 files, 2,536 PASS / 0 FAIL**.
+
+**Deploy.**
+- TEST `finance` **v8**, `verify_jwt: true`, all 18 files.
+- Byte-verified against the repo (`get_edge_function`): 18/18 identical.
+- The first v8 attempt failed with a platform internal error (nothing
+  changed); the retry succeeded.
+
+**Live TEST verification** (real HTTP via `pg_net`, manager Manage token):
+
+| # | Occurrence | Result |
+|---|---|---|
+| A | `recT3soLEi6Im8TEt:2026-09-11` After-school, Exception (Client) + Completed | 200 `eligible`, changeRecorded true, billable **£162.00** (£9 × 18, no VAT) |
+| A2 | `recANlB7miA08AudD:2026-09-11` PPA, Exception (Other) + Completed | 200 `eligible`, net 50.00 / VAT 10.00 / gross **60.00** (VAT unchanged) |
+| B | `recT3soLEi6Im8TEt:2026-09-14`, Exception (Weather) + Completed | before: eligible £162 → POST quantity 15 → **201** `FOB-7F5908F59BC0`, source `occurrence_override`, **£135.00**; re-read £135 |
+| C | `recT3soLEi6Im8TEt:2026-09-15`, Exception (Venue) + Completed | before: eligible £162 → POST not_billable → **201** `FOB-ACCB2617FB1D`, outcome **`not_billable`**, no billable value; re-read same |
+| U | `recT3soLEi6Im8TEt:2026-09-16`, Exception (Staffing) + still Scheduled, notes "Delivered in full" | 200 `not_eligible` / **`exception_delivery_unresolved`**, delivered null, no billable value |
+| D | `recANlB7miA08AudD:2026-09-24` awaiting | 200 `not_eligible` / `awaiting_confirmation` — unchanged |
+| E | `recANlB7miA08AudD:2026-09-22` Cancelled | 200 `not_eligible` / `cancelled` — unchanged |
+| — | duplicate quantity override on 14 Sep without `supersedes` | 409 `billing_override_exists`, no audit event |
+| — | Session range TEST-F4-AFTER 1–30 Sep | 7 occurrences: 5 eligible, 1 not billable, 1 not eligible; eligible total **801.00** (162 + 162 + 135 + 180 + 162) |
+| F | Needs Attention `/cases` before and after | **Clear, 0 cases** both times — unchanged |
+
+Audit: **27 → 29**, exactly the two successful override creations. No read,
+rejection or unresolved case wrote an event.
+
+**Resting TEST data (deliberate baseline after this correction).**
+- 5 new Session Occurrences (still on the Inactive F4 Sessions; Confirmation
+  State set directly on the fixtures):
+  - After-school 11/14/15 Sep (Exception + Completed);
+  - After-school 16 Sep (Exception + Scheduled — the unresolved case);
+  - PPA 11 Sep (Exception + Completed).
+- Now **20** F4 occurrences in all.
+- New active overrides:
+  - `FOB-7F5908F59BC0` (quantity 15, After-school 14 Sep);
+  - `FOB-ACCB2617FB1D` (not billable, After-school 15 Sep).
+- Otherwise the FIN4.8 baseline is unchanged:
+  - `module_finance` ON;
+  - exactly one active Finance grant (Manage) for `manager@test.invalid`;
+  - no write locks;
+  - `f2probe` dropped;
+  - audit total 29.
+
+**Dependency before real-world F5 (known, deliberately NOT fixed here).**
+- No normal workflow in TEST writes Confirmation State, nor moves an
+  occurrence to Completed after a change. Every value F4 reads was set by
+  hand on fixtures.
+- Until Schedule has a real confirmation path, in real use:
+  - every past occurrence would sit at `awaiting_confirmation`;
+  - an exception left at Scheduled would sit at
+    `exception_delivery_unresolved`.
+- That Schedule writer — "Confirm Session" / record a change and its
+  delivery outcome — is a Schedule slice. It stays deferred and unchanged:
+  Finance still only reads these fields.
