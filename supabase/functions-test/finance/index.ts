@@ -1,6 +1,6 @@
 /**
- * Finance - access boundary + core API (Finance Foundation F1-F4; see
- * TEST-ENV.md "Finance Foundation - F1" / "- F2" / "- F3" / "- F4"). Thin HTTP
+ * Finance - access boundary + core API (Finance Foundation F1-F5; see
+ * TEST-ENV.md "Finance Foundation - F1" / "- F2" / "- F3" / "- F4" / "- F5"). Thin HTTP
  * wrapper, same convention as the Coaches / Needs Attention functions:
  * policy lives in finance-access.ts / finance-settings.ts /
  * finance-money.ts / finance-commercial.ts (pure), reads and writes in the
@@ -31,6 +31,20 @@
  *   POST /occurrences/{Occurrence ID}/billing-overrides/{FOB-id}/remove   { reason }
  *   Expected / billable value only - never revenue received, never an invoice.
  *
+ * F5 client invoice drafts + review (Finance read = GET, Finance manage = POST):
+ *   GET  /invoicing/eligible?clientId=FCL-..&from=YYYY-MM-DD&to=YYYY-MM-DD   eligible, unclaimed work (<= 93 days)
+ *   GET  /invoice-drafts?clientId=FCL-..            the client's drafts
+ *   POST /invoice-drafts                            { clientId, from, to } -> draft built automatically from eligible work
+ *   GET  /invoice-drafts/{FID-id}                   draft + lines + review (blockers / warnings)
+ *   POST /invoice-drafts/{FID-id}/refresh           { reason? }  open Draft only
+ *   POST /invoice-drafts/{FID-id}/details           { poNumber?, poOverrideReason?, paymentTermsDays?, reason? }
+ *   POST /invoice-drafts/{FID-id}/ready             { revision, reason? }  blocked while any blocker remains
+ *   POST /invoice-drafts/{FID-id}/reopen            { reason }  Ready for issue -> Draft
+ *   POST /invoice-drafts/{FID-id}/lines/{FIL-id}/exclude       { reason }  this invoice only
+ *   POST /invoice-drafts/{FID-id}/lines/{FIL-id}/restore       { reason? }
+ *   POST /invoice-drafts/{FID-id}/lines/{FIL-id}/not-billable  { reason }  delegates to the F4 override
+ *   Draft / Ready for issue only - no issue, number, sending, Xero or payment (F6+).
+ *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
  * tenant-looking query parameter or body key is rejected with 400, never
@@ -54,6 +68,8 @@ import {
 import { type CommercialDeps, type WriteInput, readCommercial, writeCommercial } from "./finance-commercial-orchestrator.ts";
 import { checkRangeQuery, matchBillingRoute, parseOverrideCreate, parseOverrideRemove } from "./finance-billing.ts";
 import { readOccurrenceBilling, readSessionBilling, writeOverride } from "./finance-billing-orchestrator.ts";
+import { checkInvoicingQuery, matchInvoicingRoute, parseDetails, parseDraftCreate, parseReady, parseReasonBody } from "./finance-invoicing.ts";
+import { listClientDrafts, markLineNotBillable, readDraft, readEligibleWork, writeDraft } from "./finance-invoicing-orchestrator.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
 const AIRTABLE_BASE_ID = Deno.env.get("AIRTABLE_BASE_ID")!;
@@ -207,6 +223,49 @@ async function handleBilling(req: Request, url: URL, match: NonNullable<ReturnTy
   return commercialResponse(await writeOverride(deps, caller, { route: "override.remove", occurrenceId: r.params.occurrenceId, overrideId: r.params.overrideId, reason: p.reason }));
 }
 
+/** F5 routes: same order as F3/F4 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleInvoicing(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchInvoicingRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  if (r.name === "eligible.read" || r.name === "drafts.list") {
+    const q = checkInvoicingQuery(url.searchParams, r.name === "eligible.read", isTenantKey);
+    if (!q.ok) return commercialResponse({ status: "error", ...q });
+    if (r.name === "eligible.read") return commercialResponse(await readEligibleWork(deps, caller, q.clientId, q.from, q.to));
+    return commercialResponse(await listClientDrafts(deps, caller, q.clientId));
+  }
+  const query = checkCommercialQuery(url.searchParams, [], isTenantKey);
+  if (!query.ok) return jsonResponse({ error: query.error, code: query.code, ...(query.fields ? { fields: query.fields } : {}) }, 400);
+  if (r.name === "draft.read") return commercialResponse(await readDraft(deps, caller, r.params.draftId));
+  const raw = await req.text();
+  if (r.name === "draft.create") {
+    const p = parseDraftCreate(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await writeDraft(deps, caller, { route: "draft.create", req: p.req }));
+  }
+  if (r.name === "draft.details") {
+    const p = parseDetails(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await writeDraft(deps, caller, { route: "draft.details", draftId: r.params.draftId, req: p.req }));
+  }
+  if (r.name === "draft.ready") {
+    const p = parseReady(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await writeDraft(deps, caller, { route: "draft.ready", draftId: r.params.draftId, revision: p.revision, reason: p.reason }));
+  }
+  const required = r.name === "draft.reopen" || r.name === "line.exclude" || r.name === "line.not_billable";
+  const p = parseReasonBody(raw, required, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  if (r.name === "draft.refresh") return commercialResponse(await writeDraft(deps, caller, { route: "draft.refresh", draftId: r.params.draftId, reason: p.reason }));
+  if (r.name === "draft.reopen") return commercialResponse(await writeDraft(deps, caller, { route: "draft.reopen", draftId: r.params.draftId, reason: p.reason as string }));
+  if (r.name === "line.exclude") return commercialResponse(await writeDraft(deps, caller, { route: "line.exclude", draftId: r.params.draftId, lineId: r.params.lineId, reason: p.reason as string }));
+  if (r.name === "line.restore") return commercialResponse(await writeDraft(deps, caller, { route: "line.restore", draftId: r.params.draftId, lineId: r.params.lineId, reason: p.reason }));
+  return commercialResponse(await markLineNotBillable(deps, caller, r.params.draftId, r.params.lineId, p.reason as string));
+}
+
 /** Path segments URL-decoded (an Occurrence ID contains ":"); null when a segment is not valid percent-encoding. */
 function decodedPath(route: string): string | null {
   try {
@@ -227,6 +286,9 @@ Deno.serve(async (req: Request) => {
   try {
     const decoded = decodedPath(route);
     if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
+    const invoicing = matchInvoicingRoute(route, req.method);
+    if (invoicing) return await handleInvoicing(req, url, invoicing);
+
     const billing = matchBillingRoute(decoded, req.method);
     if (billing) return await handleBilling(req, url, billing);
 

@@ -80,6 +80,15 @@ const FREQUENCY_WORDS: Record<Frequency, string> = { weekly: "week", monthly: "m
 
 export const CLIENT_STATUSES = ["active", "inactive"] as const;
 export type ClientStatus = (typeof CLIENT_STATUSES)[number];
+/**
+ * How the client is billed (F5, Design Pack p9 "billing method"). "hub" = the
+ * Hub builds the client's bill from confirmed work (the default); "manual" =
+ * billed outside the Hub - the commercial values still count in Finance
+ * reporting, but the Hub does not draft or chase the bill.
+ */
+export const BILLING_METHODS = ["hub", "manual"] as const;
+export type BillingMethod = (typeof BILLING_METHODS)[number];
+export const BILLING_METHOD_LABELS: Record<BillingMethod, string> = { hub: "Billed through the Hub", manual: "Manual billing (outside the Hub)" };
 export const SERVICE_STATUSES = ["active", "paused", "ended"] as const;
 export type ServiceStatus = (typeof SERVICE_STATUSES)[number];
 
@@ -98,6 +107,7 @@ export interface Client {
   billingCcEmails: string[];
   paymentTermsDaysOverride: number | null;
   poRequired: boolean;
+  billingMethod: BillingMethod;
   revision: number;
   updatedAt: string | null;
 }
@@ -223,7 +233,7 @@ function section(v: unknown, name: string, allowed: readonly string[], isTenantK
 
 // ----- Clients -----
 
-export const CLIENT_FIELDS = ["name", "status", "billingContactName", "billingEmail", "billingCcEmails", "paymentTermsDaysOverride", "poRequired"] as const;
+export const CLIENT_FIELDS = ["name", "status", "billingContactName", "billingEmail", "billingCcEmails", "paymentTermsDaysOverride", "poRequired", "billingMethod"] as const;
 export type ClientPatch = Partial<Omit<Client, "clientId" | "revision" | "updatedAt">>;
 
 function clientField(k: string, v: unknown): Check<unknown> {
@@ -251,6 +261,8 @@ function clientField(k: string, v: unknown): Check<unknown> {
       return intIn(v, 0, 365, true);
     case "poRequired":
       return typeof v === "boolean" ? { ok: true, value: v } : { ok: false, error: "must be true or false" };
+    case "billingMethod":
+      return oneOf(v, BILLING_METHODS);
   }
   return { ok: false, error: "is not a client field" };
 }
@@ -298,6 +310,7 @@ export function newClient(id: string, input: ClientPatch & { name: string }): Cl
     billingCcEmails: input.billingCcEmails ?? [],
     paymentTermsDaysOverride: input.paymentTermsDaysOverride ?? null,
     poRequired: input.poRequired ?? false,
+    billingMethod: input.billingMethod ?? "hub",
     revision: 1,
     updatedAt: null,
   };
@@ -690,6 +703,8 @@ export function publicClient(c: Client) {
     billingCcEmails: [...c.billingCcEmails],
     paymentTermsDaysOverride: c.paymentTermsDaysOverride,
     poRequired: c.poRequired,
+    billingMethod: c.billingMethod,
+    billingMethodLabel: BILLING_METHOD_LABELS[c.billingMethod],
     revision: c.revision,
     updatedAt: c.updatedAt,
   };

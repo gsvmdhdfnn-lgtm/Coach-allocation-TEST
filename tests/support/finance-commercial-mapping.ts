@@ -23,6 +23,7 @@ import { isIsoDate } from "./finance-effective-dating.ts";
 import { isRateBasisPoints, isVatTreatment, type VatTreatment } from "./finance-money.ts";
 import { type LifecyclePeriod, checkLifecycle } from "./finance-lifecycle.ts";
 import {
+  type BillingMethod,
   type ChargeType,
   type Client,
   type ClientStatus,
@@ -53,6 +54,7 @@ export const F = {
     cc: "Billing CC Emails",
     terms: "Payment Terms Override (Days)",
     po: "PO Required",
+    billingMethod: "Billing Method",
   },
   service: { id: "Finance Service ID", client: "Client", name: "Service Name", status: "Status" },
   terms: {
@@ -85,6 +87,8 @@ export const F = {
 } as const;
 
 const CLIENT_STATUS: Record<ClientStatus, string> = { active: "Active", inactive: "Inactive" };
+/** Blank = "hub" (the default before F5 added the field); any other stored label is invalid data. */
+const BILLING_METHOD: Record<BillingMethod, string> = { hub: "Hub billing", manual: "Manual billing" };
 const SERVICE_STATUS: Record<ServiceStatus, string> = { active: "Active", paused: "Paused", ended: "Ended" };
 const PAYER: Record<Payer, string> = { client: "Client / school", parent: "Parent / family" };
 const CHARGE: Record<ChargeType, string> = { fixed_per_session: "Fixed per delivered session", per_player: "Per player", subscription: "Subscription", other: "Other" };
@@ -131,12 +135,15 @@ export function clientFromRow(r: Row): Parsed<Client> {
   if (terms === undefined || (terms !== null && (terms < 0 || terms > 365))) return { ok: false, problem: `client ${id}: invalid payment terms` };
   const po = f[F.client.po];
   if (po !== undefined && po !== null && typeof po !== "boolean") return { ok: false, problem: `client ${id}: invalid PO Required` };
+  const bmRaw = f[F.client.billingMethod];
+  const billingMethod = bmRaw === undefined || bmRaw === null || bmRaw === "" ? "hub" : reverse(BILLING_METHOD, bmRaw);
+  if (!billingMethod) return { ok: false, problem: `client ${id}: invalid Billing Method` };
   return {
     ok: true,
     parent: null,
     stored: {
       recordId: r.id,
-      value: { clientId: id, name, status, billingContactName: str(f[F.client.contact]), billingEmail: email, billingCcEmails: cc, paymentTermsDaysOverride: terms, poRequired: po === true, ...m },
+      value: { clientId: id, name, status, billingContactName: str(f[F.client.contact]), billingEmail: email, billingCcEmails: cc, paymentTermsDaysOverride: terms, poRequired: po === true, billingMethod, ...m },
     },
   };
 }
@@ -308,6 +315,7 @@ export function clientFields(c: Client, meta: { userId: string; at: string }, or
     [F.client.cc]: c.billingCcEmails.length ? c.billingCcEmails.join("\n") : null,
     [F.client.terms]: c.paymentTermsDaysOverride,
     [F.client.po]: c.poRequired,
+    [F.client.billingMethod]: BILLING_METHOD[c.billingMethod],
     [F.revision]: c.revision,
     [F.changedBy]: meta.userId,
     [F.changedAt]: meta.at,
