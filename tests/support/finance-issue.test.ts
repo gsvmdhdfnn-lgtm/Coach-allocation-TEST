@@ -64,7 +64,7 @@ const g = (level: unknown): FinanceGrantRow => ({ organisation_id: ORG, access_l
 const mgr = { userId: MGR, role: "management", active: true, organisationId: ORG };
 const viewer = { userId: VIEWER, role: "management", active: true, organisationId: ORG };
 
-const SETTINGS = { ...EMPTY_SETTINGS, invoiceLegalName: "T Ltd", invoiceAddress: "1 St", vatRegistered: true, vatNumber: "GB1", defaultVatRateBasisPoints: 2000, defaultVatTreatment: "plus_vat" as const, defaultPaymentTermsDays: 30, coachPaymentDayOfFollowingMonth: 7, invoiceNumberAuthority: "xero" as const };
+const SETTINGS = { ...EMPTY_SETTINGS, invoiceLegalName: "T Ltd", invoiceAddress: "1 St", vatRegistered: true, vatNumber: "GB1", defaultVatRateBasisPoints: 2000, defaultVatTreatment: "plus_vat" as const, defaultPaymentTermsDays: 30, coachPaymentDayOfFollowingMonth: 7, invoiceNumberAuthority: "hub" as const, invoiceNumberPrefix: "INV-", invoiceNumberNext: 1001 };
 const settingsRow = (s: any) => ({ id: "recSettingsRow001", fields: { Organisation: [ORG_REC], "Finance Settings ID": "FINSET", Revision: 1, ...Object.fromEntries(Object.entries(toStoredFields(s, Object.keys(s) as any)).filter(([, v]) => v !== null)) } });
 
 // ---------------------------------------------------------------------------
@@ -375,7 +375,7 @@ async function main() {
     const dr = draftRows()[0].fields;
     ck("IS6. The draft is stamped with the invoice id (stays Ready for issue as the traceable source; revision +1)", dr["Issued Invoice ID"] === inv.invoiceId && dr.Status === "Ready for issue" && dr.Revision === rd.draft.revision + 1 && r.body.draft.issued === true && r.body.draft.issuedInvoiceId === inv.invoiceId && inv.sourceDraftId === rd.draft.draftId);
     const writes = airtableWrites();
-    ck("IS7. Writes: 1 invoice row, its lines, the draft stamp - nothing else (no Schedule / F3 / F4 / draft-line writes)", invRows().length === 1 && invLineRows().length === 2 && writes.every((c) => [ISSUE_TABLES.invoices, ISSUE_TABLES.lines, INVOICING_TABLES.drafts].includes(tableOfCall(c))) && writes.filter((c) => tableOfCall(c) === INVOICING_TABLES.drafts).length === 1);
+    ck("IS7. Writes: 1 invoice row, its lines, the draft stamp (+ the Hub's next-number step) - nothing else (no Schedule / F3 / F4 / draft-line writes)", invRows().length === 1 && invLineRows().length === 2 && writes.every((c) => [ISSUE_TABLES.invoices, ISSUE_TABLES.lines, INVOICING_TABLES.drafts, "Finance Settings"].includes(tableOfCall(c))) && writes.filter((c) => tableOfCall(c) === INVOICING_TABLES.drafts).length === 1 && writes.filter((c) => tableOfCall(c) === "Finance Settings").length === 1 && nextNumber() === 1002);
     ck("IS8. Issuer + client snapshots frozen on the invoice (legal name, address, VAT no; client name, billing email)", inv.issuer.legalName === "T Ltd" && inv.issuer.address === "1 St" && inv.issuer.vatNumber === "GB1" && inv.issuer.organisationId === ORG && inv.client.name === "TEST Parkside Primary" && inv.client.billingEmail === "billing.parkside@test.invalid");
     const rv = inv.reviewed;
     ck("IS9. What Management reviewed is recorded: draft revision, Ready by/at, accepted warnings", rv.draftRevision === rd.draft.revision && rv.readyBy === MGR && rv.readyAt === NOW.toISOString() && rv.warnings.some((w: any) => w.code === "excluded_work"));
@@ -854,12 +854,17 @@ async function main() {
     // Xero later filling the external fields coexists with the FIV
     const ids = await seed();
     addOcc(S.ppa, "2026-09-10");
+    setSettings({ invoiceNumberAuthority: "xero" });
     const rd = await readyDraft(ids.parkside);
     const r = await issue(rd.draft.draftId, rd.draft.revision);
     const invId = r.body.invoice.invoiceId;
+    // An external number alone (still "Awaiting external issue") is contradictory -> invalid, never half-issued.
     Object.assign(invRows()[0].fields, { "External Provider": "Xero", "External Invoice ID": "xero-guid-0001", "External Invoice Number": "INV-0042" });
+    const half = await readInv(invId);
+    // What F9 will record in one step: Xero's id + number, the external issue date / due date, Issued.
+    Object.assign(invRows()[0].fields, { Status: "Issued", "Invoice Date": "2026-10-02", "Due Date": "2026-11-01", "Issued At": "2026-10-02T09:00:00.000Z", "Issued By User ID": "xero-sync" });
     const after = (await readInv(invId)).body.invoice;
-    ck("NB9. When Xero's number is recorded later (F9), it becomes the official number next to the unchanged FIV reference", after.invoiceId === invId && after.numbering.internalReference === invId && after.numbering.officialNumber === "INV-0042" && after.numbering.status === "assigned" && after.external.provider === "Xero" && after.external.invoiceId === "xero-guid-0001");
+    ck("NB9. When Xero's issue is recorded later (F9), its number becomes the official number next to the unchanged FIV reference (an external number without the issue is invalid)", half.code === "invoice_data_invalid" && after.invoiceId === invId && after.numbering.internalReference === invId && after.numbering.officialNumber === "INV-0042" && after.numbering.status === "assigned" && after.external.provider === "Xero" && after.external.invoiceId === "xero-guid-0001" && after.status === "issued" && after.receivable === true && after.invoiceDate === "2026-10-02" && after.frozenAt === r.body.invoice.frozenAt);
     const c = await credit(invId, null, "Cancelled");
     ck("NB9b. ... and the invoice keeps working (credit note 201) with both identities intact", c.httpStatus === 201 && c.body.invoice.numbering.officialNumber === "INV-0042");
     invRows()[0].fields["Hub Invoice Number"] = "INV-9";
@@ -867,6 +872,7 @@ async function main() {
     ck("NB9c. Stored data is strict: a Xero-numbered invoice carrying a Hub number is invalid (409), never guessed", bad.httpStatus === 409 && bad.code === "invoice_data_invalid");
     delete invRows()[0].fields["Hub Invoice Number"];
     invRows()[0].fields["Invoice Number Authority"] = "Hub";
+    invRows()[0].fields["Issue Authority"] = "Hub";
     ck("NB9d. ... and a Hub-numbered invoice without its number / sequence is invalid (409)", (await readInv(invId)).code === "invoice_data_invalid");
   }
 
@@ -916,6 +922,89 @@ async function main() {
     await ovCreate(aft, '{"override":{"kind":"quantity","quantity":20},"reason":"register shows 20"}');
     const rp = (await replace(cn.creditNoteId)).body;
     ck("RI14. PO override context is preserved: PO required (as on the original), no number, the original override reason kept; terms still 30", rp.draft.po.required === true && rp.draft.po.number === null && rp.draft.po.overrideReason === "School confirmed no PO for September" && rp.draft.paymentTerms.days === 30 && !rp.review.blockers.some((b: any) => b.code === "po_missing") && rp.review.warnings.some((w: any) => w.code === "po_override_recorded"));
+  }
+
+  // ===== XA. Xero authority = Awaiting external issue, NOT Issued (F6 final correction) =====
+  {
+    // 1. Hub authority: Ready -> Issued, official number, issue + due date established
+    const ids = await seed();
+    addOcc(S.ppa, "2026-09-10");
+    addOcc(S.after, "2026-09-11");
+    const rh = await readyDraft(ids.parkside, "2026-09-10", "2026-09-10");
+    world.audit = [];
+    const h = await issue(rh.draft.draftId, rh.draft.revision);
+    const hi = h.body.invoice;
+    ck("XA1. Hub authority: Ready -> Issued now - official Hub number, invoice date + due date (terms), Issued At = frozen at, a receivable, issued in the Hub", h.httpStatus === 201 && h.body.outcome === "issued" && hi.status === "issued" && hi.statusLabel === "Issued" && hi.numbering.officialNumber === "INV-1001" && hi.invoiceDate === "2026-09-29" && hi.dueDate === "2026-10-29" && hi.issuedAt === hi.frozenAt && hi.issuedBy === hi.frozenBy && hi.receivable === true && hi.issueAuthority === "hub" && world.audit.map((e) => e.event_type).join(",") === "finance_invoice.issued,finance_invoice_draft.issued");
+
+    // 2. Xero authority: Ready -> Awaiting external issue
+    setSettings({ invoiceNumberAuthority: "xero", invoiceNumberNext: 1002 });
+    const rx = await readyDraft(ids.parkside, "2026-09-11", "2026-09-11");
+    world.audit = [];
+    calls = [];
+    const x = await issue(rx.draft.draftId, rx.draft.revision, mgr, "Send to Xero");
+    const xi = x.body.invoice;
+    const row = invRows()[1].fields;
+    ck("XA2. Xero authority: Ready -> Awaiting external issue (201 outcome prepared_for_external_issue) - an FIV, no official number, no external id / number", x.httpStatus === 201 && x.body.outcome === "prepared_for_external_issue" && xi.status === "awaiting_external_issue" && xi.statusLabel === "Awaiting external issue" && /^FIV-[0-9A-F]{12}$/.test(xi.invoiceId) && xi.numbering.authority === "xero" && xi.numbering.officialNumber === null && xi.numbering.status === "pending_external" && xi.external.invoiceId === null && xi.external.invoiceNumber === null && xi.external.provider === null);
+    ck("XA2b. ... and it is NOT represented as issued: no invoice date, no due date, no Issued At / By, not a receivable, issue authority = external accounting (Xero); only the Hub's frozen-at time", xi.invoiceDate === null && xi.dueDate === null && xi.issuedAt === null && xi.issuedBy === null && xi.receivable === false && xi.issueAuthority === "external_accounting" && xi.frozenAt === "2026-09-29T12:00:00.000Z" && xi.frozenBy === mgr.userId && xi.paymentTerms.days === 30);
+    ck("XA2c. Stored row: Status 'Awaiting external issue', Issue Authority 'External accounting', Frozen At / By set; no Invoice Date / Due Date / Issued At / Issued By / external id or number", row.Status === "Awaiting external issue" && row["Issue Authority"] === "External accounting" && row["Frozen At"] === xi.frozenAt && row["Frozen By User ID"] === mgr.userId && !("Invoice Date" in row) && !("Due Date" in row) && !("Issued At" in row) && !("Issued By User ID" in row) && !("External Invoice ID" in row) && !("External Invoice Number" in row));
+    ck("XA2d. Audit tells the truth: finance_invoice.prepared_for_external_issue + finance_invoice_draft.prepared_for_external_issue - never finance_invoice.issued", world.audit.map((e) => e.event_type).join(",") === "finance_invoice.prepared_for_external_issue,finance_invoice_draft.prepared_for_external_issue" && world.audit[0].after.invoice.status === "awaiting_external_issue" && world.audit[0].after.invoice.invoiceDate === null && world.audit[0].after.invoice.issuedAt === null && world.audit[0].context.numbering.authority === "xero" && world.audit[1].context.invoiceStatus === "awaiting_external_issue" && world.audit[0].reason === "Send to Xero");
+    ck("XA2e. Hub numbering untouched by a Xero preparation (next stays 1002; Settings never written)", nextNumber() === 1002 && !airtableWrites().some((c) => tableOfCall(c) === "Finance Settings"));
+
+    // 3. The awaiting package is frozen and claimed
+    const before = stripVolatile((await readInv(xi.invoiceId)).body);
+    const dup = await issue(rx.draft.draftId, rx.draft.revision);
+    const ro = await reopen(rx.draft.draftId);
+    const nd = await create(ids.parkside, "2026-09-11", "2026-09-11");
+    const el = await elig(ids.parkside, "2026-09-11", "2026-09-11");
+    ck("XA3. Duplicate prevention: the same draft cannot be issued / prepared again (409 draft_already_issued) and the F5 draft cannot change (409 draft_issued)", dup.code === "draft_already_issued" && ro.code === "draft_issued" && invRows().length === 2);
+    ck("XA3b. Source claims protected while awaiting: the occurrence shows as claimed and no new draft can take it (409 no_eligible_work)", nd.code === "no_eligible_work" && el.body.summary.alreadyClaimed === 1 && el.body.summary.available.occurrences === 0);
+    ck("XA3c. Lines frozen: the awaiting invoice reads back identically (no F4 re-run)", stripVolatile((await readInv(xi.invoiceId)).body) === before && (await readInv(xi.invoiceId)).body.lines.length === 1);
+
+    // 4. Credit / correction refused while awaiting external issue
+    world.audit = [];
+    calls = [];
+    const c1 = await credit(xi.invoiceId);
+    const c2 = await credit(xi.invoiceId, [(await readInv(xi.invoiceId)).body.lines[0].lineId]);
+    ck("XA4. A credit note against an invoice awaiting external issue is refused cleanly (409 invoice_not_issued) - nothing written, no audit", c1.httpStatus === 409 && c1.code === "invoice_not_issued" && c2.code === "invoice_not_issued" && cnRows().length === 0 && airtableWrites().length === 0 && world.audit.length === 0 && (await readInv(xi.invoiceId)).body.invoice.status === "awaiting_external_issue");
+    // The Hub-issued invoice can still be credited normally
+    const hc = await credit(hi.invoiceId);
+    ck("XA4b. ... while a genuinely Issued (Hub) invoice is still credited normally (201, credited)", hc.httpStatus === 201 && hc.body.invoice.status === "credited");
+
+    // 5. Legacy TEST shape: a credit note made under the superseded semantics on a Xero-bound package
+    Object.assign(invRows()[0].fields, { Status: "Awaiting external issue", "Issue Authority": "External accounting", "Invoice Number Authority": "Xero" });
+    for (const k of ["Invoice Date", "Due Date", "Issued At", "Issued By User ID", "Hub Invoice Number", "Hub Invoice Sequence"]) delete invRows()[0].fields[k];
+    const legacy = await readInv(hi.invoiceId);
+    const rp = await replace(hc.body.creditNote.creditNoteId);
+    ck("XA5. A migrated legacy Xero-bound invoice (credit note from before this correction) reads as Awaiting external issue with its credit history, not issued / numbered", legacy.httpStatus === 200 && legacy.body.invoice.status === "awaiting_external_issue" && legacy.body.invoice.numbering.officialNumber === null && legacy.body.invoice.invoiceDate === null && legacy.body.invoice.receivable === false && legacy.body.creditNotes.length === 1 && legacy.body.history[0].event === "prepared_for_external_issue" && !legacy.body.history.some((e: any) => e.event === "issued"));
+    ck("XA5b. ... and no correction (replacement draft) can start from it (409 invoice_not_issued)", rp.httpStatus === 409 && rp.code === "invoice_not_issued");
+
+    // 6. Strict storage: no false Xero issue fact can be stored
+    const bads: [string, Record<string, unknown>][] = [
+      ["awaiting with an invoice date", { "Invoice Date": "2026-09-29", "Due Date": "2026-10-29" }],
+      ["awaiting with Issued At", { "Issued At": "2026-09-29T10:00:00.000Z", "Issued By User ID": "u" }],
+      ["awaiting with an external number", { "External Invoice ID": "g", "External Invoice Number": "INV-7" }],
+      ["issued Xero-numbered without Xero's id / number", { Status: "Issued", "Invoice Date": "2026-09-29", "Due Date": "2026-10-29", "Issued At": "2026-09-29T10:00:00.000Z", "Issued By User ID": "u" }],
+      ["issued (Xero id + number present) but no issue date / Issued At", { Status: "Issued", "External Invoice ID": "g", "External Invoice Number": "INV-7" }],
+      ["Xero-numbered but issued in the Hub", { "Issue Authority": "Hub" }],
+      ["no Frozen At", { "Frozen At": null }],
+    ];
+    const snap = { ...invRows()[1].fields };
+    const res: string[] = [];
+    for (const [name, patch] of bads) {
+      invRows()[1].fields = { ...snap, ...patch };
+      const rr = await readInv(xi.invoiceId);
+      if (rr.code !== "invoice_data_invalid") res.push(name);
+    }
+    invRows()[1].fields = snap;
+    ck("XA6. Stored data is strict: an awaiting invoice carrying an issue / due date, Issued At or an external number, an 'Issued' Xero invoice without Xero's id + number, a Hub issue authority on a Xero invoice, or a missing Frozen At -> 409 invoice_data_invalid", res.length === 0, res.join("; "));
+
+    // 7. Reads: list + history + View access
+    const li = (await listInvoices(deps, viewer, ids.parkside)) as any;
+    const mine = li.body.invoices.find((i: any) => i.invoiceId === xi.invoiceId);
+    const hist = (await readInv(xi.invoiceId, viewer)).body.history;
+    ck("XA7. List + history (View access): status awaiting_external_issue, receivable false, no invoice / due date; history says prepared_for_external_issue (no 'issued')", li.httpStatus === 200 && mine.status === "awaiting_external_issue" && mine.receivable === false && mine.invoiceDate === null && mine.dueDate === null && mine.frozenAt === xi.frozenAt && hist.length === 1 && hist[0].event === "prepared_for_external_issue" && hist[0].at === xi.frozenAt);
+    const vi = await credit(xi.invoiceId, null, "x", viewer);
+    ck("XA7b. Access unchanged: View cannot credit (403 finance_manage_required before any state check)", vi.code === "finance_manage_required");
   }
 
   // ===== AU. Audit =====

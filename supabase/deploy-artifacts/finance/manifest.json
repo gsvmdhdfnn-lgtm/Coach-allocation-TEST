@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "83a015150eeffbc4041e53fb7e1e808720232ed57029b1c4f1fcacb7ea15460c",
-  "artifactBytes": 226222,
+  "artifactSha256": "6d2588ffacb69658ae198f1f184d1b9e215635f64e4c8b104983bf644e5a3534",
+  "artifactBytes": 228285,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "a9dfd40d84ef8fd77a8a53713bcf609d6139b2e4fae5dc2d1be13e105a481054",
+  "sourceSha256": "2cdf17f932672c953eb3d2eae19d409faef9bea6d014a8b2873ed89696f25bef",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -87,11 +87,11 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-mapping.ts",
-      "sha256": "0a15e14afe9854858c618227333b14ef9ba1f154a8d143cd0ede4f3708c07d18"
+      "sha256": "ae8ec5fb381a20d5d9075e5217e24906f0c958e20e82496bb4a4ed002dda12a8"
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-orchestrator.ts",
-      "sha256": "5e13729b10eb02a74e06313f124684308052b09aa5d9fdcbcde79ffc54d52081"
+      "sha256": "691a30e0baa59588d1c69102198fa68ba882ac851616f98541304386c37799d6"
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-repository.ts",
@@ -99,7 +99,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-issue.ts",
-      "sha256": "a2f6b9d274f73d9089cfed5a469453fca69191c93266c657414d7cab13ee0187"
+      "sha256": "1cb820111ff603ffb1fcd39d3a2fdc1629aaeedf89d24f01f1d0a628b70caa52"
     },
     {
       "path": "supabase/functions-test/finance/finance-lifecycle.ts",

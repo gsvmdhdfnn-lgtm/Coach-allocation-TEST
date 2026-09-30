@@ -69,6 +69,9 @@ export const ENTITY_CREDIT_NOTE = "finance_credit_note";
 export const ISSUE_EVENTS = {
   issued: "finance_invoice.issued",
   draftIssued: "finance_invoice_draft.issued",
+  /** Xero authority: the Hub froze the invoice package for Xero - NOT an issue (F9 records the external issue). */
+  preparedForExternalIssue: "finance_invoice.prepared_for_external_issue",
+  draftPreparedForExternalIssue: "finance_invoice_draft.prepared_for_external_issue",
   partiallyCredited: "finance_invoice.partially_credited",
   credited: "finance_invoice.credited",
   creditNoteCreated: "finance_credit_note.created",
@@ -91,13 +94,24 @@ export const CREDIT_BATCH_MAX = 200;
 // Records
 // ---------------------------------------------------------------------
 
-export const INVOICE_STATUSES = ["issued", "partially_credited", "credited"] as const;
+/**
+ * Lifecycle: Hub authority      Ready -> issued (-> partially_credited -> credited)
+ *            Xero authority     Ready -> awaiting_external_issue -> [F9: Xero confirms] -> issued (-> ...)
+ * An awaiting_external_issue invoice is a frozen, claimed, immutable package that
+ * has NOT been issued: no issue date, no due date, no official number, not a
+ * receivable, and it cannot be credited / corrected through the issued-invoice path.
+ */
+export const INVOICE_STATUSES = ["awaiting_external_issue", "issued", "partially_credited", "credited"] as const;
 export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
-export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = { issued: "Issued", partially_credited: "Partially credited", credited: "Credited" };
+export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = { awaiting_external_issue: "Awaiting external issue", issued: "Issued", partially_credited: "Partially credited", credited: "Credited" };
+/** Genuinely issued (a receivable for F7): every status except awaiting_external_issue. */
+export const isIssued = (i: Pick<Invoice, "status">): boolean => i.status !== "awaiting_external_issue";
 
 export const ISSUE_AUTHORITIES = ["hub", "external_accounting"] as const;
 export type IssueAuthority = (typeof ISSUE_AUTHORITIES)[number];
-export const ISSUE_AUTHORITY_LABELS: Record<IssueAuthority, string> = { hub: "Issued in the Hub", external_accounting: "Issued by the external accounting system" };
+export const ISSUE_AUTHORITY_LABELS: Record<IssueAuthority, string> = { hub: "Issued in the Hub", external_accounting: "Issued by the external accounting system (Xero)" };
+/** Who issues the invoice follows who numbers it: Hub numbering -> the Hub issues; Xero numbering -> Xero issues (F9). */
+export const issueAuthorityFor = (a: InvoiceNumberAuthority): IssueAuthority => (a === "hub" ? "hub" : "external_accounting");
 
 /** Who assigns an invoice's official (customer-facing) number, frozen on the invoice at issue. */
 export const NUMBER_AUTHORITY_LABELS: Record<InvoiceNumberAuthority, string> = { hub: "The Hub assigns the official number (this organisation's sequence)", xero: "Xero assigns the official number" };
@@ -123,8 +137,9 @@ export interface Invoice {
   billingContactName: string | null;
   billingEmail: string;
   billingCcEmails: string[];
-  invoiceDate: string;
-  dueDate: string;
+  /** The issue date / receivable due date: set when the invoice is genuinely issued (Hub: at issue; Xero: by F9), null while awaiting external issue. */
+  invoiceDate: string | null;
+  dueDate: string | null;
   periodFrom: string;
   periodTo: string;
   paymentTermsDays: number;
@@ -155,8 +170,12 @@ export interface Invoice {
   /** JSON: what Management reviewed (draft revision, Ready by / at, warnings accepted). */
   reviewSnapshot: string;
   issuer: Issuer;
-  issuedBy: string;
-  issuedAt: string;
+  /** When / by whom the Hub froze this immutable package (every invoice). Never an issue date. */
+  frozenBy: string;
+  frozenAt: string;
+  /** When / by whom it became Issued: Hub = the freeze itself; Xero = null until F9 records the external issue. */
+  issuedBy: string | null;
+  issuedAt: string | null;
   revision: number;
   updatedBy: string;
   updatedAt: string;
@@ -332,6 +351,7 @@ export function planIssue(input: IssueInput): { ok: true; invoice: Invoice; line
   if (input.ids.lineIds.length !== included.length) throw new Error("planIssue needs one line id per included line");
 
   const invoiceId = input.ids.invoiceId;
+  const hub = numbering.authority === "hub";
   const lines: InvoiceLine[] = included.map((l, i) => ({
     lineId: input.ids.lineIds[i],
     invoiceId,
@@ -379,8 +399,9 @@ export function planIssue(input: IssueInput): { ok: true; invoice: Invoice; line
     billingContactName: client.billingContactName,
     billingEmail: client.billingEmail,
     billingCcEmails: [...client.billingCcEmails],
-    invoiceDate: meta.today,
-    dueDate: addDays(meta.today, draft.paymentTermsDays),
+    // Hub: issued now (issue date + snapshotted terms). Xero: frozen only - no issue date, no due date until F9.
+    invoiceDate: hub ? meta.today : null,
+    dueDate: hub ? addDays(meta.today, draft.paymentTermsDays) : null,
     periodFrom: draft.periodFrom,
     periodTo: draft.periodTo,
     paymentTermsDays: draft.paymentTermsDays,
@@ -393,8 +414,8 @@ export function planIssue(input: IssueInput): { ok: true; invoice: Invoice; line
     grossMinor: t.grossMinor,
     currency: CURRENCY,
     lineCount: lines.length,
-    status: "issued",
-    issueAuthority: "hub",
+    status: hub ? "issued" : "awaiting_external_issue",
+    issueAuthority: issueAuthorityFor(numbering.authority),
     numberAuthority: numbering.authority,
     hubInvoiceNumber: numbering.number,
     hubInvoiceSequence: numbering.sequence,
@@ -414,8 +435,10 @@ export function planIssue(input: IssueInput): { ok: true; invoice: Invoice; line
       vatRegistered: settings.vatRegistered === true,
       vatNumber: settings.vatNumber,
     },
-    issuedBy: meta.userId,
-    issuedAt: meta.at,
+    frozenBy: meta.userId,
+    frozenAt: meta.at,
+    issuedBy: hub ? meta.userId : null,
+    issuedAt: hub ? meta.at : null,
     revision: 1,
     updatedBy: meta.userId,
     updatedAt: meta.at,
@@ -455,8 +478,14 @@ export function creditState(invoice: Invoice, lines: readonly InvoiceLine[], not
     creditedLineIds: ids,
     credited: { netMinor: net, vatMinor: vat, grossMinor: gross },
     remaining: { netMinor: invoice.netMinor - net, vatMinor: invoice.vatMinor - vat, grossMinor: invoice.grossMinor - gross },
-    status: ids.size === 0 ? "issued" : all ? "credited" : "partially_credited",
+    // Credits never move an invoice that is still awaiting external issue (none can be made now; TEST legacy rows keep their history).
+    status: !isIssued(invoice) ? "awaiting_external_issue" : ids.size === 0 ? "issued" : all ? "credited" : "partially_credited",
   };
+}
+
+/** The refusal for an issued-invoice action (credit note, correction) on an invoice still awaiting external issue. */
+export function notIssuedMessage(i: Pick<Invoice, "invoiceId">, what: "credited" | "corrected"): string {
+  return `${i.invoiceId} is awaiting external issue in Xero - it has not been issued, so it cannot be ${what}; nothing was changed`;
 }
 
 /**
@@ -466,6 +495,7 @@ export function creditState(invoice: Invoice, lines: readonly InvoiceLine[], not
  */
 export function planCreditNote(input: { invoice: Invoice; lines: readonly InvoiceLine[]; notes: readonly CreditNote[]; lineIds: string[] | null; reason: string; creditNoteId: string; meta: { userId: string; at: string; today: string } }): { ok: true; note: CreditNote; before: CreditState; statusAfter: InvoiceStatus } | Refusal {
   const { invoice, lines, notes } = input;
+  if (!isIssued(invoice)) return refuse(409, "invoice_not_issued", notIssuedMessage(invoice, "credited"));
   const st = creditState(invoice, lines, notes);
   if (st.status === "credited") return refuse(409, "invoice_fully_credited", `${invoice.invoiceId} is already fully credited - nothing is left to credit`);
   let chosen: InvoiceLine[];
@@ -542,6 +572,8 @@ export function publicInvoice(i: Invoice, st: CreditState | null = null) {
     sourceDraftId: i.sourceDraftId,
     client: { clientId: i.clientId, name: i.clientName, billingContactName: i.billingContactName, billingEmail: i.billingEmail, billingCcEmails: [...i.billingCcEmails] },
     issuer: { ...i.issuer },
+    /** false while awaiting external issue: not a receivable yet (no due date, no payment countdown, never overdue). */
+    receivable: isIssued(i),
     invoiceDate: i.invoiceDate,
     dueDate: i.dueDate,
     period: { from: i.periodFrom, to: i.periodTo },
@@ -553,6 +585,8 @@ export function publicInvoice(i: Invoice, st: CreditState | null = null) {
     reviewed: JSON.parse(i.reviewSnapshot),
     replacesInvoiceId: i.replacesInvoiceId,
     correctionId: i.correctionId,
+    frozenBy: i.frozenBy,
+    frozenAt: i.frozenAt,
     issuedBy: i.issuedBy,
     issuedAt: i.issuedAt,
     revision: i.revision,
@@ -611,11 +645,13 @@ export function publicCreditNote(n: CreditNote) {
 /** The invoice's history, derived from its immutable records (no F4 re-run, no audit read). */
 export function invoiceHistory(i: Invoice, notes: readonly CreditNote[], replacements: { drafts: readonly Draft[]; invoices: readonly Invoice[] }) {
   const h: { at: string; event: string; detail: Record<string, unknown> }[] = [];
-  h.push({ at: i.issuedAt, event: "issued", detail: { invoiceId: i.invoiceId, sourceDraftId: i.sourceDraftId, gross: formatMinor(i.grossMinor), replacesInvoiceId: i.replacesInvoiceId, correctionId: i.correctionId } });
+  const detail = { invoiceId: i.invoiceId, sourceDraftId: i.sourceDraftId, gross: formatMinor(i.grossMinor), replacesInvoiceId: i.replacesInvoiceId, correctionId: i.correctionId };
+  if (i.issueAuthority === "external_accounting") h.push({ at: i.frozenAt, event: "prepared_for_external_issue", detail });
+  if (i.issuedAt) h.push({ at: i.issuedAt, event: "issued", detail });
   for (const n of notes) h.push({ at: n.createdAt, event: "credit_note", detail: { creditNoteId: n.creditNoteId, gross: formatMinor(n.grossMinor), lines: n.lines.length, reason: n.reason } });
   for (const d of replacements.drafts) h.push({ at: d.createdAt ?? "", event: "correction_initiated", detail: { correctionId: d.correctionId, replacementDraftId: d.draftId, occurrenceIds: [...(d.correctionScope?.occurrenceIds ?? [])] } });
-  for (const r of replacements.invoices) h.push({ at: r.issuedAt, event: "replaced", detail: { replacementInvoiceId: r.invoiceId, correctionId: r.correctionId, gross: formatMinor(r.grossMinor) } });
-  const rank: Record<string, number> = { issued: 0, credit_note: 1, correction_initiated: 2, replaced: 3 };
+  for (const r of replacements.invoices) h.push({ at: r.frozenAt, event: "replaced", detail: { replacementInvoiceId: r.invoiceId, correctionId: r.correctionId, gross: formatMinor(r.grossMinor) } });
+  const rank: Record<string, number> = { prepared_for_external_issue: 0, issued: 1, credit_note: 2, correction_initiated: 3, replaced: 4 };
   return h.sort((a, b) => a.at.localeCompare(b.at) || rank[a.event] - rank[b.event]);
 }
 
@@ -647,6 +683,8 @@ export const auditInvoice = (i: Invoice) => ({
   replacesInvoiceId: i.replacesInvoiceId,
   correctionId: i.correctionId,
   approvedOmissions: i.approvedOmissions.map((e) => e.occurrenceId),
+  frozenAt: i.frozenAt,
+  issuedAt: i.issuedAt,
   revision: i.revision,
 });
 export const auditInvoiceLine = (l: InvoiceLine) => ({ lineId: l.lineId, sequence: l.sequence, sourceDraftLineId: l.sourceDraftLineId, occurrenceId: l.occurrenceId, termsId: l.termsId, quantity: l.quantity, netMinor: l.netMinor, vatMinor: l.vatMinor, grossMinor: l.grossMinor });

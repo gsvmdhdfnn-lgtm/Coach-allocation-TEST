@@ -8,6 +8,11 @@
  *     state (Status) and its revision / last-changed fields are ever
  *     patched (invoiceStateFields) - never an amount, date, term, PO,
  *     snapshot or official number.
+ *   - Status is stored truthfully: "Awaiting external issue" (Xero numbering,
+ *     frozen but not issued) has NO issue date, due date, Issued At / By,
+ *     external id or number; an issued Xero-numbered invoice must carry the
+ *     external id + number Xero gave it (F9). Frozen At / By = when the Hub
+ *     froze the package (every invoice), never an issue date.
  *   - An invoice line row and a credit note row are created once and never
  *     edited.
  *
@@ -76,6 +81,8 @@ export const FV = {
     omissions: "Approved Omissions",
     review: "Review Snapshot",
     issuer: "Issuer Snapshot",
+    frozenBy: "Frozen By User ID",
+    frozenAt: "Frozen At",
     issuedBy: "Issued By User ID",
     issuedAt: "Issued At",
     revision: "Revision",
@@ -134,7 +141,7 @@ export const FV = {
   },
 } as const;
 
-const INVOICE_STATUS: Record<InvoiceStatus, string> = { issued: "Issued", partially_credited: "Partially credited", credited: "Credited" };
+const INVOICE_STATUS: Record<InvoiceStatus, string> = { awaiting_external_issue: "Awaiting external issue", issued: "Issued", partially_credited: "Partially credited", credited: "Credited" };
 const AUTHORITY: Record<IssueAuthority, string> = { hub: "Hub", external_accounting: "External accounting" };
 const NUMBER_AUTHORITY: Record<InvoiceNumberAuthority, string> = { hub: "Hub", xero: "Xero" };
 const TERMS_SOURCE: Record<TermsSource, string> = { client: "Client", finance_settings: "Finance Settings", invoice_override: "Invoice override", original_invoice: "Original invoice" };
@@ -201,11 +208,13 @@ export function invoiceFromRow(r: Row): Parsed<Invoice> {
   if (!clientId || !CLIENT_ID_PATTERN.test(clientId) || !clientName || !email || !EMAIL_RE.test(email)) return bad("invalid client snapshot");
   const cc = (str(f[x.cc]) ?? "").split("\n").map((s) => s.trim()).filter(Boolean);
   if (cc.some((e) => !EMAIL_RE.test(e))) return bad("invalid Billing CC Emails");
-  const date = f[x.date];
-  const due = f[x.due];
+  const date = f[x.date] ?? null;
+  const due = f[x.due] ?? null;
   const from = f[x.from];
   const to = f[x.to];
-  if (!isIsoDate(date) || !isIsoDate(due) || !isIsoDate(from) || !isIsoDate(to) || (to as string) < (from as string) || (due as string) < (date as string)) return bad("invalid dates");
+  if (!isIsoDate(from) || !isIsoDate(to) || (to as string) < (from as string)) return bad("invalid dates");
+  // Issue + due date come together (or not at all - checked against Status below).
+  if ((date === null) !== (due === null) || (date !== null && (!isIsoDate(date) || !isIsoDate(due) || (due as string) < (date as string)))) return bad("invalid dates");
   const termsDays = int(f[x.termsDays], 0, 365);
   const termsSource = reverse(TERMS_SOURCE, f[x.termsSource]);
   if (termsDays === undefined || !termsSource) return bad("invalid payment terms");
@@ -240,12 +249,26 @@ export function invoiceFromRow(r: Row): Parsed<Invoice> {
   if (!review || !json(review)) return bad("missing Review Snapshot");
   const issuer = issuerOf(f[x.issuer]);
   if (!issuer) return bad("invalid Issuer Snapshot");
+  const frozenBy = str(f[x.frozenBy]);
+  const frozenAt = str(f[x.frozenAt]);
   const issuedBy = str(f[x.issuedBy]);
   const issuedAt = str(f[x.issuedAt]);
   const changedBy = str(f[x.changedBy]);
   const changedAt = str(f[x.changedAt]);
   const revision = int(f[x.revision], 1, Number.MAX_SAFE_INTEGER);
-  if (!issuedBy || !issuedAt || !changedBy || !changedAt || revision === undefined) return bad("invalid issue / revision metadata");
+  if (!frozenBy || !frozenAt || !changedBy || !changedAt || revision === undefined || (issuedBy === null) !== (issuedAt === null)) return bad("invalid issue / revision metadata");
+  // Who issues follows who numbers: Hub numbering -> Hub; Xero numbering -> external accounting.
+  if ((numberAuthority === "hub") !== (authority === "hub")) return bad("Issue Authority does not match Invoice Number Authority");
+  const extId = str(f[x.extId]);
+  const extNumber = str(f[x.extNumber]);
+  if (status === "awaiting_external_issue") {
+    // Frozen, not issued: nothing may claim an issue, a due date, or an external invoice.
+    if (numberAuthority !== "xero" || date !== null || issuedAt !== null || extId !== null || extNumber !== null) return bad("an invoice awaiting external issue cannot carry an issue date, due date, Issued At or external invoice id / number");
+  } else {
+    if (date === null || issuedAt === null) return bad("an issued invoice needs its invoice date, due date and Issued At");
+    // An issued Xero-numbered invoice exists only once Xero has issued it (F9): its external id + official number must be recorded.
+    if (numberAuthority === "xero" && (extId === null || extNumber === null)) return bad("an issued Xero-numbered invoice needs the external invoice id and number Xero gave it");
+  }
   return {
     ok: true,
     recordId: r.id,
@@ -257,8 +280,8 @@ export function invoiceFromRow(r: Row): Parsed<Invoice> {
       billingContactName: str(f[x.contact]),
       billingEmail: email,
       billingCcEmails: cc,
-      invoiceDate: date as string,
-      dueDate: due as string,
+      invoiceDate: date as string | null,
+      dueDate: due as string | null,
       periodFrom: from as string,
       periodTo: to as string,
       paymentTermsDays: termsDays,
@@ -277,13 +300,15 @@ export function invoiceFromRow(r: Row): Parsed<Invoice> {
       hubInvoiceNumber: hubNumber,
       hubInvoiceSequence: hubSequence as number | null,
       externalProvider: str(f[x.extProvider]),
-      externalInvoiceId: str(f[x.extId]),
-      externalInvoiceNumber: str(f[x.extNumber]),
+      externalInvoiceId: extId,
+      externalInvoiceNumber: extNumber,
       replacesInvoiceId: replaces,
       correctionId,
       approvedOmissions: omissions,
       reviewSnapshot: review,
       issuer,
+      frozenBy,
+      frozenAt,
       issuedBy,
       issuedAt,
       revision,
@@ -533,6 +558,8 @@ export function invoiceCreateFields(i: Invoice, orgRecordId: string): Record<str
     [x.omissions]: i.approvedOmissions.length ? JSON.stringify(i.approvedOmissions) : null,
     [x.review]: i.reviewSnapshot,
     [x.issuer]: JSON.stringify(i.issuer),
+    [x.frozenBy]: i.frozenBy,
+    [x.frozenAt]: i.frozenAt,
     [x.issuedBy]: i.issuedBy,
     [x.issuedAt]: i.issuedAt,
     [x.revision]: i.revision,

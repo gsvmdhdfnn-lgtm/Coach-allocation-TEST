@@ -54,9 +54,11 @@ import {
   creditState,
   invoiceHistory,
   invoiceNumberPlan,
+  isIssued,
   issueAuditEvent,
   issueGate,
   newIssueId,
+  notIssuedMessage,
   planCreditNote,
   planIssue,
   publicCreditNote,
@@ -204,7 +206,7 @@ export async function listInvoices(deps: IssueDeps, caller: FinanceCaller, clien
   if (!i.ok) return fail(409, "invoice_data_invalid", i.error);
   const n = buildCreditNotes(r[1], org.recordId);
   if (!n.ok) return fail(409, "invoice_data_invalid", n.error);
-  const invoices = i.invoices.map((x) => x.value).sort((a, b) => `${b.invoiceDate} ${b.issuedAt}`.localeCompare(`${a.invoiceDate} ${a.issuedAt}`));
+  const invoices = i.invoices.map((x) => x.value).sort((a, b) => b.frozenAt.localeCompare(a.frozenAt) || b.invoiceId.localeCompare(a.invoiceId));
   const notes = n.notes.map((x) => x.value);
   return {
     status: "ok",
@@ -218,7 +220,7 @@ export async function listInvoices(deps: IssueDeps, caller: FinanceCaller, clien
         const mine = notes.filter((x) => x.invoiceId === inv.invoiceId);
         const creditedGross = mine.reduce((a, x) => a + x.grossMinor, 0);
         const p = publicInvoice(inv);
-        return { invoiceId: p.invoiceId, reference: p.reference, officialNumber: p.numbering.officialNumber, numberAuthority: p.numbering.authority, status: p.status, statusLabel: p.statusLabel, invoiceDate: p.invoiceDate, dueDate: p.dueDate, period: p.period, totals: p.totals, creditNotes: mine.map((x) => x.creditNoteId), creditedGross: formatMinor(creditedGross), replacesInvoiceId: p.replacesInvoiceId, sourceDraftId: p.sourceDraftId, external: p.external };
+        return { invoiceId: p.invoiceId, reference: p.reference, officialNumber: p.numbering.officialNumber, numberAuthority: p.numbering.authority, status: p.status, statusLabel: p.statusLabel, receivable: p.receivable, frozenAt: p.frozenAt, invoiceDate: p.invoiceDate, dueDate: p.dueDate, period: p.period, totals: p.totals, creditNotes: mine.map((x) => x.creditNoteId), creditedGross: formatMinor(creditedGross), replacesInvoiceId: p.replacesInvoiceId, sourceDraftId: p.sourceDraftId, external: p.external };
       }),
     },
   };
@@ -339,6 +341,10 @@ async function underLock(deps: IssueDeps, caller: FinanceCaller, route: string, 
  * POST /invoice-drafts/{id}/issue - issue a Ready draft. Nothing is
  * refreshed: the lines issued are exactly the draft's Included lines, and
  * the F5 review is recomputed under the lock; any blocker refuses the issue.
+ * Hub numbering: the invoice is Issued now (number, issue date, due date).
+ * Xero numbering: the same immutable, claimed package is frozen but is only
+ * "Awaiting external issue" - no issue / due date, no number, not a receivable,
+ * audited as prepared_for_external_issue (F9 records the real issue).
  */
 export function issueDraft(deps: IssueDeps, caller: FinanceCaller, draftId: string, revision: number, reason: string | null): Promise<Ok | Fail> {
   return underLock(deps, caller, `POST /invoice-drafts/${draftId}/issue`, async (c) => {
@@ -407,13 +413,14 @@ export function issueDraft(deps: IssueDeps, caller: FinanceCaller, draftId: stri
         const [created] = await txn.create(ISSUE_TABLES.invoices, [invoiceCreateFields(inv, c.org.recordId)]);
         await txn.create(ISSUE_TABLES.lines, p.lines.map((x) => invoiceLineCreateFields(x, c.org.recordId)));
         await txn.patch(INVOICING_TABLES.drafts, [{ id: l.draft.recordId, fields: draftFields(after, { userId: c.userId, at: c.at }), restore: draftRestoreFields(draft) }]);
+        const issuedNow = isIssued(inv);
         const events = [
-          c.ev(ISSUE_EVENTS.issued, ENTITY_INVOICE, inv.invoiceId, null, { invoice: auditInvoice(inv), lines: p.lines.map(auditInvoiceLine) }, reason, { sourceDraftId: draft.draftId, reviewedRevision: revision, warnings: review.warnings.map((w) => w.code), approvedOmissions: inv.approvedOmissions.map((e) => e.occurrenceId), numbering }),
-          c.ev(ISSUE_EVENTS.draftIssued, ENTITY_DRAFT, draft.draftId, auditDraft(draft), auditDraft(after), reason, { invoiceId: inv.invoiceId }),
+          c.ev(issuedNow ? ISSUE_EVENTS.issued : ISSUE_EVENTS.preparedForExternalIssue, ENTITY_INVOICE, inv.invoiceId, null, { invoice: auditInvoice(inv), lines: p.lines.map(auditInvoiceLine) }, reason, { sourceDraftId: draft.draftId, reviewedRevision: revision, warnings: review.warnings.map((w) => w.code), approvedOmissions: inv.approvedOmissions.map((e) => e.occurrenceId), numbering }),
+          c.ev(issuedNow ? ISSUE_EVENTS.draftIssued : ISSUE_EVENTS.draftPreparedForExternalIssue, ENTITY_DRAFT, draft.draftId, auditDraft(draft), auditDraft(after), reason, { invoiceId: inv.invoiceId, invoiceStatus: inv.status }),
         ];
         if (replaced) events.push(c.ev(ISSUE_EVENTS.replacementLinked, ENTITY_INVOICE, replaced.invoiceId, { status: replaced.status, revision: replaced.revision }, { replacementInvoiceId: inv.invoiceId, correctionId: inv.correctionId, status: replaced.status, revision: replaced.revision }, reason, { replacementDraftId: draft.draftId }));
         const stored: LoadedInvoice = { invoice: { recordId: created.id, value: inv }, lines: p.lines, notes: [] };
-        return { events, body: () => ({ ...invoiceBody(stored, { drafts: [], invoices: [] }), draft: publicDraft(after) }) };
+        return { events, body: () => ({ outcome: issuedNow ? "issued" : "prepared_for_external_issue", ...invoiceBody(stored, { drafts: [], invoices: [] }), draft: publicDraft(after) }) };
       },
     };
   });
@@ -490,6 +497,8 @@ export function startReplacementDraft(deps: IssueDeps, caller: FinanceCaller, cr
     const l = await loadInvoice(deps, c.org, note.invoiceId);
     if (isFail(l)) return l;
     const inv = l.invoice.value;
+    // Corrections are for genuinely issued invoices only (there is no pre-issue cancellation path).
+    if (!isIssued(inv)) return fail(409, "invoice_not_issued", notIssuedMessage(inv, "corrected"));
     const src = await loadDraft(deps, c.org, inv.sourceDraftId);
     // The source draft normally exists; if it does not, only the invoice's own claims are released.
     if (isFail(src) && src.httpStatus !== 404) return src;

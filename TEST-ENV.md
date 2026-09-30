@@ -15100,6 +15100,10 @@ terms on its date could change the total.
 
 ## Finance Foundation — F6 (invoice issue + immutability + credit note / correction lifecycle) — TEST only — 2026-09-30
 
+> **Read with FIN6.15 (numbering) and FIN6.23 (Xero-authority issue
+> state).** "Issued" in this section means Hub-issued. Under Xero
+> authority an invoice is frozen as **Awaiting external issue** until F9.
+
 F6 turns a Ready F5 draft into an **issued, immutable invoice**. It adds
 whole-line **credit notes** and a **correction** path: credit, then a
 scoped replacement draft, then a replacement invoice linked to the
@@ -15463,6 +15467,11 @@ This correction changes two things in F6 and nothing else:
 
 ### FIN6.15 Locked numbering model
 
+> **Lifecycle corrected by FIN6.23 (2026-09-30).** Under Xero authority,
+> Ready now becomes **Awaiting external issue**, not Issued: no invoice
+> date, no due date, no Issued At, and not a receivable until F9 records
+> Xero's confirmation. Numbering below is unchanged.
+
 - **Two identities per invoice:**
   - the **internal reference** `FIV-` + 12 hex, which every invoice
     always has, is permanent and is never shown as the legal number;
@@ -15644,6 +15653,10 @@ from a whole-line credit note plus a replacement draft on
 
 ### FIN6.22 Resting TEST data after the correction
 
+> **Superseded by FIN6.29.** The five Xero-authority rows below were
+> migrated to **Awaiting external issue** (FIN6.27). They were never
+> issued in Xero.
+
 - **Finance Settings (rev 11):**
   - `Invoice Number Authority = Xero`: the TEST resting choice, with no
     number invented;
@@ -15671,3 +15684,248 @@ from a whole-line credit note plus a replacement draft on
   - write and settings lock tables empty;
   - `f2probe` schema dropped;
   - no Xero record, no payment, no email, no PDF.
+
+## Finance Foundation — F6 final correction (Xero-authority issue state) — TEST only — 2026-09-30
+
+This correction changes **one thing**: what Ready becomes under Xero
+numbering authority. Under Xero authority the Hub does not issue the
+invoice. It freezes it and hands it over, and it stays unissued until
+Xero confirms.
+
+- **Unchanged:**
+  - the Hub path, numbering and sequence (FIN6.15–FIN6.17);
+  - replacement terms and PO inheritance (FIN6.18);
+  - immutability, frozen lines, claims and duplicate blocking;
+  - access, module and tenant checks, and the audit architecture.
+- **Not built:** F7 and F9 were not started. There is no Xero
+  integration, PDF, email or receivable logic.
+- **Scope:** TEST Airtable `appQktredAuGa1X7e`, TEST Supabase
+  `dkqubldmfyeuudecxmvh`, org `ORG-TEST-001` only.
+- **Production** (Airtable, Supabase, Finance, Xero, Stripe, Sessions,
+  Sheets, legacy Financials) was not touched. No email was sent, and
+  nothing here is a legal or official invoice.
+
+### FIN6.23 Locked lifecycle
+
+```
+Hub:   Ready → Issued
+Xero:  Ready → Awaiting external issue → [F9: Xero confirms] → Issued
+```
+
+| | Hub authority | Xero authority |
+|---|---|---|
+| `status` | `issued` ("Issued") | `awaiting_external_issue` ("Awaiting external issue") |
+| API `outcome` of the issue call | `issued` | `prepared_for_external_issue` |
+| `issueAuthority` | `hub` ("Issued in the Hub") | `external_accounting` ("Issued by the external accounting system (Xero)") |
+| Internal reference `FIV-…` | yes | yes |
+| Official number | `TEST-INV-…` from the Hub sequence (`assigned`) | none: `officialNumber` null, `numbering.status` `pending_external` |
+| External id / number / provider | blank | blank (F9 writes them) |
+| `invoiceDate` / `dueDate` | issue day / issue day + terms | **null** |
+| `issuedAt` / `issuedBy` | set (= frozen) | **null** |
+| `frozenAt` / `frozenBy` | set | set |
+| `receivable` | `true` | **`false`** |
+| Lines frozen, claims held, re-issue refused | yes | yes |
+| Credit note / correction | allowed | **refused** (FIN6.25) |
+| Invoice audit event | `finance_invoice.issued` | `finance_invoice.prepared_for_external_issue` |
+| Draft audit event | `finance_invoice_draft.issued` | `finance_invoice_draft.prepared_for_external_issue` (context `invoiceStatus`) |
+
+- **Not a rollback to Draft.** The awaiting invoice is a real, immutable
+  `Finance Invoices` row with frozen lines, and the draft is spent: its
+  `issuedInvoiceId` is set, so a re-issue gets 409
+  `draft_already_issued`. F5's `issued` / `issuedInvoiceId` draft fields
+  keep their F5 meaning, "frozen into an invoice".
+- **Official number source:**
+  - Hub authority: the Hub's per-organisation sequence (FIN6.15);
+  - Xero authority: only Xero. F9 will record `External Provider`,
+    `External Invoice ID` and `External Invoice Number` together with
+    Xero's issue date, set `Invoice Date`, `Due Date`, `Issued At` and
+    `Issued By`, and move the invoice to Issued;
+  - the Hub never invents a Xero number or date.
+
+### FIN6.24 Date semantics
+
+- **Frozen At / Frozen By** (new fields, set on **every** invoice) record
+  when and by whom the draft was frozen into an immutable invoice. For
+  Xero authority this is the "prepared for Xero" moment, and it is kept
+  apart from Issued At.
+- **Issued At / Issued By** record the actual issue:
+  - Hub: set at issue and equal to Frozen At / By;
+  - Xero: blank until F9 records Xero's confirmation.
+- **Invoice Date / Due Date:**
+  - Hub: issue day (UTC `today`) and issue day + payment terms, as
+    before;
+  - Xero: blank. No due date exists before confirmation, so no payment
+    countdown can start.
+- **Terms are still frozen.** `paymentTerms` (days + source) is part of
+  the awaiting invoice's snapshot. F9 derives the due date from Xero's
+  issue date plus these frozen terms.
+- **List and history order:**
+  - lists sort by `frozenAt` (newest first), then `invoiceId`;
+  - history shows `prepared_for_external_issue` at `frozenAt` for
+    `external_accounting` invoices, and `issued` at `issuedAt` when
+    present.
+- **F7 dependency:** `receivable` is `true` only for an issued invoice.
+  An awaiting invoice has no due date and is not a receivable. It must
+  never enter overdue logic, reminders or aged-debt figures. F7 must key
+  on `receivable` / `status`, never on the mere existence of an invoice
+  row.
+
+### FIN6.25 Correction restriction
+
+- `POST /invoices/{id}/credit-notes` on an awaiting invoice → 409
+  `invoice_not_issued`: "… is awaiting external issue in Xero - it has
+  not been issued, so it cannot be credited; nothing was changed".
+- `POST /credit-notes/{id}/replacement-draft` whose original invoice is
+  awaiting → 409 `invoice_not_issued` ("… cannot be corrected").
+- No pre-issue cancellation path was invented. An awaiting invoice
+  cannot be withdrawn in F6. How to handle a package that Xero never
+  confirms is left to F9 / David.
+
+### FIN6.26 Code, schema and storage rules
+
+- **Code:**
+  - `finance-issue.ts`: `INVOICE_STATUSES` adds `awaiting_external_issue`,
+    with helpers `isIssued`, `issueAuthorityFor` and `notIssuedMessage`.
+    `planIssue` branches on authority, `planCreditNote` refuses when the
+    invoice is not issued, and `creditState` keeps a not-issued row
+    awaiting;
+  - `publicInvoice` adds `receivable`, `frozenAt` and `frozenBy`;
+  - `finance-issue-orchestrator.ts`: issue events and `outcome`, the
+    replacement guard, and list fields/order;
+  - `finance-issue-mapping.ts`: field map and strict reads.
+- **TEST Airtable `Finance Invoices`** (additive):
+  - `Frozen At` `fldWYpLeDiGDirS6y` (dateTime, UTC) and `Frozen By User
+    ID` `fldEVzwRbhWxJxCYb`, backfilled on the 9 existing rows from
+    Issued At / By (compatible with v13);
+  - `Status` gains the choice **`Awaiting external issue`**.
+- **Strict reads:** a row that breaks any of these rules is refused as
+  invalid, never shown as something it is not.
+  - Invoice Date and Due Date are both set or both blank;
+  - Frozen At / By are required, and Issued At / By are both set or both
+    blank;
+  - Hub number authority ⇔ Issue Authority `Hub`;
+  - Awaiting requires Xero authority, and no dates, no Issued At, and no
+    external id or number;
+  - Issued requires dates and Issued At. A Xero-numbered issued row also
+    requires External Invoice ID and Number.
+
+### FIN6.27 TEST fixture migration (2026-09-30 19:00 UTC)
+
+- **Why:** five TEST invoices had been frozen under Xero numbering
+  authority but stored as `Issued`, with Issue Authority `Hub`, an
+  Invoice Date, a Due Date and Issued At / By. That implied a Xero issue
+  that never happened. Xero was never contacted.
+- **Rows migrated** (all Frozen At / By kept = the original freeze):
+
+  | Invoice | Before | After |
+  |---|---|---|
+  | `FIV-900D5F407D29` | Credited, Hub, 2026-09-30 / 2026-10-30, rev 2 | Awaiting external issue, External accounting, dates / Issued At / By blank, rev 3 |
+  | `FIV-0747B88A7BF8` | Partially credited, Hub, 2026-09-30 / 2026-10-30, rev 7 | Awaiting…, rev 8 |
+  | `FIV-E6600556B017` | Issued, Hub, 2026-09-30 / 2026-10-21, rev 1 | Awaiting…, rev 2 |
+  | `FIV-BA23AA9365B6` | Issued, Hub, 2026-09-30 / 2026-10-30, rev 1 | Awaiting…, rev 2 |
+  | `FIV-6015A9D88999` | Issued, Hub, 2026-09-30 / 2026-10-30, rev 1 | Awaiting…, rev 2 |
+
+- **What was written:**
+  - Last Changed By = `migration:f6-xero-authority-state`, Last Changed
+    At = 2026-09-30T19:00:00Z;
+  - 5 audit rows `finance_invoice.migrated_to_awaiting_external_issue`,
+    with full before/after, a reason, and context `{migration,
+    environment: TEST, airtableRecordId}`. The actor is the TEST
+    manager.
+- **Legacy anomaly (TEST only, documented, not repaired):**
+  - `FIV-900D5F407D29` and `FIV-0747B88A7BF8` carry credit notes, and
+    `FIV-0747B88A7BF8` has replacements. These were created under the
+    superseded semantics;
+  - their history is kept as it is, because credit notes and their
+    audit rows are immutable;
+  - they still read as awaiting (`receivable: false`, credit figures
+    shown);
+  - any **new** credit or correction on them is refused (FIN6.25). The
+    replacement from `FCN-1473D452224D` → 409 was proven live (E).
+  - A real Xero-authority organisation can no longer reach this state.
+- **Hub rows** (`TEST-INV-001001`–`001004`) were already truthful and
+  were not changed.
+
+### FIN6.28 Tests, mutation, deploy and live proof
+
+- **Focused tests:** `tests/support/finance-issue.test.ts` **155/155**.
+  - The default fixture authority is now Hub.
+  - New section **XA1–XA7**:
+    - XA1: Hub → Issued with number and dates;
+    - XA2a–e: Xero → Awaiting (FIV present, no number / external id /
+      dates / issuedAt, receivable false, truthful audit), and the Hub
+      sequence is untouched by a Xero prepare (Settings never written);
+    - XA3a–c: duplicate blocking, claims held and lines frozen while
+      awaiting;
+    - XA4 / XA4b: credit refused while awaiting, while an issued Hub
+      invoice is still credited normally;
+    - XA5 / XA5b: a migrated legacy row reads as awaiting, and no
+      correction can start from it;
+    - XA6: strict storage rules (including "issued with Xero id + number
+      but no issue date");
+    - XA7 / XA7b: list and history for View access, and access checks
+      unchanged.
+  - Replacement terms / PO inheritance (the F6c tests) and the access,
+    module and tenant sections pass unchanged.
+  - NB9 now simulates F9 truthfully: status, dates and Issued At / By
+    are set together with the external id and number.
+- **Mutation:**
+  - new set **19/19** caught;
+  - F6 set **42/42**, with two anchors updated for the new lines;
+  - F6-correction set **26/26**;
+  - F5 set 45/47 (the same two equivalent survivors as before).
+- **Full suite:** `node tests/run-all.js` 75/75 files.
+- **Typecheck:** `tsc` shows no new errors (identical error set before
+  and after).
+- **Deploy:** `finance` **v14**, `verify_jwt: true`, entrypoint
+  `index.js`.
+  - The artifact `supabase/deploy-artifacts/finance/index.js` is
+    **228,285 bytes, sha256
+    `6d2588ffacb69658ae198f1f184d1b9e215635f64e4c8b104983bf644e5a3534`**.
+  - The deployed file (read back with `get_edge_function`) has the same
+    sha256.
+  - Source sha256
+    `2cdf17f932672c953eb3d2eae19d409faef9bea6d014a8b2873ed89696f25bef`.
+  - `node scripts/build-finance-bundle.mjs --check` → MATCH. Run it
+    from the repo root; from `tests/` the esbuild paths differ, which is
+    a pre-existing limitation.
+  - The only import is `jsr:@supabase/supabase-js@2`, with no GitHub
+    runtime import.
+
+**Live TEST proof** (2026-09-30, `finance` v14, real HTTP via `pg_net`):
+
+| # | Check | Result |
+|---|---|---|
+| F | Migrated fixtures | Lists (Parkside, St Anne's) and reads: the 5 migrated rows → `awaiting_external_issue`, `receivable:false`, `invoiceDate`/`dueDate`/`issuedAt`/`issuedBy` null, `officialNumber` null, `numbering.status` `pending_external`, external all null, `frozenAt` kept. History of `FIV-900D5F407D29`: `prepared_for_external_issue` at 16:21:17 then its legacy credit note. The 4 Hub rows → `issued`, `receivable:true`, dates set |
+| A | Hub authority | Settings → Hub. Credit `FCN-3037C41EFDBB` on `FIV-8849E14D2866`, then replacement `FID-A7BA1FE3589A` (**45 days `original_invoice`**, PO kept), Ready, issue → 201 `outcome:"issued"`, **`FIV-F8C77A15446E` = `TEST-INV-001005`**, status `issued`, invoice date 2026-09-30, **due 2026-11-14**, issuedAt = frozenAt, `receivable:true`, history `issued` |
+| B | Xero authority | Credit `FCN-49D8EE011CEA` on `FIV-B5EAFFE9FC25`, then replacement `FID-C83F29E34A73` (30 days `original_invoice`, PO kept), Ready. Settings → Xero. Issue → 201 **`outcome:"prepared_for_external_issue"`**, **`FIV-D9A443B0F2CA`**: status `awaiting_external_issue`, `officialNumber` null (`pending_external`), external null, invoice/due date null, issuedAt/By null, frozenAt 19:09:47.412Z, `receivable:false`. Audit: `finance_invoice.prepared_for_external_issue` + `finance_invoice_draft.prepared_for_external_issue` (context `invoiceStatus: awaiting_external_issue`), **no `…issued` event**. `Next Invoice Number` stayed 1006 |
+| C | Duplicate | Re-issue `FID-C83F29E34A73` → 409 `draft_already_issued` ("already been issued as FIV-D9A443B0F2CA"). A first attempt sent in the same transaction as other writes got 409 `finance_commercial_busy` (the lock working); nothing was written |
+| D | Claim protected | Eligible work: `recANlB7miA08AudD:2026-09-11` is in `claimed` (reported against its correction chain's original claim), not `available`. New draft for Parkside September → 409 `no_eligible_work` |
+| E | Correction refused | Credit on `FIV-D9A443B0F2CA` → 409 `invoice_not_issued` ("cannot be credited; nothing was changed"). Replacement from the legacy `FCN-1473D452224D` (original `FIV-900D5F407D29`, awaiting) → 409 `invoice_not_issued` ("cannot be corrected") |
+| — | Access / module / tenant | Coach, Parent → 403 `management_required`. No token → 401. Tenant key in query and in body → 400 `tenant_param_rejected`. Module off: read and credit → 403 `finance_module_disabled`, then restored ON → 200 |
+| G | Needs Attention | Clear, total 0 |
+| H | Deployment | Deployed sha256 = committed artifact = manifest (above) |
+| — | Audit exact | 123 → 146 = 5 migration + **18** proof events: 2 × settings.updated; 2 × credit_note.created + 2 × invoice.credited; 2 × draft.created + 2 × correction_initiated; 2 × marked_ready; 1 × invoice.issued + 1 × draft.issued; 1 × invoice.prepared_for_external_issue + 1 × draft.prepared_for_external_issue; 2 × replacement_linked. No event for any refused, 400 / 401 / 403 / 409 or read request |
+
+### FIN6.29 Resting TEST data after the final correction
+
+- **Finance Settings (rev 13):** `Invoice Number Authority = Xero`,
+  prefix `TEST-INV-`, 6 digits, **next 1006**.
+- **Invoices:** 11 in total.
+
+  | Invoice | Status | Official number | Note |
+  |---|---|---|---|
+  | `FIV-900D5F407D29`, `FIV-0747B88A7BF8`, `FIV-E6600556B017`, `FIV-BA23AA9365B6`, `FIV-6015A9D88999` | Awaiting external issue | — | migrated (FIN6.27) |
+  | `FIV-D9A443B0F2CA` | Awaiting external issue | — | proof B; replaces `FIV-B5EAFFE9FC25` via `FCN-49D8EE011CEA` |
+  | `FIV-8849E14D2866` | Credited | `TEST-INV-001001` | replaced by `FIV-F8C77A15446E` |
+  | `FIV-B5EAFFE9FC25` | Credited | `TEST-INV-001002` | replaced by `FIV-D9A443B0F2CA` |
+  | `FIV-E9189872C36C` | Issued | `TEST-INV-001003` | |
+  | `FIV-BDF2992D20D3` | Issued | `TEST-INV-001004` | |
+  | `FIV-F8C77A15446E` | Issued | `TEST-INV-001005` | proof A; 45 days, due 2026-11-14 |
+
+- **Baseline:**
+  - `module_finance` ON;
+  - one active grant: Manage `94c83c89-558d-4f8e-a850-709f5d3b49d4`;
+  - write and settings lock tables empty;
+  - `f2probe` schema dropped;
+  - no Xero call, no payment, no email, no PDF.
