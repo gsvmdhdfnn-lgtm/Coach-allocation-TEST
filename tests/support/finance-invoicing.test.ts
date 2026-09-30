@@ -36,7 +36,7 @@ import { clientFromRow } from "./finance-commercial-mapping.ts";
 import { BILLING_TABLES } from "./finance-billing-mapping.ts";
 import { type OverrideInput, readOccurrenceBilling, writeOverride } from "./finance-billing-orchestrator.ts";
 import { parseOverrideCreate } from "./finance-billing.ts";
-import { checkInvoicingQuery, formatDay, matchInvoicingRoute, parseDetails, parseDraftCreate, parseReady, parseReasonBody } from "./finance-invoicing.ts";
+import { checkInvoicingQuery, formatDay, matchInvoicingRoute, parseDetails, parseDraftCreate, parseReady, parseReasonBody, parseTermsException } from "./finance-invoicing.ts";
 import { INVOICING_TABLES, buildDrafts, buildLines } from "./finance-invoicing-mapping.ts";
 import { WRITE_BATCH } from "./finance-invoicing-repository.ts";
 import { type DraftWrite, listClientDrafts, markLineNotBillable, readDraft, readEligibleWork, writeDraft } from "./finance-invoicing-orchestrator.ts";
@@ -324,7 +324,7 @@ async function main() {
     const e2 = (await elig(ids.parkside)).body;
     ck("EL9. Missing commercial terms on the date is named (withoutTerms), never a £0 amount and never available", e2.withoutTerms.some((x: any) => x.occurrenceId === brk && x.outcome === "missing_commercial_terms" && x.value === null) && !e2.available.some((x: any) => x.occurrenceId === brk) && e2.summary.withoutTerms === 1);
     const d = await create(ids.parkside);
-    ck("EL10. The draft has lines only for available work; work without terms is a warning (terms cannot be backdated), not a blocker", d.httpStatus === 201 && d.body.lines.length === 3 && d.body.lines.every((l: any) => Number(l.gross) > 0) && d.body.review.warnings.some((w: any) => w.code === "work_without_terms" && w.occurrenceIds.includes(brk)) && !d.body.review.blockers.some((x: any) => x.code === "unresolved_configuration"));
+    ck("EL10. The draft has lines only for available work; delivered work without terms is a BLOCKER (missing_commercial_terms), never a £0 line", d.httpStatus === 201 && d.body.lines.length === 3 && d.body.lines.every((l: any) => Number(l.gross) > 0) && !lineOf(d.body, brk) && d.body.review.blockers.some((x: any) => x.code === "missing_commercial_terms" && x.occurrenceIds.includes(brk)) && d.body.review.readyForIssue === false && !d.body.review.warnings.some((w: any) => w.code === "work_without_terms") && !d.body.review.blockers.some((x: any) => x.code === "unresolved_configuration"));
     const bad = addOcc(S.ppa, "2026-09-25", { status: "Rescheduled?" });
     const r2 = (await read(d.body.draft.draftId)).body;
     ck("EL11. A genuine configuration error in the client's work for the period blocks the draft (unresolved_configuration)", r2.review.blockers.some((x: any) => x.code === "unresolved_configuration" && x.occurrenceIds.includes(bad)) && r2.review.readyForIssue === false);
@@ -760,6 +760,63 @@ async function main() {
     ck("RT6. Exclude / not-billable / reopen need a reason; refresh / restore may be empty", (parseReasonBody("{}", true, isTenantKey) as any).fields.reason === "is required" && (parseReasonBody("", false, isTenantKey) as any).ok && (parseReasonBody('{"reason":"x"}', true, isTenantKey) as any).reason === "x");
     ck("RT7. Details: at least one field; PO text <= 100; terms 0-365 or null; Ready needs a revision", (parseDetails('{"reason":"x"}', isTenantKey) as any).code === "invalid_body" && (parseDetails(`{"poNumber":"${"x".repeat(101)}"}`, isTenantKey) as any).fields.poNumber && (parseDetails('{"paymentTermsDays":400}', isTenantKey) as any).fields.paymentTermsDays && (parseDetails('{"paymentTermsDays":null}', isTenantKey) as any).req.paymentTermsDays === null && (parseReady("{}", isTenantKey) as any).fields.revision);
     ck("RT8. Description date format", formatDay("2026-09-04") === "4 Sep 2026" && formatDay("2026-12-25") === "25 Dec 2026");
+  }
+
+  // ===== MT. Missing historical terms: blocker + draft-specific approved exception =====
+  {
+    const ids = await seed();
+    const ok1 = addOcc(S.ppa, "2026-09-10");
+    world.tables[TABLES.terms].find((t) => t.fields["Amount (Minor Units)"] === 6000)!.fields["Effective From"] = "2026-09-20";
+    const brk = addOcc(S.breakfast, "2026-09-10");
+    const brkAwait = addOcc(S.breakfast, "2026-09-11", { conf: "Awaiting Confirmation" });
+    const brkCancel = addOcc(S.breakfast, "2026-09-12", { status: "Cancelled" });
+    const e = (await elig(ids.parkside)).body;
+    ck("MT1. Only delivered + confirmed work without terms is 'withoutTerms'; awaiting is pending, cancelled is not invoiceable", e.withoutTerms.length === 1 && e.withoutTerms[0].occurrenceId === brk && e.pending.some((x: any) => x.occurrenceId === brkAwait) && e.notInvoiceable.some((x: any) => x.occurrenceId === brkCancel) && !e.withoutTerms.some((x: any) => [brkAwait, brkCancel].includes(x.occurrenceId)));
+    const d = (await create(ids.parkside)).body;
+    const id = d.draft.draftId;
+    const mtBlock = (b: any) => b.review.blockers.find((x: any) => x.code === "missing_commercial_terms");
+    ck("MT2. Past delivered work with missing terms creates a blocker naming exactly that occurrence; no line (and no £0 line) for it", JSON.stringify(mtBlock(d)?.occurrenceIds) === JSON.stringify([brk]) && d.review.readyForIssue === false && d.lines.length === 1 && lineOf(d, ok1) && !d.lines.some((l: any) => l.occurrenceId === brk) && d.review.approvedExceptions.length === 0 && d.draft.missingTermsExceptions.length === 0);
+    const po = (await details(id, '{"poNumber":"PO-1"}')).body;
+    world.audit = [];
+    calls = [];
+    const r1 = await ready(id, po.draft.revision);
+    ck("MT3. Ready is refused while the missing-terms blocker is unresolved (409 draft_has_blockers), nothing written or audited", r1.httpStatus === 409 && r1.code === "draft_has_blockers" && "missing_commercial_terms" in (r1.fields ?? {}) && airtableWrites().length === 0 && world.audit.length === 0);
+    const bad = [parseTermsException('{"occurrenceIds":["' + brk + '"]}', isTenantKey), parseTermsException('{"occurrenceIds":[],"reason":"x"}', isTenantKey), parseTermsException('{"occurrenceIds":["' + brk + '","' + brk + '"],"reason":"x"}', isTenantKey), parseTermsException('{"occurrenceIds":["' + brk + '"],"reason":"x","organisationId":"ORG-2"}', isTenantKey), parseTermsException('{"occurrenceIds":"' + brk + '","reason":"x"}', isTenantKey)] as any[];
+    ck("MT4. An exception needs exact occurrence ids (1-50, no repeats) and a reason; tenant keys rejected", bad.every((x) => x.ok === false) && bad[0].fields.reason === "is required" && bad[3].code === "tenant_param_rejected");
+    const exc = (occurrenceIds: string[], reason = "Legacy price never agreed - leave off this invoice, resolve in Finance later", caller: any = mgr) => DW({ route: "draft.terms_exception", draftId: id, occurrenceIds, reason }, caller);
+    const n1 = await exc([ok1]);
+    const n2 = await exc([brkAwait]);
+    const n3 = await exc([brk, brkCancel]);
+    ck("MT5. Only delivered + confirmed missing-terms work of this draft qualifies (409 occurrence_not_missing_terms) - no broad bypass; nothing written", [n1, n2, n3].every((x) => x.httpStatus === 409 && x.code === "occurrence_not_missing_terms") && airtableWrites().length === 0 && world.audit.length === 0);
+    const v = await exc([brk], "x", viewer);
+    ck("MT6. Finance View cannot record an exception (403 finance_manage_required)", v.code === "finance_manage_required" && airtableWrites().length === 0);
+    const termsBefore = JSON.stringify(world.tables[TABLES.terms]);
+    const a = await exc([brk]);
+    const ap = a.body.review.approvedExceptions;
+    ck("MT7. An approved exception clears the blocker; review shows it apart from blockers (reason, actor, time, still unresolved)", a.httpStatus === 200 && a.body.changed === true && !mtBlock(a.body) && a.body.review.readyForIssue === true && ap.length === 1 && ap[0].occurrenceId === brk && ap[0].type === "missing_commercial_terms" && ap[0].reason.startsWith("Legacy price") && ap[0].approvedBy === MGR && ap[0].approvedAt === NOW.toISOString() && ap[0].stillMissingTerms === true && a.body.review.warnings.some((w: any) => w.code === "missing_terms_exception_approved" && w.occurrenceIds.includes(brk)) && a.body.draft.missingTermsExceptions.length === 1 && a.body.draft.revision === po.draft.revision + 1);
+    ck("MT8. Audited exactly once: missing_terms_exception_approved with the reason and the exact occurrence", world.audit.length === 1 && world.audit[0].event_type === "finance_invoice_draft.missing_terms_exception_approved" && world.audit[0].reason.startsWith("Legacy price") && JSON.stringify(world.audit[0].context.occurrenceIds) === JSON.stringify([brk]) && world.audit[0].after.approved[0].occurrenceId === brk);
+    ck("MT9. No fake line and no F3 change: lines + totals unchanged, commercial terms untouched, occurrence still has no terms in F4", a.body.lines.length === 1 && a.body.draft.totals.gross === po.draft.totals.gross && JSON.stringify(world.tables[TABLES.terms]) === termsBefore && (await elig(ids.parkside)).body.withoutTerms.some((x: any) => x.occurrenceId === brk));
+    world.audit = [];
+    calls = [];
+    const again = await exc([brk], "a different reason");
+    ck("MT10. Re-approving an approved occurrence is a no-op (kept as recorded, never overwritten; no write, no audit)", again.body.changed === false && again.body.review.approvedExceptions[0].reason.startsWith("Legacy price") && airtableWrites().length === 0 && world.audit.length === 0);
+    const ok2 = addOcc(S.ppa, "2026-09-11");
+    const f = (await refresh(id)).body;
+    ck("MT11. A deliberate refresh keeps the draft's approved exceptions", lineOf(f, ok2) !== undefined && f.draft.missingTermsExceptions.length === 1 && !mtBlock(f));
+    const rd = await ready(id, f.draft.revision);
+    ck("MT12. With the exception recorded, the draft can be marked Ready", rd.httpStatus === 200 && rd.body.draft.status === "ready_for_issue" && rd.body.review.approvedExceptions.length === 1);
+    const late = await exc([brk]);
+    ck("MT13. A Ready draft is frozen: no exception can be recorded on it (409 draft_not_open)", late.code === "draft_not_open");
+    addOcc(S.ppa, "2026-09-15");
+    const d2 = (await create(ids.parkside)).body;
+    ck("MT14. The exception is draft-specific: another draft for the period is blocked again for the same occurrence", JSON.stringify(mtBlock(d2)?.occurrenceIds) === JSON.stringify([brk]) && d2.draft.missingTermsExceptions.length === 0);
+    const row = draftRows().find((r) => r.fields["Draft ID"] === id)!;
+    const variant = (v: unknown) => buildDrafts([{ id: row.id, fields: { ...row.fields, "Missing Terms Exceptions": v } }], ORG_REC) as any;
+    const good = JSON.parse(row.fields["Missing Terms Exceptions"]);
+    ck("MT15. Stored exceptions are validated on read: bad JSON, missing reason, duplicates or extra keys are invalid data (never guessed)", variant(row.fields["Missing Terms Exceptions"]).ok === true && variant(null).ok === true && ["{", JSON.stringify([{ ...good[0], reason: "" }]), JSON.stringify([good[0], good[0]]), JSON.stringify([{ ...good[0], price: 0 }]), JSON.stringify({})].every((x) => variant(x).ok === false));
+    const m1 = matchInvoicingRoute(`invoice-drafts/${id}/missing-terms-exceptions`, "POST") as any;
+    const m2 = matchInvoicingRoute(`invoice-drafts/${id}/missing-terms-exceptions`, "GET") as any;
+    ck("MT16. Route: POST invoice-drafts/{id}/missing-terms-exceptions (other methods 405)", m1.status === "match" && m1.route.name === "draft.terms_exception" && m2.status === "method");
   }
 
   // ===== Z. Code / drift =====

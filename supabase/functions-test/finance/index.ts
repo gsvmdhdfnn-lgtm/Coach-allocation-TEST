@@ -68,7 +68,7 @@ import {
 import { type CommercialDeps, type WriteInput, readCommercial, writeCommercial } from "./finance-commercial-orchestrator.ts";
 import { checkRangeQuery, matchBillingRoute, parseOverrideCreate, parseOverrideRemove } from "./finance-billing.ts";
 import { readOccurrenceBilling, readSessionBilling, writeOverride } from "./finance-billing-orchestrator.ts";
-import { checkInvoicingQuery, matchInvoicingRoute, parseDetails, parseDraftCreate, parseReady, parseReasonBody } from "./finance-invoicing.ts";
+import { checkInvoicingQuery, matchInvoicingRoute, parseDetails, parseDraftCreate, parseReady, parseReasonBody, parseTermsException } from "./finance-invoicing.ts";
 import { listClientDrafts, markLineNotBillable, readDraft, readEligibleWork, writeDraft } from "./finance-invoicing-orchestrator.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
@@ -255,6 +255,11 @@ async function handleInvoicing(req: Request, url: URL, match: NonNullable<Return
     const p = parseReady(raw, isTenantKey);
     if (!p.ok) return commercialResponse({ status: "error", ...p });
     return commercialResponse(await writeDraft(deps, caller, { route: "draft.ready", draftId: r.params.draftId, revision: p.revision, reason: p.reason }));
+  }
+  if (r.name === "draft.terms_exception") {
+    const p = parseTermsException(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await writeDraft(deps, caller, { route: "draft.terms_exception", draftId: r.params.draftId, occurrenceIds: p.occurrenceIds, reason: p.reason }));
   }
   const required = r.name === "draft.reopen" || r.name === "line.exclude" || r.name === "line.not_billable";
   const p = parseReasonBody(raw, required, isTenantKey);

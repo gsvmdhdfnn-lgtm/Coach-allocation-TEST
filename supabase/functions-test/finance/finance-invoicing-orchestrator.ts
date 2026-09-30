@@ -312,7 +312,8 @@ export type DraftWrite =
   | { route: "line.not_billable"; draftId: string; lineId: string; reason: string; overrideId: string }
   | { route: "draft.details"; draftId: string; req: DetailsRequest }
   | { route: "draft.ready"; draftId: string; revision: number; reason: string | null }
-  | { route: "draft.reopen"; draftId: string; reason: string };
+  | { route: "draft.reopen"; draftId: string; reason: string }
+  | { route: "draft.terms_exception"; draftId: string; occurrenceIds: string[]; reason: string };
 
 type AuditRow = ReturnType<typeof draftAuditEvent>;
 type Plan = { kind: "noop"; draft: Draft; lines: Line[] } | { kind: "run"; httpStatus: 200 | 201; run: (txn: DraftTxn) => Promise<{ events: AuditRow[]; draft: Draft; lines: Line[] }> } | Fail;
@@ -326,6 +327,7 @@ const ROUTE_PATHS: Record<DraftWrite["route"], (i: any) => string> = {
   "draft.details": (i) => `POST /invoice-drafts/${i.draftId}/details`,
   "draft.ready": (i) => `POST /invoice-drafts/${i.draftId}/ready`,
   "draft.reopen": (i) => `POST /invoice-drafts/${i.draftId}/reopen`,
+  "draft.terms_exception": (i) => `POST /invoice-drafts/${i.draftId}/missing-terms-exceptions`,
 };
 
 export async function writeDraft(deps: InvoicingDeps, caller: FinanceCaller, input: DraftWrite): Promise<Ok | Fail> {
@@ -457,6 +459,7 @@ function planCreate(deps: InvoicingDeps, cw: ClientWork, drafts: Draft[], req: C
       readyAt: null,
       updatedBy: m.userId,
       updatedAt: m.at,
+      termsExceptions: [],
     },
     lines
   );
@@ -548,6 +551,34 @@ function planDraftWrite(deps: InvoicingDeps, cw: ClientWork, stored: StoredDraft
           ],
           draft: after,
           lines: allLines,
+        };
+      },
+    };
+  }
+
+  if (input.route === "draft.terms_exception") {
+    // Only delivered + confirmed work of this client + period that has NO commercial terms on its date qualifies - exactly the missing_commercial_terms blocker.
+    const missing = new Map(cw.work.noTerms.map((r) => [r.occurrence.occurrenceId, r]));
+    const notMissing = input.occurrenceIds.filter((id) => !missing.has(id));
+    if (notMissing.length) return fail(409, "occurrence_not_missing_terms", `An approved exception only covers delivered, confirmed work of this draft's client and period that has no commercial terms on its date - not: ${notMissing.join(", ")}`);
+    const have = new Set(before.termsExceptions.map((e) => e.occurrenceId));
+    const fresh = input.occurrenceIds.filter((id) => !have.has(id));
+    // An exception already recorded is kept as it is (never overwritten).
+    if (!fresh.length) return { kind: "noop", draft: before, lines };
+    const added = fresh.map((id) => {
+      const r = missing.get(id) as Resolution;
+      return { occurrenceId: id, occurrenceDate: r.occurrence.date, serviceId: r.service?.service.serviceId ?? r.occurrence.financeServiceRef, reason: input.reason, approvedBy: m.userId, approvedAt: m.at };
+    });
+    const after = bump({ ...before, termsExceptions: [...before.termsExceptions, ...added] }, lines);
+    return {
+      kind: "run",
+      httpStatus: 200,
+      run: async (txn) => {
+        await txn.patch(INVOICING_TABLES.drafts, [patchDraft(after)]);
+        return {
+          events: [m.ev(DRAFT_EVENTS.missingTermsExceptionApproved, before.draftId, { missingTermsExceptions: before.termsExceptions.map((e) => e.occurrenceId), revision: before.revision }, { approved: added, revision: after.revision }, input.reason, { occurrenceIds: fresh })],
+          draft: after,
+          lines,
         };
       },
     };

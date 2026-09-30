@@ -26,6 +26,7 @@ import {
   type Line,
   type LineStatus,
   type QuantitySource,
+  type TermsException,
   type TermsSource,
   type UnitAmountSource,
   CLIENT_ID_PATTERN,
@@ -61,6 +62,7 @@ export const FI = {
     readyAt: "Ready At",
     changedBy: "Last Changed By User ID",
     changedAt: "Last Changed At",
+    termsExceptions: "Missing Terms Exceptions",
   },
   line: {
     id: "Line ID",
@@ -116,6 +118,39 @@ const minor = (v: unknown): Minor | undefined => (v === undefined || v === null 
 
 type Parsed<T> = { ok: true; recordId: string; value: T } | { ok: false; problem: string };
 
+/**
+ * The draft's approved missing-terms exceptions: blank = none; otherwise a
+ * JSON array of { occurrenceId, occurrenceDate, serviceId, reason,
+ * approvedBy, approvedAt }, one per occurrence. Anything else is invalid
+ * data (never guessed).
+ */
+function termsExceptionsOf(v: unknown): TermsException[] | undefined {
+  if (v === undefined || v === null || (typeof v === "string" && !v.trim())) return [];
+  if (typeof v !== "string") return undefined;
+  let a: unknown;
+  try {
+    a = JSON.parse(v);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(a)) return undefined;
+  const out: TermsException[] = [];
+  for (const e of a) {
+    if (!e || typeof e !== "object" || Array.isArray(e)) return undefined;
+    const keys = Object.keys(e).sort().join(",");
+    if (keys !== "approvedAt,approvedBy,occurrenceDate,occurrenceId,reason,serviceId") return undefined;
+    const { occurrenceId, occurrenceDate, serviceId, reason, approvedBy, approvedAt } = e as Record<string, unknown>;
+    if (typeof occurrenceId !== "string" || !OCCURRENCE_ID_PATTERN.test(occurrenceId)) return undefined;
+    if (!isIsoDate(occurrenceDate)) return undefined;
+    if (serviceId !== null && (typeof serviceId !== "string" || !ID_PATTERNS.service.test(serviceId))) return undefined;
+    if (typeof reason !== "string" || !reason.trim() || reason.length > REASON_MAX) return undefined;
+    if (typeof approvedBy !== "string" || !approvedBy.trim() || typeof approvedAt !== "string" || !approvedAt.trim()) return undefined;
+    if (out.some((x) => x.occurrenceId === occurrenceId)) return undefined;
+    out.push({ occurrenceId, occurrenceDate: occurrenceDate as string, serviceId: serviceId as string | null, reason, approvedBy, approvedAt });
+  }
+  return out;
+}
+
 export function draftFromRow(r: Row): Parsed<Draft> {
   const f = r.fields ?? {};
   const x = FI.draft;
@@ -147,6 +182,8 @@ export function draftFromRow(r: Row): Parsed<Draft> {
   if (minor(net) === undefined || minor(vat) === undefined || minor(gross) === undefined || int(included, 0, 100_000) === undefined) return bad("invalid totals");
   const revision = int(f[x.revision], 1, Number.MAX_SAFE_INTEGER);
   if (revision === undefined) return bad("invalid Revision");
+  const termsExceptions = termsExceptionsOf(f[x.termsExceptions]);
+  if (termsExceptions === undefined) return bad("invalid Missing Terms Exceptions");
   return {
     ok: true,
     recordId: r.id,
@@ -173,6 +210,7 @@ export function draftFromRow(r: Row): Parsed<Draft> {
       readyAt: str(f[x.readyAt]),
       updatedBy: str(f[x.changedBy]),
       updatedAt: str(f[x.changedAt]),
+      termsExceptions,
     },
   };
 }
@@ -312,6 +350,7 @@ export function draftFields(d: Draft, meta: { userId: string; at: string }, orgR
     [x.readyAt]: d.readyAt,
     [x.changedBy]: meta.userId,
     [x.changedAt]: meta.at,
+    [x.termsExceptions]: d.termsExceptions.length ? JSON.stringify(d.termsExceptions) : null,
   };
 }
 

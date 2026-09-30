@@ -25,13 +25,18 @@
  *     its own for it.
  *   - An Included line is the claim on an occurrence: one occurrence may be
  *     Included on at most one line anywhere.
+ *   - Delivered + confirmed work with NO commercial terms on its date could
+ *     change the total, so it BLOCKS Ready - unless Management records a
+ *     draft-specific approved exception for that exact occurrence (reason
+ *     required). The exception only lets THIS draft leave the work off; it
+ *     never prices it, never makes a £0 line and never touches F3.
  *   - Draft and Ready for issue are the only states. No issue, number,
  *     sending, payment, credit or overdue (F6/F7).
  */
 import { type Minor, type VatTreatment, formatMinor, formatRatePercent } from "./finance-money.ts";
 import { isIsoDate } from "./finance-effective-dating.ts";
 import { type ChargeType, type Client, CHARGE_TYPE_LABELS, REASON_MAX, auditEvent, describeTerms } from "./finance-commercial.ts";
-import { type EligibilityStatus, type Outcome, type Resolution, BILLING_CONTRACT, ELIGIBILITY_LABELS, MAX_RANGE_DAYS, OUTCOME_LABELS, isActiveOverride, publicOverride } from "./finance-billing.ts";
+import { type EligibilityStatus, type Outcome, type Resolution, BILLING_CONTRACT, ELIGIBILITY_LABELS, MAX_RANGE_DAYS, OCCURRENCE_ID_PATTERN, OUTCOME_LABELS, isActiveOverride, publicOverride } from "./finance-billing.ts";
 
 export const INVOICING_CONTRACT = "finance-invoicing-v1";
 export const ENTITY_DRAFT = "finance_invoice_draft";
@@ -46,6 +51,7 @@ export const DRAFT_EVENTS = {
   paymentTermsChanged: "finance_invoice_draft.payment_terms_changed",
   markedReady: "finance_invoice_draft.marked_ready",
   returnedToDraft: "finance_invoice_draft.returned_to_draft",
+  missingTermsExceptionApproved: "finance_invoice_draft.missing_terms_exception_approved",
 } as const;
 
 export const DRAFT_ID_PATTERN = /^FID-[0-9A-F]{12}$/;
@@ -58,6 +64,8 @@ export function newDraftId(prefix: "FID" | "FIL", randomHex: string): string {
 /** A draft covers at most one F4 range (a month or a school term fits comfortably). */
 export const MAX_PERIOD_DAYS = MAX_RANGE_DAYS;
 export const PO_NUMBER_MAX = 100;
+/** Occurrences one approved-exception request may name. */
+export const EXCEPTION_BATCH_MAX = 50;
 
 // ---------------------------------------------------------------------
 // Records
@@ -79,6 +87,20 @@ export const LINE_STATUS_LABELS: Record<LineStatus, string> = {
 export const TERMS_SOURCES = ["client", "finance_settings", "invoice_override"] as const;
 export type TermsSource = (typeof TERMS_SOURCES)[number];
 export const TERMS_SOURCE_LABELS: Record<TermsSource, string> = { client: "Client payment terms", finance_settings: "Finance Settings default", invoice_override: "Set on this invoice" };
+
+/**
+ * A draft-specific approved exception: "leave this delivered occurrence,
+ * which has no commercial terms on its date, off THIS draft". Recorded once,
+ * never edited; the occurrence itself stays unresolved in Finance.
+ */
+export interface TermsException {
+  occurrenceId: string;
+  occurrenceDate: string;
+  serviceId: string | null;
+  reason: string;
+  approvedBy: string;
+  approvedAt: string;
+}
 
 export interface Draft {
   draftId: string;
@@ -103,6 +125,8 @@ export interface Draft {
   readyAt: string | null;
   updatedBy: string | null;
   updatedAt: string | null;
+  /** Approved missing-terms exceptions for this draft (append-only). */
+  termsExceptions: TermsException[];
 }
 
 export type QuantitySource = "default_commercial_quantity" | "occurrence_override" | "per_session";
@@ -169,11 +193,12 @@ export interface Work {
   /** Setup problems for this client's work in the period (blockers for a draft). */
   setup: Resolution[];
   /**
-   * Delivered work of the client's services with NO commercial terms on its
-   * date (F4 missing_commercial_terms). Never priced, never a £0 line. A
-   * warning, not a blocker: F3 terms cannot be backdated, so a past date
-   * without terms can never be "fixed" - blocking on it would block every
-   * draft for the period for ever.
+   * Delivered AND confirmed work of the client's services with NO commercial
+   * terms on its date (F4 missing_commercial_terms). Never priced, never a
+   * £0 line. It could change the invoice total, so on a draft it is a
+   * BLOCKER unless the draft carries an approved exception for it.
+   * (Missing-terms work still awaiting confirmation is `pending`; cancelled,
+   * postponed or not-yet-delivered missing-terms work is `other`.)
    */
   noTerms: Resolution[];
   /** Everything else, named - never money (not billable, cancelled, postponed, not delivered yet, inactive, deferred). */
@@ -196,7 +221,11 @@ export function classifyWork(rs: readonly Resolution[], claims: readonly Claim[]
       if (claim) w.claimed.push({ resolution: r, claim });
       else w.available.push(r);
     } else if (SETUP_OUTCOMES.includes(r.outcome)) w.setup.push(r);
-    else if (r.outcome === "missing_commercial_terms") w.noTerms.push(r);
+    else if (r.outcome === "missing_commercial_terms") {
+      if (r.eligibility.status === "eligible") w.noTerms.push(r);
+      else if (r.eligibility.status && PENDING_STATUSES.includes(r.eligibility.status)) w.pending.push(r);
+      else w.other.push(r);
+    }
     else if (r.outcome === "not_eligible" && r.eligibility.status && PENDING_STATUSES.includes(r.eligibility.status)) w.pending.push(r);
     else w.other.push(r);
   }
@@ -418,10 +447,24 @@ export interface Check {
   occurrenceIds?: string[];
 }
 
+export interface ApprovedException {
+  type: "missing_commercial_terms";
+  occurrenceId: string;
+  date: string;
+  serviceId: string | null;
+  reason: string;
+  approvedBy: string;
+  approvedAt: string;
+  /** Whether the occurrence still has no commercial terms (false: resolved since - it is then normal work again). */
+  stillMissingTerms: boolean;
+}
+
 export interface Review {
   readyForIssue: boolean;
   blockers: Check[];
   warnings: Check[];
+  /** Approved exceptions on this draft - shown apart from unresolved blockers. */
+  approvedExceptions: ApprovedException[];
   totals: { net: string; vat: string; gross: string; includedLines: number; reconciles: boolean };
 }
 
@@ -493,13 +536,26 @@ export function reviewDraft(input: { draft: Draft; lines: readonly Line[]; clien
   if (ov.length) w({ code: "billing_overrides", message: `${ov.length} line(s) use a Management billing override (quantity or amount)`, lineIds: ov.map((l) => l.lineId) });
   const zero = included.filter((l) => l.grossMinor === 0);
   if (zero.length) w({ code: "zero_value_lines", message: `${zero.length} included line(s) are worth £0.00`, lineIds: zero.map((l) => l.lineId) });
-  if (work.noTerms.length) {
-    w({
-      code: "work_without_terms",
-      message: `${work.noTerms.length} occurrence(s) of this client's services in the period have no commercial terms on their date, so they are not on this invoice (${work.noTerms.slice(0, 3).map((r) => r.occurrence.date).join(", ")}${work.noTerms.length > 3 ? ", ..." : ""})`,
-      occurrenceIds: work.noTerms.map((r) => r.occurrence.occurrenceId),
+  // Delivered + confirmed work without commercial terms: a blocker unless an approved exception covers that exact occurrence.
+  const excepted = new Set(draft.termsExceptions.map((e) => e.occurrenceId));
+  const unresolvedTerms = work.noTerms.filter((r) => !excepted.has(r.occurrence.occurrenceId));
+  const coveredTerms = work.noTerms.filter((r) => excepted.has(r.occurrence.occurrenceId));
+  const dates = (rs: Resolution[]) => `${rs.slice(0, 3).map((r) => r.occurrence.date).join(", ")}${rs.length > 3 ? ", ..." : ""}`;
+  if (unresolvedTerms.length) {
+    b({
+      code: "missing_commercial_terms",
+      message: `${unresolvedTerms.length} delivered and confirmed occurrence(s) of this client's services have no commercial terms on their date (${dates(unresolvedTerms)}) - they could change this invoice's total. Fix the commercial setup, or record an approved exception to leave them off this invoice`,
+      occurrenceIds: unresolvedTerms.map((r) => r.occurrence.occurrenceId),
     });
   }
+  if (coveredTerms.length) {
+    w({
+      code: "missing_terms_exception_approved",
+      message: `${coveredTerms.length} occurrence(s) without commercial terms are left off this invoice by an approved exception (${dates(coveredTerms)}) - they stay unresolved in Finance`,
+      occurrenceIds: coveredTerms.map((r) => r.occurrence.occurrenceId),
+    });
+  }
+  const stillMissing = new Set(work.noTerms.map((r) => r.occurrence.occurrenceId));
   if (work.pending.length) w({ code: "unconfirmed_work", message: `${work.pending.length} delivered occurrence(s) in the period are not confirmed yet and are not on this invoice`, occurrenceIds: work.pending.map((r) => r.occurrence.occurrenceId) });
   const onDraft = new Set(lines.filter((l) => l.status === "included" || l.status === "excluded").map((l) => l.occurrenceId));
   const fresh = work.available.filter((r) => !onDraft.has(r.occurrence.occurrenceId));
@@ -509,6 +565,7 @@ export function reviewDraft(input: { draft: Draft; lines: readonly Line[]; clien
     readyForIssue: blockers.length === 0,
     blockers,
     warnings,
+    approvedExceptions: draft.termsExceptions.map((e) => ({ type: "missing_commercial_terms" as const, occurrenceId: e.occurrenceId, date: e.occurrenceDate, serviceId: e.serviceId, reason: e.reason, approvedBy: e.approvedBy, approvedAt: e.approvedAt, stillMissingTerms: stillMissing.has(e.occurrenceId) })),
     totals: { net: formatMinor(t.netMinor), vat: formatMinor(t.vatMinor), gross: formatMinor(t.grossMinor), includedLines: t.includedLines, reconciles },
   };
 }
@@ -529,6 +586,7 @@ export function publicDraft(d: Draft) {
     po: { required: d.poRequired, number: d.poNumber, overrideReason: d.poOverrideReason },
     totals: { currency: "GBP", net: formatMinor(d.netMinor), vat: formatMinor(d.vatMinor), gross: formatMinor(d.grossMinor), includedLines: d.includedLines },
     revision: d.revision,
+    missingTermsExceptions: d.termsExceptions.map((e) => ({ occurrenceId: e.occurrenceId, date: e.occurrenceDate, serviceId: e.serviceId, reason: e.reason, approvedBy: e.approvedBy, approvedAt: e.approvedAt })),
     createdAt: d.createdAt,
     readyAt: d.readyAt,
     updatedAt: d.updatedAt,
@@ -606,6 +664,7 @@ export const auditDraft = (d: Draft) => ({
   grossMinor: d.grossMinor,
   includedLines: d.includedLines,
   revision: d.revision,
+  missingTermsExceptions: d.termsExceptions.map((e) => e.occurrenceId),
 });
 export const auditLine = (l: Line) => ({ lineId: l.lineId, occurrenceId: l.occurrenceId, status: l.status, termsId: l.termsId, quantity: l.quantity, netMinor: l.netMinor, vatMinor: l.vatMinor, grossMinor: l.grossMinor, overrideIds: l.overrideIds });
 
@@ -752,6 +811,24 @@ export function parseReady(raw: string, isTenantKey: (k: string) => boolean): { 
   return { ok: true, revision: v as number, reason: (r as { ok: true; value: string | null }).value };
 }
 
+/**
+ * POST /invoice-drafts/{id}/missing-terms-exceptions
+ * { occurrenceIds: [exact Occurrence IDs, 1-50, no repeats], reason }.
+ */
+export function parseTermsException(raw: string, isTenantKey: (k: string) => boolean): { ok: true; occurrenceIds: string[]; reason: string } | Invalid {
+  const b = jsonObject(raw, ["occurrenceIds", "reason"], isTenantKey);
+  if (!b.ok) return b;
+  const fields: Record<string, string> = {};
+  const ids = b.body.occurrenceIds;
+  if (!Array.isArray(ids) || ids.length < 1 || ids.length > EXCEPTION_BATCH_MAX) fields.occurrenceIds = `must list 1-${EXCEPTION_BATCH_MAX} exact occurrence ids`;
+  else if (ids.some((id) => typeof id !== "string" || !OCCURRENCE_ID_PATTERN.test(id))) fields.occurrenceIds = "must contain only valid occurrence ids";
+  else if (new Set(ids).size !== ids.length) fields.occurrenceIds = "must not repeat an occurrence id";
+  const r = textOf(b.body.reason, REASON_MAX, true);
+  if (!r.ok) fields.reason = r.error;
+  if (Object.keys(fields).length) return invalid("invalid_input", "Some fields are not valid - nothing was saved", fields);
+  return { ok: true, occurrenceIds: [...(ids as string[])], reason: (r as { ok: true; value: string }).value };
+}
+
 // ---------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------
@@ -759,7 +836,7 @@ export function parseReady(raw: string, isTenantKey: (k: string) => boolean): { 
 export type InvoicingRoute =
   | { name: "eligible.read"; params: Record<string, never> }
   | { name: "drafts.list" | "draft.create"; params: Record<string, never> }
-  | { name: "draft.read" | "draft.refresh" | "draft.details" | "draft.ready" | "draft.reopen"; params: { draftId: string } }
+  | { name: "draft.read" | "draft.refresh" | "draft.details" | "draft.ready" | "draft.reopen" | "draft.terms_exception"; params: { draftId: string } }
   | { name: "line.exclude" | "line.restore" | "line.not_billable"; params: { draftId: string; lineId: string } };
 
 type Match = { status: "match"; route: InvoicingRoute } | { status: "method"; allowed: string[] } | { status: "not_found" } | null;
@@ -778,7 +855,7 @@ export function matchInvoicingRoute(path: string, method: string): Match {
   const draftId = seg[1];
   if (seg.length === 2) return m(["GET"], { name: "draft.read", params: { draftId } });
   if (seg.length === 3) {
-    const name = ({ refresh: "draft.refresh", details: "draft.details", ready: "draft.ready", reopen: "draft.reopen" } as const)[seg[2] as "refresh"];
+    const name = ({ refresh: "draft.refresh", details: "draft.details", ready: "draft.ready", reopen: "draft.reopen", "missing-terms-exceptions": "draft.terms_exception" } as const)[seg[2] as "refresh"];
     return name ? m(["POST"], { name, params: { draftId } }) : { status: "not_found" };
   }
   if (seg.length === 5 && seg[2] === "lines" && LINE_ID_PATTERN.test(seg[3])) {

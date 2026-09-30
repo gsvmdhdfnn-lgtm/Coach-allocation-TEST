@@ -1,0 +1,50 @@
+// Finance deploy artifact (F5 correction): the committed
+// supabase/deploy-artifacts/finance/index.js must be exactly what the
+// committed source builds to, must not import anything from GitHub, and
+// must boot and route requests. Run by tests/run-all.js.
+const { spawnSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { pathToFileURL } = require('url');
+
+const ROOT = path.join(__dirname, '..', '..');
+const ARTIFACT = path.join(ROOT, 'supabase', 'deploy-artifacts', 'finance', 'index.js');
+const results = [];
+const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, extra]);
+
+(async () => {
+  const check = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'build-finance-bundle.mjs'), '--check'], { encoding: 'utf8' });
+  ck('B1. Rebuilding from the committed source reproduces the committed artifact + manifest byte for byte', check.status === 0, check.stdout.trim().split('\n').join(' | '));
+
+  const code = fs.readFileSync(ARTIFACT, 'utf8');
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'supabase', 'deploy-artifacts', 'finance', 'manifest.json'), 'utf8'));
+  ck('B2. No GitHub / raw.githubusercontent import anywhere in the artifact', !/github/i.test(code));
+  ck('B3. The only external import is the jsr supabase-js import the source declares', JSON.stringify(manifest.externalImports) === JSON.stringify(['jsr:@supabase/supabase-js@2']) && (code.match(/from"jsr:[^"]+"/g) || []).length === 1);
+  ck('B4. The manifest records the artifact hash and the pinned esbuild version', manifest.artifactSha256 === require('crypto').createHash('sha256').update(code).digest('hex') && manifest.esbuild === require(path.join(ROOT, 'package.json')).devDependencies.esbuild);
+  ck('B5. The old GitHub-runtime deploy entry is gone', !fs.existsSync(path.join(ROOT, 'supabase', 'deploy-entries')));
+
+  // Boot the artifact with a stub Deno + supabase-js (no network) and route a few requests.
+  let handler = null;
+  const env = { AIRTABLE_BASE_ID: 'appQktredAuGa1X7e', SUPABASE_URL: 'https://dkqubldmfyeuudecxmvh.supabase.co' };
+  globalThis.Deno = { env: { get: (k) => env[k] ?? `test-${k}` }, serve: (h) => { handler = h; } };
+  const stub = 'data:text/javascript,' + encodeURIComponent('export function createClient(){return {auth:{getUser:async()=>({data:{user:null},error:{message:"stub"}})}}}');
+  const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'finbundle-')), 'index.mjs');
+  fs.writeFileSync(tmp, code.replace('"jsr:@supabase/supabase-js@2"', JSON.stringify(stub)));
+  await import(pathToFileURL(tmp).href);
+  ck('B6. The artifact boots (registers its Deno.serve handler)', typeof handler === 'function');
+  const call = (method, p) => handler(new Request(`https://x.supabase.co/functions/v1/finance/${p}`, { method }));
+  const opt = await call('OPTIONS', 'access');
+  const m405 = await call('GET', 'invoice-drafts/FID-0123456789AB/missing-terms-exceptions');
+  const noAuth = await call('POST', 'invoice-drafts/FID-0123456789AB/missing-terms-exceptions');
+  const unknown = await call('GET', 'nope');
+  ck('B7. Routing works: CORS preflight 200, new exception route is POST-only (405), no token 401, unknown 404', opt.status === 200 && m405.status === 405 && noAuth.status === 401 && unknown.status === 404, `${opt.status}/${m405.status}/${noAuth.status}/${unknown.status}`);
+
+  for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
+  const failed = results.filter((r) => r[0] === 'FAIL').length;
+  console.log(`\n${results.length - failed}/${results.length} passing`);
+  process.exit(failed ? 1 : 0);
+})().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
