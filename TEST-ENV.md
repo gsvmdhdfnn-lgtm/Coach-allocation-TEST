@@ -15097,3 +15097,342 @@ terms on its date could change the total.
     was revoked);
   - all lock tables empty; probe schema dropped;
   - no invoice issued, no email sent.
+
+## Finance Foundation — F6 (invoice issue + immutability + credit note / correction lifecycle) — TEST only — 2026-09-30
+
+F6 turns a Ready F5 draft into an **issued, immutable invoice**. It adds
+whole-line **credit notes** and a **correction** path: credit, then a
+scoped replacement draft, then a replacement invoice linked to the
+original.
+
+- **Not built:** Xero, Stripe, payments, Actual Revenue, overdue,
+  reminders, PDF, email, client portal, supplier/coach costs, Cash Flow,
+  Month Report, Finance Needs Attention rules, Finance UI.
+- **Scope:** TEST Airtable `appQktredAuGa1X7e`, TEST Supabase
+  `dkqubldmfyeuudecxmvh`, org `ORG-TEST-001` only.
+- **Production** (Airtable, Supabase, Finance, Xero, Stripe, Sessions,
+  Sheets, legacy Financials) was not touched. No email was sent, and
+  nothing issued here is a legal or official invoice.
+
+### FIN6.1 Design summary
+
+- **Issue** = F5's Ready draft, re-checked under the org write lock, frozen
+  into:
+  - one invoice row;
+  - one row per included line;
+  - a stamp on the draft (`Issued Invoice ID`).
+
+  All three are written together or not at all. The draft stays
+  `Ready for issue`, but every F5 write on it now returns 409
+  `draft_issued`.
+- **Immutability:**
+  - After creation, only an invoice's credit state (`Status`) and its
+    `Revision` / `Last Changed …` fields are ever patched
+    (`invoiceStateFields`). No amount, date, term, PO, client or issuer
+    snapshot is ever edited.
+  - Invoice lines and credit notes are create-only.
+  - Reads come only from the stored rows. They never re-run F4 and never
+    use today's client, terms or settings.
+- **Permanent claims:**
+  - An issued invoice line claims its occurrence for good, alongside F5's
+    included draft lines. F5 eligible work and new drafts skip claimed
+    occurrences.
+  - A credit note does **not** release a claim. The only release is a
+    correction's replacement draft (FIN6.7).
+- **Statuses:** `Issued` → `Partially credited` → `Credited`, derived from
+  the credit notes (whole lines only) and stored on the invoice.
+- **Correction** = a credit note (which removes the wrong lines) plus a
+  replacement draft:
+  - the draft is scoped to exactly the credited occurrences and built
+    from **today's** F4 result;
+  - it goes through the normal F5 review → Ready → F6 issue;
+  - the new invoice carries `Replaces Invoice ID` + `Correction ID`
+    (= the credit note id). The original is never edited.
+
+### FIN6.2 Invoice identity and numbering (decision point for David)
+
+- Every invoice gets an internal id **`FIV-` + 12 hex**, and the API
+  returns it as `reference`. It is unique and permanent, and it is not a
+  sequential legal invoice number.
+- `Issue Authority` = `Hub` for every F6 invoice. `External accounting`
+  exists as a choice but is unused.
+- `External Provider`, `External Invoice ID` and `External Invoice Number`
+  exist and are **always blank**. There is no Xero call and no number is
+  invented.
+- **Open product decision:** UK VAT invoices need a unique, sequential
+  number. Two choices:
+  - (a) Xero assigns it, and a later sync writes the External fields;
+  - (b) the Hub issues its own gap-free sequence.
+
+  Either choice slots into these fields without changing the F6 model.
+  Nothing issued in TEST is presented as a legal invoice.
+- Lines are `FVL-` + 12 hex and credit notes `FCN-` + 12 hex. A credit
+  note id doubles as the id of the correction it starts.
+
+### FIN6.3 Schema (TEST Airtable, additive only)
+
+- **Finance Invoices** `tblqPaocmsi5LYOMA`:
+  - `Invoice ID` `flddWcIFKOEodJsVF` (primary);
+  - `Organisation` link;
+  - Source Draft ID; Client ID / Name; Billing Contact / Email / CC
+    snapshot;
+  - Invoice Date, Due Date, Period From / To;
+  - `Payment Terms (Days)` + `Payment Terms Source`
+    (`Client` / `Finance Settings` / `Invoice override`);
+  - PO Required / Number / Override Reason;
+  - Net / VAT / Gross (minor units), Currency, Line Count;
+  - `Status` `fldSlnOHBhCvpBM8S` (Issued / Partially credited /
+    Credited);
+  - `Issue Authority` `fldREdERvfLDMnH1I` (Hub / External accounting);
+  - `External Provider` `fldqJVrCgN5XvpPcO`, `External Invoice ID`
+    `fldO5s3EIESNnp4A2`, `External Invoice Number` `fldCypf5gVKPPoD0m`;
+  - `Replaces Invoice ID` `fldN0qZJjrPyQRibx`, `Correction ID`
+    `fldd9BEpgFRrqErRg`;
+  - Approved Omissions, Review Snapshot, Issuer Snapshot (JSON);
+  - Issued By / At, Revision, Last Changed By / At.
+- **Finance Invoice Lines** `tblmGQEDijeVGBVq0`:
+  - `Line ID` (primary), Organisation, `Invoice ID` `fldq1biOT202wjwWL`,
+    Sequence;
+  - Source Draft / Draft Line ID, `Occurrence ID` `fldx2o5B7Lvu61HST`,
+    date;
+  - Session / Service / Terms ids and names, charge type, description;
+  - quantity + source, unit amount + source, amount;
+  - VAT treatment + rate, net / VAT / gross, override ids, created.
+- **Finance Credit Notes** `tblujrvg9dozPbv9q`:
+  - `Credit Note ID` `fldYERLZpyoyYkPF8` (primary), Organisation,
+    `Invoice ID` `fldV7pihkAPLWrpRv`;
+  - Client ID / Name, Credit Date, Reason;
+  - `Credited Lines` (JSON: line id, occurrence, net / VAT / gross minor);
+  - net / VAT / gross, Currency;
+  - Status (`Issued`), Issue Authority, External Provider / ID / Number
+    (blank);
+  - Created By / At.
+- **Finance Invoice Drafts** `tblTNpTTI6oV1n5p1` (F5 table, 4 fields
+  added):
+  - `Issued Invoice ID` `fldoythRNDKAo2Y7W`;
+  - `Replaces Invoice ID` `fldLbWzzDo05J3jfY`;
+  - `Correction ID` `fldMHA9dsNBqpjGNB`;
+  - `Correction Scope` `fldNrVG9fuhCnrmZ5` (JSON `{correctionId,
+    invoiceId, occurrenceIds, releasedDraftIds}`).
+- No Supabase schema change. Audit uses F2 `finance_audit_events`; the
+  lock is F3's `finance_write_locks` (`commercial:<org>`).
+
+### FIN6.4 Code (`supabase/functions-test/finance/`)
+
+- **New files:**
+  - `finance-issue.ts` (pure): contract `finance-invoices-v1`, events,
+    `issueGate` / `planIssue`, `creditState` / `planCreditNote`, public
+    bodies, `invoiceHistory`, audit shapes, parsers, `matchIssueRoute`;
+  - `finance-issue-mapping.ts` (pure): table and field names, row
+    validators, build / create / state-patch field builders, and
+    `invoiceMatchesLines` (sum + count check; a mismatch is 409
+    `invoice_data_invalid`, never repaired);
+  - `finance-issue-repository.ts`: exact-id `filterByFormula` finders,
+    re-checked in code, and `listInvoiceLineClaimRows` (1 read per 40
+    occurrences, deduped by record id);
+  - `finance-issue-orchestrator.ts`: reads `readInvoice`,
+    `listInvoiceCreditNotes`, `listInvoices`, `readCreditNote`; writes
+    `issueDraft`, `createCreditNote`, `startReplacementDraft`, via
+    `underLock` (lock → load → re-check → writes with undo → one audit
+    insert → release; 503 on failure, 500 if the undo fails).
+- **F5 hooks:**
+  - Draft fields and `CorrectionScope`; `applyCorrectionScope`;
+  - the issued-draft guard (`draft_issued`);
+  - issued-line claims in `loadClientWork`;
+  - replacement drafts ignored by the overlap rule;
+  - `publicDraft` gains `issued`, `issuedInvoiceId` and `replacement`.
+- `index.ts` matches F6 routes before F5.
+
+### FIN6.5 API (TEST Edge Function `finance` v12, `verify_jwt: true`)
+
+| Method + path | Access | Notes |
+|---|---|---|
+| `POST invoice-drafts/{FID}/issue` `{revision, reason?}` | Manage | 201 invoice + lines + links + history + the stamped draft |
+| `GET invoices?clientId=FCL-…` | View | One client's invoices, newest first, with credit-note ids and credited gross |
+| `GET invoices/{FIV}` | View | Invoice, lines (with `creditedBy`), credit notes, credit / remaining, links, history |
+| `GET invoices/{FIV}/credit-notes` | View | The invoice's credit notes |
+| `POST invoices/{FIV}/credit-notes` `{lineIds?, reason}` | Manage | Whole lines; leave `lineIds` out to credit every remaining line; max 200 |
+| `GET credit-notes/{FCN}` | View | Credit note + links (invoice, replacement draft, replacement invoice) |
+| `POST credit-notes/{FCN}/replacement-draft` `{reason}` | Manage | 201 scoped F5 draft; then the normal F5 details / Ready and F6 issue |
+
+- **Inputs:** tenant keys are refused (400 `tenant_param_rejected`), and
+  so are unknown fields (400 `unexpected_field`). A reason is required on
+  credit and replacement.
+
+### FIN6.6 Issue preconditions (in order; first failure wins, nothing written)
+
+1. `draft_already_issued` (the draft stamp **or** an invoice row with
+   this Source Draft ID).
+2. `draft_not_ready`.
+3. `draft_revision_mismatch` (the revision you reviewed).
+4. After a fresh F4 run under the lock:
+   - `client_not_found`;
+   - `manual_billing_client`;
+   - `draft_has_blockers` (the full F5 review recomputed now: claims,
+     source changes, PO, terms, missing terms);
+   - `totals_do_not_reconcile` (line by line and in total, net + VAT =
+     gross, amount = unit × qty);
+   - `payment_terms_missing`, `billing_email_missing`;
+   - `issuer_details_missing` (legal name + address);
+   - `issuer_vat_details_missing` (VAT > 0 needs VAT registered + VAT
+     number).
+5. For replacements only: `replaced_invoice_not_found` /
+   `replaced_invoice_mismatch`.
+
+- **Dates:** the invoice date is today in the org timezone
+  (Europe/London). The due date is the invoice date + the frozen terms
+  days (UTC calendar arithmetic).
+
+### FIN6.7 Credit notes and corrections
+
+- **Credit:**
+  - whole lines only, no partial amounts;
+  - `line_already_credited`, `invoice_line_not_found`,
+    `invoice_fully_credited` and `credit_exceeds_invoice` guard duplicate
+    and excess credit;
+  - the note stores the credited lines' exact net / VAT / gross; the
+    invoice's credited and remaining totals are derived from the notes;
+  - status changes to Partially credited or Credited, and the invoice
+    revision goes up by 1.
+- **Replacement draft:**
+  - one per credit note; a second returns `replacement_exists`;
+  - its scope = the credit note's occurrences;
+  - claims on those occurrences held by the credited invoice and its
+    source draft (`releasedDraftIds`, inherited along chains) are released
+    **to this draft only**;
+  - `no_replacement_work` when none of that work is billable today;
+  - PO and PO-override reason are carried over from the original invoice,
+    and terms are the client default;
+  - issuing it writes `finance_invoice.replacement_linked` on the
+    original.
+- **Links:**
+  - original `links.corrections[]` = `{creditNoteId,
+    replacementDraftId, replacementInvoiceId}`;
+  - replacement `links.replacesInvoiceId` / `correctionId`;
+  - credit note `links` = `{invoiceId, replacementDraftId,
+    replacementInvoiceId}`;
+  - `history` = issued → credit_note → correction_initiated → replaced.
+
+### FIN6.8 Audit events (`finance_audit_events`, one insert per write)
+
+- **Issue:** `finance_invoice.issued` (the full invoice + lines, the
+  reviewed revision, warnings, omissions) and `finance_invoice_draft.issued`
+  (before / after).
+- **Replacement issue:** the two issue events plus
+  `finance_invoice.replacement_linked` on the original.
+- **Credit:** `finance_credit_note.created` (remaining before / after) plus
+  `finance_invoice.partially_credited` or `finance_invoice.credited`.
+- **Replacement draft:** `finance_invoice_draft.created` plus
+  `finance_invoice.correction_initiated`.
+- **No event** for any refused, 403 or read request.
+
+### FIN6.9 Access, security and performance
+
+- Access reuses F1 `authorizeFinance` exactly:
+  - module off → 403 `finance_module_disabled`;
+  - Coach / Parent → 403 `management_required`;
+  - View reads but gets 403 `finance_manage_required` on writes;
+  - no token → 401.
+- Organisation is always from the caller, never the request.
+- Formula values are pattern-checked before use, and rows are re-checked
+  for exact value + org.
+- **Reads per request:**
+  - invoice read: 3 parallel reads (invoice / lines / notes) + 2 for
+    corrections;
+  - credit: 3;
+  - issue: the F5 draft load + 1 source-draft check + F5's client-work
+    reads + 1 claim read per 40 occurrences;
+  - never one read per line or per occurrence.
+
+### FIN6.10 Tests and regression
+
+- `tests/support/finance-issue.test.ts`: **106/106**. Covers:
+  - the issue gate and order;
+  - snapshots and immutability;
+  - claims and scope release;
+  - credit maths and guards;
+  - replacement and chains;
+  - links and history;
+  - audit;
+  - parsers, routes, mapping validation;
+  - rollback and undo failure;
+  - no F4 reads on stored reads.
+- **Mutations** (scratchpad `mut_f6.py`): **42/42 caught**. F5's
+  `mut_f5c.py`: 45/47 (the same 2 equivalent survivors as before).
+- `finance-invoicing.test.ts`: 147/147 (ST2 now asserts `issued:false`).
+  `financebundletest.js`: 8/8 (B8: the F6 routes are served).
+- Full `tests/run-all.js`: **75/75 test files** pass.
+
+### FIN6.11 Deploy
+
+- `finance` **v12**, entrypoint `index.js`, `verify_jwt: true`.
+- **220,370 bytes, sha256
+  `61ce856e661f18cca1bab575252f9d2dce1da634e2ca9bbc64628c693c1cf323`**:
+  - the deployed file's sha256 equals `manifest.json.artifactSha256`;
+  - a fresh `git clone` of `edf8cd5` + `npm ci` +
+    `build-finance-bundle.mjs --check` gives MATCH;
+  - no GitHub reference; the only import is
+    `jsr:@supabase/supabase-js@2`;
+  - source-tree sha256
+    `e545b99fc8da927c5c31cb2b4baca1fe7e32aa67c23d1ea71fd8b4c278e24950`.
+
+### FIN6.12 Live TEST verification (2026-09-30, `finance` v12, real HTTP via `pg_net`)
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Clean issue | D3 `FID-D5F457285BDC` rev 4 → 201 **`FIV-900D5F407D29`**: 45.00 + 9.00 VAT = 54.00, date 2026-09-30, due 2026-10-30 (Finance Settings 30 days), External fields blank, draft `issued:true` |
+| 2 | Duplicate issue | Re-issue D3 at rev 3 and rev 4 → 409 `draft_already_issued`. Two concurrent D1 issues → one 201 **`FIV-0747B88A7BF8`**, the other 409 `finance_commercial_busy`; the resend → 409 `draft_already_issued` |
+| 3 | Source claim | St Anne's 8 Sep shows as claimed in eligible work; a new St Anne's draft → 409 `no_eligible_work`; reopening D3 → 409 `draft_issued` |
+| 4 | Snapshot after a Client / F3 / F4 change | Invoice + lines md5 `2d36b252…` identical after a client rename + billing-email change and an F4 amount override (F4 then showed 118.80). All three restored (override removed; F4 back to 54.00) |
+| 5 | PO / terms | D1 invoice: PO `PO-TEST-PARKSIDE-2026-09`, client 30 days, due 2026-10-30, 9 lines 1113.00 + 30.00 = 1143.00, the excluded line not invoiced. D2 → **`FIV-E6600556B017`**: PO override reason, 21-day invoice-override terms snapshot, due 2026-10-21, 40.00 + 8.00 = 48.00 |
+| 6 | Missing-terms omission | The 17 Sep camp exception is frozen in `approvedOmissions` (with reason); no line; eligible work still lists 17 Sep under `withoutTerms` |
+| 7 | Manual billing refused | Parkside switched to manual → issue D2 → 409 `manual_billing_client`; switched back to hub |
+| 8 | View reads, cannot issue | View grant: invoice read + list 200; issue and credit → 403 `finance_manage_required` |
+| 9 | Manage issues | Items 1, 2, 5, 15 (Manage grant) |
+| 10 | Module off | Read and credit → 403 `finance_module_disabled`; restored ON → 200 |
+| 11 | Tenant rejected | Tenant key in query and in body → 400 `tenant_param_rejected`; Coach / Parent 403 `management_required`; no token 401 |
+| 12 | Credit note leaves the original unchanged | **`FCN-6EEF8A492A69`** credits `FVL-4AE884CB4DDD` (After-school 21 Sep, 18 players, 162.00). Invoice lines md5 (excluding `creditedBy`) unchanged `3feadf40…`; totals unchanged |
+| 13 | Credit amounts / remaining | `FIV-0747B88A7BF8` `partially_credited`, credited 162.00, remaining 951.00 + 30.00 = 981.00. Full credit of `FIV-900D5F407D29` → **`FCN-1473D452224D`** 54.00, status `credited`, remaining 0.00 |
+| 14 | Duplicate / excess credit refused | Same line again → 409 `line_already_credited`; unknown line → 404 `invoice_line_not_found`; `amount` field → 400 `unexpected_field`; credit on the fully credited invoice → 409 `invoice_fully_credited` |
+| 15 | Replacement linkage | F4 quantity override `FOB-1A38D00FEC90` (20 players on 21 Sep) → replacement draft **`FID-477304CC486F`** scoped to `recT3soLEi6Im8TEt:2026-09-21`, 20 × 9.00 = 180.00, PO carried → Ready rev 2 → issue → **`FIV-BA23AA9365B6`** with `replacesInvoiceId` `FIV-0747B88A7BF8` and `correctionId` `FCN-6EEF8A492A69`. The original shows `links.corrections` and history issued → credit_note → correction_initiated → replaced; the credit note links both. A second replacement → 409 `replacement_exists` |
+| 16 | Audit exact | 53 → 76, exactly 23 events: 4 × invoice.issued + 4 × draft.issued; 4 × client.updated; 2 × override.created + 1 removed; 2 × credit_note.created + partially_credited + credited; draft.created + correction_initiated + marked_ready + replacement_linked. None for the refused, 403 or read requests |
+| 17 | Needs Attention unchanged | Clear, total 0 |
+| 18 | Bundle deterministic | Deployed sha = manifest; fresh clone `--check` MATCH; no GitHub import |
+
+- Airtable after the proof:
+  - 4 invoices, all `Issue Authority = Hub` with blank External fields;
+  - 12 invoice lines: 21 Sep appears on the credited original and on the
+    replacement, as designed;
+  - 2 credit notes.
+
+### FIN6.13 Resting TEST data (fixtures kept for F7 / F9)
+
+| Invoice | Client | Status | Gross | Notes |
+|---|---|---|---|---|
+| `FIV-900D5F407D29` | St Anne's (F5) | Credited | 54.00 | From D3; fully credited by `FCN-1473D452224D` |
+| `FIV-0747B88A7BF8` | Parkside (F3) | Partially credited | 1143.00 (remaining 981.00) | From D1; 21 Sep line credited by `FCN-6EEF8A492A69`; replaced by `FIV-BA23AA9365B6` |
+| `FIV-BA23AA9365B6` | Parkside (F3) | Issued | 180.00 | Replacement from `FID-477304CC486F` (21 Sep, 20 players) |
+| `FIV-E6600556B017` | Parkside (F3) | Issued | 48.00 | From D2; 21-day terms override, PO override reason, 17 Sep omission |
+
+- All four drafts (D1 `FID-958179549E2E`, D2 `FID-0E9BBC309EE1`, D3
+  `FID-D5F457285BDC`, replacement `FID-477304CC486F`) are
+  `Ready for issue` + issued.
+- F4 quantity override **`FOB-1A38D00FEC90`** (21 Sep, 20 players) stays.
+  It is the replacement's source.
+- **Baseline:**
+  - `module_finance` ON;
+  - exactly one active grant: the Manage grant
+    `21f56caa-28c3-475d-b952-807dad65feef` for the TEST manager;
+  - all lock tables empty; the `f2probe` schema dropped;
+  - no external invoice, no Xero record, no payment, no email.
+
+### FIN6.14 Deferred (later Finance slices — not started)
+
+- Legal sequential numbering, and Xero sync of the External fields
+  (FIN6.2 decision).
+- Payments, Actual Revenue, overdue, reminders, Stripe.
+- PDF, email, client portal.
+- Partial-amount credits, and voiding before issue to the client.
+- Supplier / coach costs, Cash Flow, Month Report.
+- Finance Needs Attention rules and the Finance UI.
+- Production promotion.
