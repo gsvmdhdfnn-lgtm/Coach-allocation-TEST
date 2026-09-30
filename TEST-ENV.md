@@ -15929,3 +15929,498 @@ Xero:  Ready → Awaiting external issue → [F9: Xero confirms] → Issued
   - write and settings lock tables empty;
   - `f2probe` schema dropped;
   - no Xero call, no payment, no email, no PDF.
+- **Superseded by F7:** F7 recorded TEST payments, credit notes and
+  client credit against these invoices and replaced the Manage grant. See
+  **FIN7.16** for the current resting data.
+
+## Finance Foundation — F7 (receivables + payments received + overdue + client credit) — TEST only — 2026-09-30
+
+F7 turns a genuinely Issued invoice into a receivable. It adds:
+- recorded client payments ("Mark as Received"), including partial payments;
+- derived due / due-today / overdue state;
+- deliberate due-date moves;
+- client credit: create, apply, unapply and void;
+- the trusted cash-receipt fact that later Month Report / Cash Flow will read.
+
+- **Not built:**
+  - Xero payment sync, Stripe, bank feeds;
+  - reminder emails;
+  - Finance Needs Attention rules (F8);
+  - Cash Flow, Month Report, PDF, Finance UI;
+  - refunds (F11).
+- **Scope:** TEST Airtable `appQktredAuGa1X7e`, TEST Supabase
+  `dkqubldmfyeuudecxmvh`, org `ORG-TEST-001` only.
+- **Production** (Airtable, Supabase, Finance, Xero, Stripe, Sessions,
+  Sheets, legacy Financials) was not touched. No email or reminder was
+  sent. No real payment was recorded: every amount here is TEST data.
+
+### FIN7.1 Pre-check findings
+
+- **Branch:** `foundation/test-base-isolation` at `0ae45b1`, clean tree,
+  `finance` v14 deployed (SHA matched).
+- **Baseline:** audit count 146, no locks, one Manage grant, no probe
+  schema, authority Xero.
+- **No payment scaffolding existed.** TEST had no payment, receivable,
+  overdue or client-credit table or field.
+  - F6 invoices only carry `External Provider / Invoice ID / Number`,
+    which stay F9's.
+  - The only other "Paid / Unpaid / Partial / Credit" fields are the
+    Coaches occurrence outcomes (coach / parent / venue). They are not
+    client receivables, and F7 does not reuse them.
+- **Legacy "Financials"** is the old Hub's password-protected page, not a
+  data source, so there are no fields to reuse.
+- **Production schema was not read.** A production schema read was denied
+  earlier and was not retried.
+- **Design pack ("Credits, refunds and overdue Money In") agrees:**
+  - client credit kept from a correction is linked to the original invoice
+    and reason, stays visible on the client, and Management chooses when
+    to apply it;
+  - overdue stays visible until received or genuinely rescheduled;
+  - a genuine due-date move keeps the original date in history.
+- No product contradiction was found.
+
+### FIN7.2 Receivable boundary
+
+- **Only a genuinely Issued invoice is a receivable** (F6 `isIssued`, the
+  same flag as `receivable: true`).
+- **An `awaiting_external_issue` (Xero) invoice is never a receivable:**
+  - `GET /invoices/{id}/receivable` answers `receivable: false` with the
+    reason, and no due date or amounts;
+  - the receivables list only counts it (`notReceivable.awaitingExternalIssue`);
+  - a payment, due-date move or credit application on it gets 409
+    `invoice_not_issued`;
+  - it is never due or overdue, never in aged debt, never Actual Revenue.
+- **Nothing is inferred from the existence of an invoice row.** F9 will
+  move Xero invoices to Issued, and then they become receivables.
+
+### FIN7.3 Outstanding balance (derived, never stored)
+
+```
+outstanding = gross
+            − credit notes (F6)
+            − client credit applied
+            − cash received (active payments)
+            + credit-note value kept as client credit
+```
+
+- **Every term comes from immutable history rows.** F7 never patches the
+  invoice row: F6's frozen amounts, dates, lines and credit notes stay as
+  they are.
+- **Never negative.** A credit note issued after the invoice was already
+  paid gives `outstanding 0` and `creditExcess > 0`. That excess is value
+  the client paid for, which can be kept as client credit (FIN7.7) or
+  refunded later (F11).
+- **Kept credit is added back** so the same value is never counted twice.
+  Credit-note value kept as client credit no longer reduces *this* invoice;
+  applied elsewhere, it reduces *that* invoice.
+- **Payments and credit applications are capped** at what is outstanding
+  at the time, so `cash + applied ≤ gross` always holds. It is re-checked
+  on every read, and broken history is 409 `receivable_data_invalid`,
+  never repaired.
+- **Settlement:**
+  - `unpaid`;
+  - `partially_paid`;
+  - `paid` (outstanding 0 after payments / credit applied);
+  - `nothing_due` (credited in full, nothing received). This is not
+    "Paid".
+- **Credited value is never cash.**
+
+### FIN7.4 Payment records ("Mark as Received")
+
+- **Table `Finance Payments`.** Each payment row (`FPY-…`) records:
+  - organisation, invoice, client id + name snapshot;
+  - amount in pence, GBP;
+  - **received date** (required, the real day the money arrived; never
+    assumed to be today; never in the future);
+  - method (bank transfer / card / cheque / cash / other) and reference
+    (both optional);
+  - source `Manual` (`Xero` is reserved for F9, which also fills
+    `External Provider` / `External Payment ID`);
+  - reason, recorded by / at.
+- **Rules:** Finance Manage only; the invoice must be issued;
+  `0 < amount ≤ outstanding`.
+- **`settleRemaining: true`** is the explicit "the whole outstanding
+  balance" convenience. It is exactly one of `amount` or `settleRemaining`,
+  never both.
+- **Overpayment is refused** with 409 `payment_exceeds_outstanding`, which
+  points to the explicit route. To keep extra cash:
+  1. record the payment up to what is outstanding;
+  2. then `POST /payments/{id}/overpayment-credit` (FIN7.7).
+- **Corrections are reversal rows** (`FPR-…`, same table, `Entry Type =
+  Reversal`, full amount, reason required).
+  - Payment rows are never edited or deleted, and a £600→£500 fix is
+    "reverse £600, record £500".
+  - A payment whose extra cash is held as client credit can only be
+    reversed after that credit is voided.
+  - A reversal is **not a refund**: no money moves. It says the receipt
+    was recorded in error.
+
+### FIN7.5 Due / overdue (derived)
+
+- **Due date:** the invoice's frozen F6 due date, or the latest deliberate
+  move (FIN7.6).
+- **Evaluation day:** the organisation's calendar day (`Timezone`,
+  default Europe/London), compared in **calendar days**, never elapsed
+  milliseconds. At 23:30 on the due date an invoice is due today; at 00:30
+  the next day it is overdue by 1, including across clock changes.
+- **States:**
+  - outstanding 0 → `settled` (a paid or fully credited invoice is never
+    overdue);
+  - before the due date → `not_due` (with `daysUntilDue`);
+  - on it → `due_today`;
+  - after it → `overdue` (with `daysOverdue`);
+  - no due date → an explicit `no_due_date` (never guessed).
+- **The one `state` field** gives urgency first: `overdue`, then
+  `due_today`, then `partially_paid`, then `not_due`. A partially paid
+  invoice past its due date is `overdue` on the remainder, and its
+  `settlement` still says `partially_paid`.
+- **Nothing is stored.** Overdue never changes a date or a status.
+- **`asOf=YYYY-MM-DD`** (today or later) projects due / overdue forward
+  from the payments recorded so far. A past `asOf` is 400, because that
+  would need historical balances.
+- **Aged debt:** each row gives `outstanding`, `dueDate` and
+  `daysOverdue`. No buckets are stored; the UI or F8 groups them
+  (current / 1–30 / 31–60 / 61–90 / 90+).
+
+### FIN7.6 Due date moves
+
+- **Table `Finance Invoice Due Date Changes`** (`FDD-…`): previous and
+  new due date, reason (required), changed by / at.
+- **The invoice keeps its frozen due date** as `originalDueDate`, and the
+  history lists every move in a chain.
+- **Rules:** Finance Manage; issued; something outstanding; the new date
+  is not before the invoice date and not the same as the current one.
+- **Payment terms and the invoice date never change.**
+
+### FIN7.7 Client credit
+
+- **Credit note ≠ client credit.**
+  - A **credit note** (F6) corrects an invoice's revenue.
+  - A **client credit** (`FCC-…`, table `Finance Client Credits`) is
+    value held for the client to use later.
+- **Client credit is visible on the client** (`GET /clients/{id}/credits`)
+  and is **never applied automatically**.
+- **Sources:**
+  - **Credit note (the locked case).** The client had already paid for
+    work later credited, and keeps the value.
+    - Only the part the invoice no longer needs (its `creditExcess`) can
+      be kept, and never more than that credit note.
+    - A credit note that only reduced an unpaid invoice gives 409
+      `no_credit_available`: it has already done its job as a revenue
+      correction.
+    - The credit note stays linked to its invoice.
+    - No cash moves and no cost is created.
+  - **Overpayment.** Cash the client paid beyond a settled invoice,
+    linked to that payment, dated when the payment arrived. This is
+    genuinely cash received (FIN7.8).
+- **Apply** (`FCA-…`, table `Finance Client Credit Applications`):
+  - only to the **same client's issued** invoice;
+  - amount ≤ credit remaining **and** ≤ invoice outstanding;
+  - reduces what is still owed, but is **not cash received**.
+- **Unapply** (reversal row `FAR-…`, reason required): the credit gets
+  the value back and the invoice owes it again. The application record
+  stays, marked reversed.
+- **Void** (reason required): only for a credit none of which is applied.
+  The record stays with status Void.
+- **Stored state:**
+  - the credit row stores `Remaining` / `Status` (Available / Used /
+    Void), re-checked against its applications on every read;
+  - these, the void fields and the revision are its only patched fields.
+- **Xero later (F9 / F11):** with Xero connected, client credit must
+  reconcile with Xero's credit-note allocation state rather than keep a
+  contradictory Hub-only balance.
+
+### FIN7.8 Actual receipt fact
+
+- **`GET /receipts?from&to`** (≤ 366 days) lists **trusted cash receipts**
+  by received date:
+  - every active manual payment (`invoice_payment`);
+  - cash kept as client credit from an overpayment (`overpayment_credit`,
+    not void).
+- **Each receipt gives:** amount, received date, source, method,
+  reference, invoice and client.
+- **Never receipts:** issuing, due or overdue invoices, credit notes, and
+  client credit applied.
+- **Reversed payments** are listed apart and never counted.
+- **No Month Report / Cash Flow maths here.** This is only the fact they
+  will read. "Delivered but unpaid" and "issued but unpaid" stay Expected.
+
+### FIN7.9 API (TEST `finance`, `verify_jwt: true`)
+
+- `GET  /receivables[?clientId][&asOf]`
+- `GET  /invoices/{FIV}/receivable[?asOf]`
+- `GET  /invoices/{FIV}/payments`
+- `POST /invoices/{FIV}/payments` `{ amount | settleRemaining: true, receivedDate, method?, reference?, reason? }`
+- `POST /invoices/{FIV}/due-date` `{ dueDate, reason }`
+- `POST /payments/{FPY}/reverse` `{ reason }`
+- `POST /payments/{FPY}/overpayment-credit` `{ amount, reason }`
+- `POST /credit-notes/{FCN}/client-credit` `{ amount, reason }`
+- `GET  /clients/{FCL}/credits`
+- `GET  /client-credits/{FCC}`
+- `POST /client-credits/{FCC}/applications` `{ invoiceId, amount, reason? }`
+- `POST /client-credits/{FCC}/void` `{ reason }`
+- `POST /client-credit-applications/{FCA}/reverse` `{ reason }`
+- `GET  /receipts?from&to`
+
+Amounts are decimal strings (`"600"` / `"600.00"`, at most 2 dp); the API
+returns strings, and storage is integer pence. F7 is dispatched first and
+owns only these sub-paths; F1–F6 contracts are unchanged. Apart from
+exporting F6's `loadInvoice`, F6 code is unchanged.
+
+### FIN7.10 Access, security, concurrency
+
+- **Access:**
+  - Finance View reads everything above;
+  - Finance Manage writes;
+  - no grant → 403 `finance_access_denied`;
+  - Coach / Parent → 403 `management_required`;
+  - `module_finance` off → 403 `finance_module_disabled`;
+  - any tenant key in a query or body → 400 `tenant_param_rejected`;
+  - other organisations' rows are never read or counted.
+- **Locking:** every write takes the per-organisation Finance write lock
+  (`commercial:{org}`, the one F3–F6 use). Under it, everything is
+  reloaded and re-checked:
+  - the invoice is still issued;
+  - the outstanding amount;
+  - the credit remaining;
+  - earlier reversals.
+  So two simultaneous full payments cannot overpay, and two simultaneous
+  applications cannot overspend a credit: one lands, the other gets 409
+  `finance_commercial_busy` and on retry sees the new balance.
+- **Failures:** a failed write or audit undoes this request's rows / patch
+  and returns 503. A failed undo returns 500
+  `finance_receivables_unaudited`.
+
+### FIN7.11 Audit (`finance_audit_events`, one event per successful write)
+
+| Write | Event | Entity / record |
+|---|---|---|
+| payment | `finance_payment.recorded` | `finance_payment` / FPY |
+| payment reversal | `finance_payment.reversed` | `finance_payment` / FPY |
+| due date move | `finance_invoice.due_date_changed` | `finance_invoice` / FIV |
+| client credit (credit note or overpayment) | `finance_client_credit.created` | `finance_client_credit` / FCC |
+| apply | `finance_client_credit.applied` | FCC |
+| unapply | `finance_client_credit.application_reversed` | FCC |
+| void | `finance_client_credit.voided` | FCC |
+
+Each event carries:
+- the actor and organisation;
+- invoice / client context;
+- before / after receivable (outstanding, cash, applied, credit notes,
+  kept, excess, settlement, due date);
+- the reason, contract `finance-receivables-v1` and route.
+
+Reads, refused writes and no-ops write nothing.
+
+### FIN7.12 Schema (TEST Airtable, additive only)
+
+Four new tables. Each links one `Organisation` (`tblKKDnM19PqQ7rtc`), and
+no existing table or field was changed.
+
+- **`Finance Payments`** (`tblPSSYjzUgKrt5yg`). Payment rows (`FPY-…`)
+  and reversal rows (`FPR-…`) share the table.
+  - Identity: `Payment Entry ID`, `Entry Type` (Payment / Reversal),
+    `Reverses Payment ID`.
+  - Links and snapshot: `Invoice ID`, `Client ID`, `Client Name`.
+  - Money: `Amount (Minor Units)`, `Currency`.
+  - Payment details: `Received Date`, `Method`, `Reference`, `Source`
+    (Manual / Xero).
+  - Reserved for F9: `External Provider`, `External Payment ID`.
+  - Record: `Reason`, `Recorded By User ID`, `Recorded At`.
+  - A reversal carries no received date, method, reference, source or
+    external fields.
+- **`Finance Client Credits`** (`tblmsWT3XEwEAqMAV`).
+  - Identity and client: `Client Credit ID`, `Client ID`, `Client Name`.
+  - Origin: `Source` (Credit note / Overpayment), `Source Invoice ID`,
+    `Source Credit Note ID`, `Source Payment ID`, `Received Date`
+    (overpayment only).
+  - Money: `Original (Minor Units)`, `Remaining (Minor Units)`,
+    `Currency`.
+  - Lifecycle: `Status` (Available / Used / Void), `Reason`,
+    `Void Reason`, `Voided By User ID`, `Voided At`.
+  - Record: `Created By User ID`, `Created At`, `Revision`,
+    `Last Changed By User ID`, `Last Changed At`.
+- **`Finance Client Credit Applications`** (`tblxCu4BZhUsaoM4L`).
+  Application rows (`FCA-…`) and reversal rows (`FAR-…`).
+  - Identity: `Application Entry ID`, `Entry Type` (Application /
+    Reversal), `Reverses Application ID`.
+  - Links: `Client Credit ID`, `Invoice ID`, `Client ID`.
+  - Money: `Amount (Minor Units)`, `Currency`.
+  - Record: `Reason`, `Recorded By User ID`, `Recorded At`.
+- **`Finance Invoice Due Date Changes`** (`tblXPxCWWkgCfFc7C`), rows
+  `FDD-…`: `Due Date Change ID`, `Invoice ID`, `Previous Due Date`,
+  `New Due Date`, `Reason`, `Changed By User ID`, `Changed At`.
+- **Row rules:**
+  - Rows are strictly parsed on every read. A malformed or foreign-org
+    row makes the whole read 409 `receivable_data_invalid`; it is never
+    skipped silently.
+  - Payment, reversal, application and due-date rows are append-only.
+  - Only a client credit's state fields are ever patched: `Remaining`,
+    `Status`, the void fields and `Revision` / `Last Changed`.
+
+### FIN7.13 Code (`supabase/functions-test/finance/`)
+
+| File | Role |
+|---|---|
+| `finance-receivables.ts` | **New**, pure. It holds:<br>• `receivableOf` (outstanding, settlement, due state, calendar days) and `creditBalance`;<br>• one planner per write (payment, reversal, due-date move, credit from a note, credit from an overpayment, apply, unapply, void);<br>• `receiptFacts`, the public bodies, the audit shapes, the parsers and the route matcher. |
+| `finance-receivables-mapping.ts` | **New.** Table and field names, strict row parsers and the create / state-patch field builders |
+| `finance-receivables-repository.ts` | **New.** Exact-id Airtable lookups and one bounded org-wide load for the list and receipt reads |
+| `finance-receivables-orchestrator.ts` | **New.** Access check → lock → reload → plan → write → audit → rollback on failure, plus all reads |
+| `finance-issue-orchestrator.ts` | Only change: `loadInvoice` / `LoadedInvoice` are exported |
+| `index.ts` | F7 routes are matched first; F1–F6 routing is unchanged |
+
+The test copies live in `tests/support/` (same four files, plus
+`finance-receivables.test.ts`), and
+`tests/e2e/financereceivablestest.js` puts them in `run-all`.
+
+### FIN7.14 Tests, mutation, deploy
+
+- **Focused:** `tests/support/finance-receivables.test.ts` **80/80**.
+  - The sections are RB, PY, OD, CN, CC, AR, DD, AC, AU, PF, RT and Z;
+    the file header describes each one.
+  - Together they cover every area of the required F7 tests:
+    - receivable boundary and the awaiting-external-issue exclusion;
+    - full, partial and second payments;
+    - overpayment refusal;
+    - concurrency, received-date rules and immutability / reversal;
+    - calendar-day overdue across time zone and clock changes;
+    - credit-note effect;
+    - client credit create / apply / unapply / void, cross-client and
+      limits;
+    - the receipt fact;
+    - due-date moves;
+    - access and tenant;
+    - exact audit and rollback;
+    - bounded reads, routes and drift checks.
+- **Regression:**
+
+  | Suite | Result |
+  |---|---|
+  | F6 issue | 155/155 |
+  | F5 invoicing | 147/147 |
+  | F4 billing | 105/105 |
+  | F3 commercial | 100/100 |
+  | F2 settings | 97/97 |
+  | F1 access | 56/56 |
+  | Kernel | 47/47 |
+  | Occurrence-confirmation writer | 102/102 |
+  | `node tests/run-all.js` | **76/76** files |
+
+  Re-run after the live proof, all unchanged.
+- **Mutation:** the F7 set is **40/40** caught.
+  - One equivalent calendar-drift mutant was replaced by a
+    wrong-day-length mutant.
+  - Two gaps were closed with new checks:
+    - CC21c: one credit note is never kept twice, even while the invoice
+      holds other excess;
+    - CC31b: the `clientId` filter on the receivables list.
+- **Typecheck:** `tsc` shows the identical error set before and after (no
+  new errors).
+- **Checkpoint:** the code was committed first, not deployed, as
+  `bd8feca` ("F7 CODE COMPLETE / TESTS PASS, NOT DEPLOYED, NOT
+  LIVE-PROVEN").
+- **Deploy:** `finance` **v15** (ACTIVE, `verify_jwt: true`, one file
+  `index.js`), deployed from that commit's artifact.
+  - The artifact `supabase/deploy-artifacts/finance/index.js` is
+    **290,148 bytes, sha256
+    `0b1477e5dde29630af72a03990baa8fdb02f4ed5bdeb7d059d830f26b250414d`**.
+  - Source sha256
+    `a1f92a4da82fe94b813483b26e86d6c93ed841881b07412f00dc9e4590aae41e`.
+  - The deployed file, read back with `get_edge_function`, is
+    byte-identical.
+  - `node scripts/build-finance-bundle.mjs --check` → MATCH, run from the
+    repo root.
+  - The only import is `jsr:@supabase/supabase-js@2`, with no GitHub
+    runtime import.
+
+### FIN7.15 Live TEST proof (2026-09-30, `finance` v15, real HTTP via `pg_net`)
+
+Every call was an authenticated request from the TEST manager (Finance
+Manage unless stated), sent through a temporary `f2probe` schema that was
+dropped afterwards. The server's `today` was 2026-09-30 (Europe/London).
+
+| # | Check | Result |
+|---|---|---|
+| A | Hub Issued is a receivable | `GET /receivables`: the 5 Hub rows (`FIV-E918`, `FIV-BDF2`, `FIV-F8C7` issued; `FIV-8849`, `FIV-B5EA` credited → `nothing_due`) are receivable; `notReceivable.awaitingExternalIssue` 6; outstanding £459.00 |
+| B | Xero Awaiting is not | `FIV-D9A443B0F2CA` receivable read → 200 `receivable:false`, reason `awaiting_external_issue`, no due date or amounts. Payments list: `receivable:false`, `outstanding` null. `POST …/payments` → 409 `invoice_not_issued`, no write |
+| G | Credit note is not cash | F6 credit note `FCN-A7D1C5613CAC` (£162) on `FIV-E9189872C36C` → invoice outstanding 0.00, `nothing_due`, cash 0.00, creditNotes 162.00, note `countsAsCashReceived:false`. Keeping it as client credit → 409 `no_credit_available` (nothing was paid). No receipt appears |
+| C | Full payment | `settleRemaining` on `FIV-F8C77A15446E` → 201 `FPY-94E65420DB85` £162.00, received 2026-09-30, bank transfer, ref `TEST-F7-C` → `paid`, outstanding 0.00, cash 162.00 |
+| D | Partial payment | £50.00 on `FIV-BDF2992D20D3` → 201 `FPY-25CACD4F966F`, received 2026-09-29, card → `partially_paid`, outstanding 85.00 |
+| E | Overpayment refused | £85.01 → 409 `payment_exceeds_outstanding`; audit count 150 → 150. A future received date (2026-10-01) → 409 `received_date_in_future` |
+| F | Due / overdue | `asOf` 2026-09-30 → `partially_paid` / not due (30 days); 2026-10-30 → `due_today`; 2026-11-02 → `overdue`, 3 days; aged list at 2026-11-02 → overdue 85.00. A past `asOf` → 400. Move to 2026-11-20 → 201 `FDD-542B4FDFE97A`, `originalDueDate` 2026-10-30 kept, `dueDateMoved:true`, history chain; then 2026-11-02 → not due (18 days), 2026-11-21 → overdue 1. Same date → 409 `due_date_unchanged`. No reason → 400. The invoice row is untouched (revision 1, stored due date 2026-10-30) |
+| H | Client credit | F6 credit note `FCN-A5AD9821EA5B` on the paid `FIV-F8C7` → outstanding 0.00, **creditExcess 162.00**. Keeping £162.01 → 409 `credit_exceeds_available`; keeping £162.00 → 201 **`FCC-7E3CD6292226`** (source credit note, `wasCashReceived:false`), and the invoice shows kept 162.00, excess 0.00. A second keep → 409 `no_credit_available`. Applying £40 to `FIV-BDF2` → 201 `FCA-FEB6A24DAD7C` (`countsAsCashReceived:false`): outstanding 45.00, **cash still 50.00**, applied 40.00, credit remaining 122.00. £45.01 → 409 `credit_exceeds_outstanding` |
+| I | Cross-client refused | Parkside `FCC-7E3C` onto St Anne's `FIV-900D5F407D29` → 409 `client_mismatch` |
+| J | Concurrency | A payment and an application on `FIV-BDF2` sent together → application 201 `FCA-1CD3E9683931`, payment 409 `finance_commercial_busy` (the shared lock); nothing partial |
+| — | Reversal / unapply | Mistaken £1 `FPY-2701B22E8C83` → reversed by `FPR-04523EEDDB79` (the row is kept, status `reversed`, cash back to 50.00); a second reverse → 409 `payment_already_reversed`. `FCA-1CD3` unapplied by `FAR-B55C9615B120` → credit remaining 122.00, invoice outstanding 45.00. Voiding the applied credit → 409 `client_credit_in_use` |
+| — | Overpayment credit | £10 kept from `FPY-94E6` (invoice settled) → 201 `FCC-49DA03F5C025` (`wasCashReceived:true`, received 2026-09-30); receipts count it (total 222.00); reversing `FPY-94E6` → 409 `payment_has_client_credit`; void (unapplied) → 200, status Void, and it leaves the receipts |
+| — | Receipts | `GET /receipts?from=2026-09-01&to=2026-12-31` → 2 receipts, **£212.00** (`FPY-25CA` 50.00, `FPY-94E6` 162.00). The reversed £1 is listed apart with `countsAsCashReceived:false`. Credit notes and credit applied are not receipts |
+| K | View reads, writes denied | View-only probe grant: 6 reads → 200 `access:"view"`; all 8 F7 write routes → 403 `finance_manage_required`; audit unchanged. Coach and Parent → 403 `management_required` |
+| L | Manage writes | Every successful write above ran under Manage. After restoring Manage: read 200 `access:"manage"`, and a write reaches the domain rule (409 `invoice_not_settled`, not 403) |
+| M | Module off | `module_finance` off → reads and write 403 `finance_module_disabled`; restored ON → 200 |
+| N | Tenant switching | `organisationId` / `tenant` / `baseId` in the query, and `organisationId` in the body → 400 `tenant_param_rejected`; nothing written |
+| O | Exact audit | 146 → **161**: 4 F6 (2 × `finance_credit_note.created` + 2 × `finance_invoice.credited`) + **11 F7**: 3 × `finance_payment.recorded`, 1 × `finance_payment.reversed`, 1 × `finance_invoice.due_date_changed`, 2 × `finance_client_credit.created`, 2 × `…applied`, 1 × `…application_reversed`, 1 × `…voided`. All have the manager as actor, `ORG-TEST-001`, the route, a reason, and before / after receivable snapshots. **No event** for any refused, 400 / 403 / 409 or read request |
+| P | Needs Attention | `GET /needs-attention/cases` → `Clear`, total 0 (F7 adds no rules) |
+| Q | Deployment | Deployed v15 `index.js` sha256 = committed artifact = manifest = `0b1477e5…414d`; `--check` MATCH |
+
+The stored rows match the API:
+- **Payments** (4): `FPY-94E6`, `FPY-25CA`, `FPY-2701` and reversal
+  `FPR-0452`.
+- **Client credits** (2):
+  - `FCC-7E3C`: Available, 12,200 remaining, revision 4;
+  - `FCC-49DA`: Void, revision 2.
+- **Applications** (3): `FCA-FEB6`, `FCA-1CD3` and reversal `FAR-B55C`.
+- **Due-date changes** (1): `FDD-542B`.
+
+### FIN7.16 Resting TEST data (fixtures kept for F8 / F9)
+
+- **Baseline:**
+  - `module_finance` ON;
+  - one active grant: Manage `bdb3770f-84ac-4275-acbe-093d10db8256`,
+    the deliberate resting grant; the F6 grant `94c83c89…` and the View
+    probe `505e1e5e…` are revoked with notes;
+  - write and settings lock tables empty;
+  - `f2probe` dropped;
+  - Finance Settings unchanged (authority **Xero**, next 1006);
+  - audit count 161.
+- **No external activity:** no Xero call, no Stripe, no email or
+  reminder, no PDF, and no real money.
+
+| Invoice | Invoice status | Receivable state (2026-09-30) | F7 history |
+|---|---|---|---|
+| `FIV-E9189872C36C` `TEST-INV-001003` | Credited | `nothing_due`, cash 0 | credit note `FCN-A7D1C5613CAC` (£162), never paid |
+| `FIV-F8C77A15446E` `TEST-INV-001005` | Credited | `paid`, outstanding 0, excess 0 | paid £162 `FPY-94E65420DB85`; credit note `FCN-A5AD9821EA5B`; £162 kept as `FCC-7E3CD6292226`; £10 overpayment credit `FCC-49DA03F5C025` (void) |
+| `FIV-BDF2992D20D3` `TEST-INV-001004` | Issued | `partially_paid`, **outstanding £45.00**, cash £50.00, credit applied £40.00, **due 2026-11-20** (original 2026-10-30) | `FPY-25CACD4F966F` £50; `FPY-2701B22E8C83` £1 reversed by `FPR-04523EEDDB79`; `FCA-FEB6A24DAD7C` £40 active; `FCA-1CD3E9683931` £5 unapplied by `FAR-B55C9615B120`; `FDD-542B4FDFE97A` |
+| `FIV-8849E14D2866`, `FIV-B5EAFFE9FC25` | Credited | `nothing_due` | — |
+| 6 × Awaiting external issue (FIN6.29) | Awaiting | not receivable | — |
+
+- **Parkside client credit:** `FCC-7E3CD6292226`, Available, £122.00
+  remaining of £162.00.
+- **TEST cash receipts total £212.00:** 29 Sept £50 and 30 Sept £162.
+
+### FIN7.17 Deferred (not started)
+
+- **F8 Finance Needs Attention:**
+  - overdue / due-soon rules read `GET /receivables` (`state`,
+    `daysOverdue`);
+  - no rule was added in F7;
+  - Needs Attention stays Clear.
+- **F9 Xero:**
+  - issue sync moves an Awaiting invoice to Issued, and only then does it
+    become a receivable;
+  - Xero payment sync writes `Source = Xero` payment rows with
+    `External Provider / External Payment ID` (F7 refuses to reverse
+    them);
+  - client-credit balances must reconcile with Xero allocations.
+- **Later slices:**
+  - refunds (F11: a refund of client credit or excess is a separate cash
+    movement, never a reversal);
+  - Stripe and bank feeds;
+  - reminder emails;
+  - Cash Flow / Month Report (they read `GET /receipts`);
+  - PDF;
+  - the Finance UI.
+- **Known limits:**
+  - `asOf` projects forward only; historical aged-debt snapshots would
+    need dated balances;
+  - the list read loads the organisation's F6/F7 tables in full (bounded
+    per organisation, as in F6).
