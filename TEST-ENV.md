@@ -14489,3 +14489,418 @@ live over HTTP.
   occurrence has coach allocations, the existing Work Summary / Needs
   Attention "outcome required for Cancelled" rules will legitimately ask for
   a coach outcome.
+
+---
+
+## Finance Foundation — F5 (client invoice draft + review) — TEST only — 2026-09-30
+
+**Scope.** For one Client and billing period, F5 answers "what eligible,
+not-yet-invoiced work exists for this client?". It builds a real invoice
+**draft** from that work automatically, snapshots every line, and lets
+Management review the draft (blockers vs warnings) and move it to **Ready for
+issue**. All work is in the TEST repo, TEST Airtable (`appQktredAuGa1X7e`)
+and TEST Supabase (`dkqubldmfyeuudecxmvh`). Production Airtable, production
+Supabase, production Finance / Sessions, legacy Financials, Google Sheets,
+Stripe and Xero were not touched. No email was sent and no invoice was issued.
+
+F5 does **not** issue anything. It has no official invoice number, no
+sent / issued / paid / overdue / credited state, no Xero or Stripe calls, no
+payment receipts, no Actual Revenue, and no Finance UI. There are no Needs
+Attention rules. **F6 owns issue, immutability and corrections.**
+
+### FIN5.1 Pre-implementation audit (findings)
+
+- **Repo:** branch `foundation/test-base-isolation`, HEAD `b0c3e19` = origin,
+  clean tree. Before F5: `finance` v8 and `session-occurrences` v10.
+- **Locked design (Finance Design Pack, Money In pp. 9–12):**
+  - invoices are built automatically from delivered work and reviewed before
+    sending;
+  - two per-item actions: "Exclude from this invoice" and "Mark as not
+    billable";
+  - a compact "Check before sending" summary;
+  - the PO rule: the Client owns "PO Required", and the PO value lives on
+    the invoice;
+  - payment terms: the Client override, else the Finance Settings default;
+  - a Client-level billing method: Hub billing or Manual billing.
+- **Production scaffolding:** production has only the legacy parent-paid
+  *Billing Rules*. There are no invoice, invoice-line or invoice-number
+  tables or fields, so there was nothing to copy (empty scaffolding is
+  evidence, not authority).
+- **F3 Clients** already have billing contact, billing email, CC, a payment
+  terms override and PO Required. They had **no billing method**, which the
+  locked design requires. The smallest additive field was added (FIN5.2).
+- **F4** already provides a bulk, date-range resolution per occurrence
+  (`resolveOccurrenceBilling`, overrides, `loadWorld`). F5 consumes it and
+  never re-prices anything.
+- **Finance Settings:** default payment terms are 30 days.
+  **finance_audit_events**, the shared org write lock
+  (`acquire/release_finance_write_lock`, key `commercial:<org>`) and the
+  revision pattern are all reused.
+- **No product contradiction was found.** The reviewed-state boundary is
+  already decided by the design: a Draft may be deliberately refreshed, and
+  **Ready for issue** freezes it. So nothing had to be stopped for a
+  decision.
+
+### FIN5.2 Schema (TEST Airtable, additive only)
+
+- **`Finance Clients.Billing Method`** (`fldhoAkReU3lJV1g9`, single select):
+  "Hub billing" / "Manual billing".
+  - A blank value (every row from before F5) reads as **Hub billing**.
+  - An unknown label makes the organisation's commercial data invalid (409).
+  - A leftover choice "Hub invoice" was created first and is **unused**.
+    The F3 guard test Z10 forbids the word "invoice" in F3 files, so the
+    label became "Hub billing". The Airtable tool cannot delete choices,
+    so the orphan choice remains.
+- **`Finance Invoice Drafts`** (`tblTNpTTI6oV1n5p1`): one row per draft.
+  - Identity: Draft ID (`FID-` + 12 hex, primary), Organisation link.
+  - Client: Client ID, Client Name snapshot.
+  - State: Status (Draft / Ready for issue), Period From / To.
+  - Terms and PO: Payment Terms (Days), Payment Terms Source (Client /
+    Finance Settings / Invoice override), PO Required snapshot, PO Number,
+    PO Override Reason.
+  - Totals: Net / VAT / Gross (Minor Units), Included Lines.
+  - History: Revision; Created By / At; Ready By / At; Last Changed By / At.
+- **`Finance Invoice Draft Lines`** (`tblI7ot1fce2mOvgn`): one row per line.
+  - Identity: Line ID (`FIL-` + 12 hex, primary), Draft ID, Organisation.
+  - State: Status (Included / Excluded / Removed / Superseded).
+  - Source: Occurrence ID, Occurrence Date, Session ID / Name, Finance
+    Service ID, Service Name, Commercial Terms ID, Charge Type.
+  - Money: Description, Quantity + Quantity Source, Unit Amount (Minor
+    Units) + Unit Amount Source, Amount, VAT Treatment, VAT Rate (Basis
+    Points), Net / VAT / Gross (Minor Units).
+  - Trace: Override IDs (F4 overrides used), Source Snapshot (the full F4
+    resolution as JSON).
+  - Status change: Status Reason, Status Changed By / At, Superseded By.
+  - Creation: Created By User ID, Created At.
+- **No Supabase schema change.** F5 reuses the F1 grants, the F2 audit
+  table and the org write-lock RPCs.
+
+### FIN5.3 Code (`supabase/functions-test/finance/`)
+
+- `finance-invoicing.ts` holds the pure domain: work classification, line
+  snapshots, descriptions, totals, create/refresh planning, review,
+  parsers and routes.
+- `finance-invoicing-mapping.ts` handles Airtable rows ⇄ domain. Every row
+  is validated: amount = unit × quantity, Superseded By is set exactly when
+  the line is superseded, and the row must belong to this organisation.
+- `finance-invoicing-repository.ts` does bounded reads and batched writes
+  (10 per request).
+- `finance-invoicing-orchestrator.ts` runs each write in this order: auth →
+  org write lock → in-lock reload → plan → batched writes with undo → one
+  audit insert → release.
+- `index.ts` routes F5 before billing/commercial. The F1–F4 routes and
+  contracts are unchanged.
+- **F3 additive change:** `billingMethod` and `billingMethodLabel` on the
+  public client, and a `billingMethod` input (default `hub`).
+
+### FIN5.4 Eligibility and source discovery
+
+- The F4 `eligible` outcome already means delivered + confirmed + billable +
+  calculable. F5 adds the payer check (**client-paid only**) and the
+  "not already claimed" check.
+- Each occurrence of the client's services in the period is classified as:
+  - **available**: eligible, client-paid, has an expected value, and not
+    Included on any draft line. Only these become lines.
+  - **claimed**: eligible but Included on a line of some draft.
+  - **pending**: awaiting confirmation. Never on a draft; shown as the
+    warning `unconfirmed_work`.
+  - **setup**: `configuration_error`, `finance_service_not_found` or
+    `missing_finance_service`. Shown as the blocker
+    `unresolved_configuration`; never a £0 line.
+  - **noTerms**: `missing_commercial_terms`. Shown as the warning
+    `work_without_terms` (see the decision below).
+  - **other** (never invoiceable): cancelled, postponed, not billable,
+    service not operating, parent-paid / subscription deferred, and similar.
+- **Decision (live finding, commit `71341ab`): missing terms is a warning,
+  not a blocker.**
+  - F3 forbids backdating terms, and F4 checks terms before `not_billable`.
+  - So a past occurrence with no terms can be neither priced nor marked not
+    billable.
+  - As a blocker it would block that client's drafts forever. It is shown
+    as a warning and never becomes a line.
+  - An approved-exception path for it is future debt (FIN5.13).
+- **Manual-billing clients** get no Hub draft (409 `manual_billing_client`).
+  Their work stays in Finance reporting.
+
+### FIN5.5 Line snapshots, descriptions, VAT and totals
+
+- A line copies the F4 result at the moment it is made:
+  - service and terms ids, charge type;
+  - quantity and its source (default / F4 override);
+  - unit amount and its source;
+  - amount, VAT treatment and rate, net / VAT / gross;
+  - the F4 override ids;
+  - the full resolution JSON.
+- A line's figures are **never edited**. Only its status changes.
+- Later F3 terms changes and F4 override changes do not rewrite a line. An
+  open draft picks them up only on an explicit **refresh**.
+- On refresh, a changed line is **Superseded** (kept, with Superseded By)
+  and replaced by a new line. A line that is no longer invoiceable is
+  **Removed** (kept, with a reason).
+- **Description** comes from the source facts, e.g. "4 Sep 2026 — PPA".
+  Per-player lines add "(18 players)".
+- One line per occurrence, so every occurrence stays traceable. Grouping
+  for display comes later.
+- **Totals** are integer pence: the sum of included line net, the sum of
+  VAT, and gross = net + VAT. Review checks the stored totals against the
+  lines (blocker `totals_do_not_reconcile`). No floating-point arithmetic
+  anywhere.
+
+### FIN5.6 Grouping
+
+- Drafts are client-first: one draft = one Client + one period (at most 93
+  days, the F4 range).
+- All of the client's Hub-billed, client-paid services go on the same draft.
+- A draft never contains another client's work: services are looked up by
+  the client's own service ids, and every row is re-checked in code.
+- No new splitting rules were invented.
+
+### FIN5.7 Source claims and duplicate protection
+
+- **An Included line is the claim.** One occurrence may be Included on at
+  most one line anywhere in the organisation.
+- **Duplicate drafts:** creating a draft while an **open** draft for the
+  same client overlaps the period → 409 `open_draft_exists`. A new draft
+  for the same period is allowed once the first is Ready; it then picks up
+  only the unclaimed work.
+- **Concurrency:** every write takes the shared Postgres org lock
+  `commercial:<org>` and re-reads the claims inside the lock. A concurrent
+  create gets 409 `finance_commercial_busy`, and nothing is duplicated.
+- Review also re-checks claims (blocker `duplicate_claim`).
+- Restoring an excluded line whose occurrence another draft now claims →
+  409 `occurrence_claimed`.
+- **Releasing claims:** there is no draft cancel/delete in F5. Claims are
+  released only by Exclude, Removed or Superseded. A cancel lifecycle is
+  future debt.
+
+### FIN5.8 Exclude from this invoice vs Mark not billable
+
+- **Exclude** (a reason is required):
+  - line → Excluded, on this draft only; F4 is not touched;
+  - the work stays billable, and the next draft for the client picks it up;
+  - refreshing this draft does not re-add it;
+  - **Restore** puts it back if it is still invoiceable and unclaimed.
+- **Mark not billable** (a reason is required) **delegates to F4**:
+  - it writes the F4 `not_billable` occurrence override through F4's own
+    writer (and reuses an existing active one);
+  - then the line is Removed, and F4 reports the occurrence as
+    `not_billable`;
+  - F5 has **no flag of its own**;
+  - on a Ready draft, or a line that is not active, it is refused
+    **before** F4 is touched.
+
+### FIN5.9 PO and payment terms
+
+- **PO:** the draft snapshots the client's PO Required.
+  - If it is required, Ready is blocked (`po_missing`) until either a
+    **PO Number** is set on the draft, or a **PO Override Reason** is
+    recorded (audited `po_override_recorded`, shown as a warning).
+  - The PO lives only on the draft; the Client keeps only the default
+    requirement.
+  - If the client's requirement changes later, the warning
+    `po_requirement_changed` is shown, and a refresh applies it.
+- **Payment terms:** the client override, else the Finance Settings
+  default, snapshotted as days + source.
+  - An invoice-level override (0–365, via `details`) has source
+    `invoice_override` and shows the warning `payment_terms_overridden`.
+    `null` returns to the default.
+  - With no terms at all, the blocker is `payment_terms_missing`.
+  - Later Client or Settings changes do not rewrite the draft. A refresh
+    re-reads the default unless there is an invoice override.
+- No due date or overdue logic (F7).
+
+### FIN5.10 Review, states and history protection
+
+- **Review** (returned on every draft read and write; it never writes):
+  - **Blockers:** no_included_lines, client_not_found,
+    manual_billing_client, billing_email_missing, po_missing,
+    payment_terms_missing, source_changed (an included line no longer
+    matches today's F4 figures), duplicate_claim, unresolved_configuration,
+    totals_do_not_reconcile.
+  - **Warnings:** client_inactive, po_requirement_changed,
+    po_override_recorded, payment_terms_overridden, excluded_work,
+    billing_overrides, zero_value_lines, work_without_terms,
+    unconfirmed_work, new_eligible_work.
+- **States: Draft → Ready for issue.**
+  - Ready needs zero blockers **and** the revision that was reviewed. A
+    stale revision → 409 `draft_revision_mismatch`; blockers → 409
+    `draft_has_blockers`.
+  - A **Ready draft is frozen**: refresh, details, exclude, restore and
+    not-billable all → 409 `draft_not_open`.
+  - **Reopen** (a reason is required) returns it to Draft.
+  - There is no "Complete", Sent or Issued state. F6 makes issued invoices
+    immutable.
+- Every material write bumps Revision and records who changed it and when.
+
+### FIN5.11 API (TEST Edge Function `finance` v10, `verify_jwt: true`)
+
+Contract `finance-invoicing-v1`. Reads need Finance **View**; writes need
+Finance **Manage**.
+
+| Method | Path | Body | Purpose |
+|---|---|---|---|
+| GET | `invoicing/eligible?clientId&from&to` | – | Available / claimed / pending / setup / withoutTerms work and totals |
+| GET | `invoice-drafts?clientId` | – | Client's drafts |
+| POST | `invoice-drafts` | `{clientId, from, to}` | Create a draft from the available work |
+| GET | `invoice-drafts/{FID}` | – | Draft + lines + review |
+| POST | `invoice-drafts/{FID}/refresh` | `{reason?}` | Rebuild an open draft from current F4 facts |
+| POST | `invoice-drafts/{FID}/details` | `{poNumber?, poOverrideReason?, paymentTermsDays?, reason?}` | Set PO / PO override / invoice terms |
+| POST | `invoice-drafts/{FID}/ready` | `{revision, reason?}` | Mark Ready for issue |
+| POST | `invoice-drafts/{FID}/reopen` | `{reason}` | Back to Draft |
+| POST | `invoice-drafts/{FID}/lines/{FIL}/exclude` | `{reason}` | Exclude from this invoice |
+| POST | `invoice-drafts/{FID}/lines/{FIL}/restore` | `{reason?}` | Restore an excluded line |
+| POST | `invoice-drafts/{FID}/lines/{FIL}/not-billable` | `{reason}` | Delegate to the F4 not-billable override |
+
+- Any tenant key in the query or body (`organisation_id`,
+  `organisationId`, …) → 400 `tenant_param_rejected`.
+- Unknown params or body keys → 400.
+- A no-op write → 200 `changed:false`, with no write and no audit.
+- There are no send, issue, number, Xero or payment routes.
+
+### FIN5.12 Read pattern, performance and audit
+
+- **Reads per client + period** are a fixed number of bounded requests,
+  never one per line or per occurrence:
+  1. F1 auth + the F3 snapshot (4 parallel reads) + Finance Settings
+     (1 read);
+  2. Sessions by Finance Service ID (1 read per 40 services);
+  3. Occurrences in the date window (1 read per 20 Sessions);
+  4. F4 overrides (1 read per 40 occurrences);
+  5. Included claim lines (1 read per 40 occurrences);
+  6. the draft row + its lines (1 read each).
+- Every formula only narrows the result. Each row is re-checked in code
+  (exact id, link, date, organisation), and values are pattern-checked
+  before they go into a formula.
+- **Writes:** batched creates/patches (10 per request), each with its undo.
+  - One `finance_audit_events` insert per request.
+  - If the audit insert fails, the writes are undone and the request
+    returns 503 `finance_audit_unavailable`. If the undo itself fails,
+    500.
+  - Schedule tables are never written.
+- **Audit** (entity `finance_invoice_draft`) records created, refreshed,
+  line_excluded, line_restored, line_marked_not_billable (plus the F4
+  override's own event), po_updated, po_override_recorded,
+  payment_terms_changed, marked_ready and returned_to_draft. Reads,
+  refusals and no-ops are not audited.
+- **Access (F1):**
+  - View reads; View writes → 403 `finance_manage_required`;
+  - no grant → 403 `finance_access_denied`;
+  - Coach / Parent → 403 `management_required`;
+  - `module_finance` off → 403 `finance_module_disabled`;
+  - tenant switch → 400.
+
+### FIN5.13 Deploy (method change)
+
+The inline 22-file (~365 KB) deploy through the Supabase tool repeatedly
+failed or was truncated. v8 stayed live the whole time; nothing half-deployed.
+
+- `finance` is now deployed from a one-file entry,
+  `supabase/deploy-entries/finance/index.ts`. It imports this repo's
+  committed `supabase/functions-test/finance/index.ts` from
+  raw.githubusercontent.com, **pinned by full commit SHA**.
+- Supabase fetches and bundles the pinned tree at deploy time, so the
+  deployed code is exactly that commit.
+- **Verification:** each of the 22 files at the pinned SHA was downloaded
+  and byte-compared (`cmp`) with the repo. `get_edge_function` shows only
+  the stub.
+- **Deploys:** v9 = `a038ff2`; **v10 = `71341ab`** (current, all 22 files
+  byte-identical). To redeploy, change the SHA in the stub, deploy it, and
+  byte-verify again.
+- This relies on the TEST repo staying public. A production deploy must
+  go back to a source upload.
+
+### FIN5.14 Live TEST verification (2026-09-29/30, `finance` v10, real HTTP via `pg_net`)
+
+Probe schema `f2probe` (dropped afterwards); manager / coach / parent TEST
+logins.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Fixed client-paid occurrence eligible | Parkside Sep: 10 available (net 1153.00 / VAT 38.00 / gross 1191.00); draft D1 `FID-958179549E2E` made with 10 lines |
+| 2 | Per-player £9 × quantity | After-school line 18 × £9 = 162.00 |
+| 3 | F4 quantity override used | lines at 135.00 (`FOB-7F5908F59BC0`) and 180.00 (`FOB-7A77B8025BDD`), override ids on the line |
+| 4 | Several services, one client | PPA + After-school + Breakfast on D1 |
+| 5 | Different client never mixed | St Anne's work only on its own draft `FID-D5F457285BDC` |
+| 6 | Awaiting / cancelled excluded | 3 awaiting (pending), 2 cancelled, 1 postponed and 2 not billable left off; Camp 17 Sep without terms → `work_without_terms` warning |
+| 7 | Exclude, then eligible later | Breakfast 24 Sep excluded (D1 → 1113.00 / 30.00 / 1143.00, rev 2); after D1 was Ready, D2 `FID-0E9BBC309EE1` picked up only that line (48.00) |
+| 8 | Not billable via F4 | St Anne's 15 Sep → F4 override `FOB-AAC51CC3C237`, line Removed, draft 45.00/9.00/54.00; F4 GET = `not_billable` |
+| 9 | Duplicate refused | second open Parkside draft → 409 `open_draft_exists`; two concurrent St Anne's creates → one 201, one 409 `finance_commercial_busy`; restore of a line claimed elsewhere → 409 `occurrence_claimed` |
+| 10 | Commercial change keeps the snapshot | F4 amount override (`FOB-308F3AA9B798`) after drafting → line stayed 54.00, blocker `source_changed`; override then removed. Parkside terms 30 → 21 → D1 still 30, new D2 = 21 |
+| 11 | PO | D1 Ready without PO → 409 `draft_has_blockers` (`po_missing`); PO `PO-TEST-PARKSIDE-2026-09` → Ready (rev 4); D2 PO override reason → ready:true + warning |
+| 12 | Payment terms snapshot | D1 client 30, D2 client 21, St Anne's `finance_settings` 30 |
+| 13 | View reads only | View: list / read / eligible 200; ready and not-billable → 403 `finance_manage_required` (no F4 override written); no grant → 403 `finance_access_denied` |
+| 14 | Manage writes | every write above; St Anne's marked Ready (rev 3) after the grant was restored |
+| 15 | Module off | read and write → 403 `finance_module_disabled`; turned back ON |
+| 16 | Tenant switch | query and body `organisation*` → 400; Coach / Parent → 403 `management_required` |
+| 17 | Audit exact | 19 events since start, exactly the successful writes (3 created, 1 line_excluded, 1 po_updated, 1 po_override_recorded, 3 marked_ready, 1 returned_to_draft, 1 line_marked_not_billable, 2 F4 overrides created + 1 removed, 1 client created + 2 client updated, 1 service + 1 terms created); none for any read, refused write (409 / 403 / 400) or expired-token (401) request |
+| 18 | Needs Attention unchanged | `Clear`, total 0, before and after |
+
+### FIN5.15 Resting TEST data (fixtures kept for F6)
+
+- **Drafts:**
+  - **D1 `FID-958179549E2E`** (Parkside, Sep 2026): **Ready for issue**,
+    rev 6; 9 included lines + 1 excluded; 1113.00 / 30.00 / 1143.00; PO
+    `PO-TEST-PARKSIDE-2026-09`; terms 30 (client).
+  - **D2 `FID-0E9BBC309EE1`** (Parkside, Sep 2026): open **Draft**, rev 2;
+    Breakfast 24 Sep 40.00 / 8.00 / 48.00; PO override reason recorded;
+    terms 21 (the client value at creation, kept as the snapshot).
+  - **D3 `FID-D5F457285BDC`** (St Anne's, Sep 2026): **Ready for issue**,
+    rev 3; 8 Sep 45.00 / 9.00 / 54.00; 15 Sep line Removed (not billable);
+    terms 30 (Finance Settings).
+- **Client St Anne's:** client `FCL-E1804CE3E04C` "TEST St Anne's (F5)",
+  Hub billing, PO not required. Service `FSV-A62B5AD23083` with terms
+  `FCT-E47D2B6820C7` (£45 + 20% VAT per session).
+- **St Anne's Session:** `TEST-F5-STANNES` (`recMIzDEQDldQmLJq`, Inactive,
+  so it is never generated). Occurrences `recHrVGFZckEMHTcr` (8 Sep,
+  confirmed), `reczXNQadkcKWYlvs` (15 Sep, confirmed, not billable) and
+  `recMix9F1qbpq2N43` (22 Sep, awaiting).
+- **F4 overrides:**
+  - `FOB-AAC51CC3C237` is active and deliberate (15 Sep not billable).
+  - `FOB-308F3AA9B798` is removed (history only).
+  - The F4 fixtures `FOB-7F5908F59BC0` and `FOB-7A77B8025BDD` are
+    unchanged.
+- **Parkside** payment terms are back to 30 (client rev 3).
+- **Baseline:**
+  - `module_finance` ON;
+  - the only active grant is the deliberate Manage grant for
+    manager@test.invalid on ORG-TEST-001;
+  - every lock table is empty;
+  - the probe schema is dropped;
+  - no invoice issued, no email sent.
+
+### FIN5.16 Tests and regression
+
+- **Tests:** `tests/support/finance-invoicing.test.ts`, **131/131**,
+  covering:
+  - eligibility, grouping, terms snapshot, per-player, VAT (plus /
+    included / none);
+  - duplicates, including a real interleaved concurrent create;
+  - exclude / restore, not-billable delegation, PO, payment terms;
+  - states / freeze, access, exact audit, and audit-failure rollback.
+- The test fetch mock handles Airtable batch create / patch / delete and
+  yields per request, so concurrent requests really interleave.
+- The test copies in `tests/support` are generated from the canonical files
+  (import paths swapped). The e2e shim is
+  `tests/e2e/financeinvoicingtest.js`.
+- **Mutation testing:** 37 of 39 mutants caught. The 2 survivors are
+  equivalent:
+  - dropping the quantity comparison in `sameSource` is still caught
+    through amount = unit × quantity (they differ only at a £0 unit);
+  - dropping the in-code "Included" re-check on claim rows is covered by
+    the formula, which already filters on Status = Included.
+- **Regression:** the F1–F4 Finance suites, the confirmation writer and
+  all Schedule suites pass. The full `tests/run-all.js` passes **73/73 test files** (re-run on
+  2026-09-30 at `71341ab` + docs).
+
+### FIN5.17 Deferred (later Finance — not started)
+
+- F6: issue, official number, immutability, corrections / credit notes.
+- F7: payments, due date, overdue.
+- Xero / Stripe sync, Actual Revenue, Needs Attention rules and the
+  Finance UI.
+- F5 follow-ups:
+  - a draft cancel/delete that releases claims;
+  - an approved-exception path for past work without commercial terms;
+  - display grouping of lines;
+  - separate invoices per billing contact, if the design later requires
+    them.
