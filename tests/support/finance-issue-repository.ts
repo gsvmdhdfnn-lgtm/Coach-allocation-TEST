@@ -12,7 +12,8 @@
  * one per line or per occurrence):
  *   - an invoice by Invoice ID; its lines by Invoice ID; its credit notes by
  *     Invoice ID; invoices by Source Draft ID / Client ID / Replaces Invoice
- *     ID / Correction ID; credit notes by Credit Note ID / Client ID;
+ *     ID / Correction ID / Hub Invoice Number (the "never reuse a number"
+ *     check); credit notes by Credit Note ID / Client ID;
  *     drafts by Replaces Invoice ID / Correction ID;
  *   - the issued-line claims for a set of occurrences (1 read per 40).
  * Every formula only narrows; each row is re-checked in code (exact value
@@ -31,6 +32,7 @@ import { CLIENT_ID_PATTERN, CORRECTION_ID_PATTERN, DRAFT_ID_PATTERN, INVOICE_ID_
 import { FI, INVOICING_TABLES } from "./finance-invoicing-mapping.ts";
 import { CLAIM_READ_CHUNK, chunk, listByFormula } from "./finance-invoicing-repository.ts";
 import { FV, ISSUE_TABLES } from "./finance-issue-mapping.ts";
+import { HUB_INVOICE_NUMBER_PATTERN } from "./finance-issue.ts";
 
 const field = (name: string) => `{${name}}`;
 const inOrg = (r: Row, orgRec: string) => Array.isArray(r.fields?.[FV.org]) && r.fields[FV.org].length === 1 && r.fields[FV.org][0] === orgRec;
@@ -47,6 +49,7 @@ export const listInvoiceRowsBySourceDraft = (c: AirtableConfig, org: string, dra
 export const listInvoiceRowsByClient = (c: AirtableConfig, org: string, clientId: string) => byExact(c, org, ISSUE_TABLES.invoices, FV.invoice.clientId, clientId, CLIENT_ID_PATTERN);
 export const listInvoiceRowsReplacing = (c: AirtableConfig, org: string, invoiceId: string) => byExact(c, org, ISSUE_TABLES.invoices, FV.invoice.replaces, invoiceId, INVOICE_ID_PATTERN);
 export const listInvoiceRowsByCorrection = (c: AirtableConfig, org: string, correctionId: string) => byExact(c, org, ISSUE_TABLES.invoices, FV.invoice.correctionId, correctionId, CORRECTION_ID_PATTERN);
+export const listInvoiceRowsByHubNumber = (c: AirtableConfig, org: string, hubNumber: string) => byExact(c, org, ISSUE_TABLES.invoices, FV.invoice.hubNumber, hubNumber, HUB_INVOICE_NUMBER_PATTERN);
 export const listInvoiceLineRows = (c: AirtableConfig, org: string, invoiceId: string) => byExact(c, org, ISSUE_TABLES.lines, FV.line.invoiceId, invoiceId, INVOICE_ID_PATTERN);
 export const findCreditNoteRows = (c: AirtableConfig, org: string, creditNoteId: string) => byExact(c, org, ISSUE_TABLES.creditNotes, FV.credit.id, creditNoteId, CORRECTION_ID_PATTERN);
 export const listCreditNoteRowsForInvoice = (c: AirtableConfig, org: string, invoiceId: string) => byExact(c, org, ISSUE_TABLES.creditNotes, FV.credit.invoiceId, invoiceId, INVOICE_ID_PATTERN);

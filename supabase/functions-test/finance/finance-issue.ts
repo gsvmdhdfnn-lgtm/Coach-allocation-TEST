@@ -16,10 +16,20 @@
  *     Ready, re-checking every precondition under the lock; it never
  *     refreshes, re-prices or edits a line. A blocker that appears after
  *     Ready makes issue fail - it is never silently fixed.
- *   - Identity: the Hub's own stable reference is the Invoice ID
- *     (FIV-xxxxxxxxxxxx, random, never a sequence). A legal / accounting
- *     number is NOT invented here: the external provider / id / number
- *     fields stay blank until the accounting connection (F9) fills them.
+ *   - Identity (F6 correction, locked): every invoice has TWO identities.
+ *     1. The internal reference - the Invoice ID FIV-xxxxxxxxxxxx: random,
+ *        unique, permanent, never reused, never a sequence; created at
+ *        issue whatever the numbering authority.
+ *     2. The official / customer-facing number, from the organisation's
+ *        EXPLICIT Finance Settings authority (never inferred from whether a
+ *        number exists):
+ *        - "xero": Xero assigns it later (F9 fills External Provider / ID /
+ *          Number). F6 invents nothing - the number is pending.
+ *        - "hub": the Hub assigns the organisation's OWN sequential number
+ *          at issue (prefix + next number, optionally zero-padded). The
+ *          sequence is per organisation (never one platform-wide sequence)
+ *          and advances only with a successful issue - see
+ *          invoiceNumberPlan and the orchestrator's locking.
  *   - An issued invoice's lines, amounts, VAT, terms, PO, dates and client /
  *     issuer snapshots are written once and never edited. The only field
  *     that ever changes on the invoice row is its credit state (Issued ->
@@ -36,6 +46,7 @@
 import { type Minor, type VatTreatment, formatMinor, formatRatePercent } from "./finance-money.ts";
 import { isIsoDate } from "./finance-effective-dating.ts";
 import { type ChargeType, CHARGE_TYPE_LABELS, REASON_MAX, auditEvent } from "./finance-commercial.ts";
+import { type FinanceSettings, type InvoiceNumberAuthority, INVOICE_NUMBER_MAX } from "./finance-settings.ts";
 import {
   type Draft,
   type Line,
@@ -88,6 +99,11 @@ export const ISSUE_AUTHORITIES = ["hub", "external_accounting"] as const;
 export type IssueAuthority = (typeof ISSUE_AUTHORITIES)[number];
 export const ISSUE_AUTHORITY_LABELS: Record<IssueAuthority, string> = { hub: "Issued in the Hub", external_accounting: "Issued by the external accounting system" };
 
+/** Who assigns an invoice's official (customer-facing) number, frozen on the invoice at issue. */
+export const NUMBER_AUTHORITY_LABELS: Record<InvoiceNumberAuthority, string> = { hub: "The Hub assigns the official number (this organisation's sequence)", xero: "Xero assigns the official number" };
+/** A Hub-assigned official number: the Settings prefix (1-12 chars) + the sequence (up to 9 digits, optionally zero-padded). */
+export const HUB_INVOICE_NUMBER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9/_-]{0,11}[0-9]{1,9}$/;
+
 /** Who issued the invoice, frozen at issue (Finance Settings + organisation). */
 export interface Issuer {
   organisationId: string;
@@ -123,6 +139,12 @@ export interface Invoice {
   lineCount: number;
   status: InvoiceStatus;
   issueAuthority: IssueAuthority;
+  /** Who assigns the official number (frozen at issue from Finance Settings). */
+  numberAuthority: InvoiceNumberAuthority;
+  /** "hub" only: the official number the Hub assigned, and its place in the organisation's sequence. Never changes. */
+  hubInvoiceNumber: string | null;
+  hubInvoiceSequence: number | null;
+  /** Filled later by the accounting connection (F9); with "xero" the external number IS the official number. */
   externalProvider: string | null;
   externalInvoiceId: string | null;
   externalInvoiceNumber: string | null;
@@ -224,7 +246,9 @@ export interface IssueInput {
   /** The F5 review computed NOW, under the lock (never a stored one). */
   review: Review;
   client: { clientId: string; name: string; billingMethod: string; billingContactName: string | null; billingEmail: string | null; billingCcEmails: readonly string[] } | null;
-  settings: { invoiceLegalName: string | null; invoiceAddress: string | null; companyNumber: string | null; vatRegistered: boolean | null; vatNumber: string | null } | null;
+  settings: ({ invoiceLegalName: string | null; invoiceAddress: string | null; companyNumber: string | null; vatRegistered: boolean | null; vatNumber: string | null } & NumberingSettings) | null;
+  /** "hub" numbering: an invoice of this organisation already carries the number the plan would assign. */
+  numberTaken: boolean;
   organisation: { organisationId: string; name: string | null };
   /** Invoices already recorded with this draft as their source (must be none). */
   existingFromDraft: readonly { invoiceId: string }[];
@@ -233,6 +257,32 @@ export interface IssueInput {
   reviewedRevision: number;
   ids: { invoiceId: string; lineIds: string[] };
   meta: { userId: string; at: string; today: string };
+}
+
+export type NumberPlan = { authority: "xero"; number: null; sequence: null; nextAfter: null } | { authority: "hub"; number: string; sequence: number; nextAfter: number };
+type NumberingSettings = Pick<FinanceSettings, "invoiceNumberAuthority" | "invoiceNumberPrefix" | "invoiceNumberNext" | "invoiceNumberDigits">;
+
+/** prefix + n, zero-padded to `digits` when set (a longer number is never cut). */
+export function formatHubInvoiceNumber(prefix: string, n: number, digits: number | null): string {
+  return prefix + (digits ? String(n).padStart(digits, "0") : String(n));
+}
+
+/**
+ * The official number an issue would take, from the organisation's
+ * Finance Settings: "xero" -> none now (Xero assigns it later); "hub" ->
+ * prefix + the next number, and the next number becomes +1. Refused when
+ * the authority is not chosen, Hub numbering lacks a prefix / next number,
+ * or the sequence is used up. Pure: the orchestrator applies it under the
+ * Finance write lock + the Settings lock, in the same all-or-nothing
+ * write as the invoice.
+ */
+export function invoiceNumberPlan(s: NumberingSettings | null): { ok: true; plan: NumberPlan } | Refusal {
+  const authority = s?.invoiceNumberAuthority ?? null;
+  if (authority === "xero") return { ok: true, plan: { authority: "xero", number: null, sequence: null, nextAfter: null } };
+  if (!s || authority !== "hub") return refuse(409, "invoice_numbering_not_configured", "Finance Settings must say who assigns official invoice numbers (the Hub or Xero) before an invoice can be issued - nothing was issued");
+  if (!s.invoiceNumberPrefix || s.invoiceNumberNext === null) return refuse(409, "invoice_numbering_not_configured", "Hub invoice numbering needs an invoice number prefix and the next invoice number in Finance Settings - nothing was issued");
+  if (s.invoiceNumberNext > INVOICE_NUMBER_MAX) return refuse(409, "invoice_number_sequence_exhausted", `The invoice number sequence is used up (the largest number is ${INVOICE_NUMBER_MAX}) - change the prefix and next number in Finance Settings; nothing was issued`);
+  return { ok: true, plan: { authority: "hub", number: formatHubInvoiceNumber(s.invoiceNumberPrefix, s.invoiceNumberNext, s.invoiceNumberDigits), sequence: s.invoiceNumberNext, nextAfter: s.invoiceNumberNext + 1 } };
 }
 
 /** The cheap refusals, checked before anything heavy is loaded: never twice from one draft, only a Ready draft, only the revision Management reviewed. */
@@ -251,9 +301,11 @@ const orderForInvoice = (ls: readonly Line[]) => [...ls].sort((a, b) => `${a.occ
  * not already issued -> Ready -> the reviewed revision -> client resolves and
  * is billed through the Hub -> zero blockers NOW (claims, source changes,
  * PO, terms, missing terms, totals ...) -> totals reconcile -> issuer and
- * client snapshot data exist -> a replacement's original invoice exists.
+ * client snapshot data exist -> the official numbering is configured (and
+ * a Hub number is not already taken) -> a replacement's original invoice
+ * exists.
  */
-export function planIssue(input: IssueInput): { ok: true; invoice: Invoice; lines: InvoiceLine[] } | Refusal {
+export function planIssue(input: IssueInput): { ok: true; invoice: Invoice; lines: InvoiceLine[]; numbering: NumberPlan } | Refusal {
   const { draft, review, client, settings, meta } = input;
   const gate = issueGate(draft, input.existingFromDraft, input.reviewedRevision);
   if (!gate.ok) return gate;
@@ -269,6 +321,10 @@ export function planIssue(input: IssueInput): { ok: true; invoice: Invoice; line
   if (!client.billingEmail) return refuse(409, "billing_email_missing", `${client.name} has no billing email - nothing was issued`);
   if (!settings || !settings.invoiceLegalName || !settings.invoiceAddress) return refuse(409, "issuer_details_missing", "Finance Settings need the invoice legal name and address before an invoice can be issued");
   if (t.vatMinor > 0 && (settings.vatRegistered !== true || !settings.vatNumber)) return refuse(409, "issuer_vat_details_missing", "This invoice charges VAT - Finance Settings must say VAT registered and give the VAT number before it can be issued");
+  const np = invoiceNumberPlan(settings);
+  if (!np.ok) return np;
+  const numbering = np.plan;
+  if (numbering.authority === "hub" && input.numberTaken) return refuse(409, "invoice_number_taken", `${numbering.number} is already the number of an issued invoice - set the next invoice number in Finance Settings past it (numbers are never reused); nothing was issued`);
   if (draft.replacesInvoiceId) {
     if (!input.replaced || input.replaced.invoiceId !== draft.replacesInvoiceId) return refuse(409, "replaced_invoice_not_found", `The invoice this draft replaces (${draft.replacesInvoiceId}) cannot be found - nothing was issued`);
     if (input.replaced.clientId !== draft.clientId) return refuse(409, "replaced_invoice_mismatch", `${draft.replacesInvoiceId} belongs to another client - nothing was issued`);
@@ -339,6 +395,9 @@ export function planIssue(input: IssueInput): { ok: true; invoice: Invoice; line
     lineCount: lines.length,
     status: "issued",
     issueAuthority: "hub",
+    numberAuthority: numbering.authority,
+    hubInvoiceNumber: numbering.number,
+    hubInvoiceSequence: numbering.sequence,
     externalProvider: null,
     externalInvoiceId: null,
     externalInvoiceNumber: null,
@@ -361,7 +420,7 @@ export function planIssue(input: IssueInput): { ok: true; invoice: Invoice; line
     updatedBy: meta.userId,
     updatedAt: meta.at,
   };
-  return { ok: true, invoice, lines };
+  return { ok: true, invoice, lines, numbering };
 }
 
 // ---------------------------------------------------------------------
@@ -452,6 +511,24 @@ export function planCreditNote(input: { invoice: Invoice; lines: readonly Invoic
 
 const money = (m: { netMinor: Minor; vatMinor: Minor; grossMinor: Minor }) => ({ currency: CURRENCY, net: formatMinor(m.netMinor), vat: formatMinor(m.vatMinor), gross: formatMinor(m.grossMinor) });
 
+/**
+ * Internal reference vs official number. With "hub" the official number is
+ * the Hub's; with "xero" it is the external number once the accounting
+ * connection (F9) has recorded it - until then it is pending, never faked.
+ */
+export function publicNumbering(i: Invoice) {
+  const officialNumber = i.numberAuthority === "hub" ? i.hubInvoiceNumber : i.externalInvoiceNumber;
+  return {
+    internalReference: i.invoiceId,
+    authority: i.numberAuthority,
+    authorityLabel: NUMBER_AUTHORITY_LABELS[i.numberAuthority],
+    officialNumber,
+    status: officialNumber ? "assigned" : "pending_external",
+    statusLabel: officialNumber ? "Official number assigned" : "Awaiting the official number from Xero",
+    hubSequence: i.hubInvoiceSequence,
+  };
+}
+
 export function publicInvoice(i: Invoice, st: CreditState | null = null) {
   return {
     invoiceId: i.invoiceId,
@@ -460,6 +537,7 @@ export function publicInvoice(i: Invoice, st: CreditState | null = null) {
     statusLabel: INVOICE_STATUS_LABELS[i.status],
     issueAuthority: i.issueAuthority,
     issueAuthorityLabel: ISSUE_AUTHORITY_LABELS[i.issueAuthority],
+    numbering: publicNumbering(i),
     external: { provider: i.externalProvider, invoiceId: i.externalInvoiceId, invoiceNumber: i.externalInvoiceNumber },
     sourceDraftId: i.sourceDraftId,
     client: { clientId: i.clientId, name: i.clientName, billingContactName: i.billingContactName, billingEmail: i.billingEmail, billingCcEmails: [...i.billingCcEmails] },
@@ -563,6 +641,9 @@ export const auditInvoice = (i: Invoice) => ({
   grossMinor: i.grossMinor,
   lineCount: i.lineCount,
   issueAuthority: i.issueAuthority,
+  numberAuthority: i.numberAuthority,
+  hubInvoiceNumber: i.hubInvoiceNumber,
+  hubInvoiceSequence: i.hubInvoiceSequence,
   replacesInvoiceId: i.replacesInvoiceId,
   correctionId: i.correctionId,
   approvedOmissions: i.approvedOmissions.map((e) => e.occurrenceId),

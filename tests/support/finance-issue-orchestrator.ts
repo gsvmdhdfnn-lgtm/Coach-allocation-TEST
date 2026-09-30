@@ -20,21 +20,29 @@
  *      the draft, its claims or the billing it rests on are changing; two
  *      issue requests for one draft (or two drafts claiming one
  *      occurrence) can never both succeed                  -> 409 busy
+ *      Issue ALSO takes the organisation's Finance Settings lock (the one
+ *      POST /settings takes), so the Settings it reads - issuer details and
+ *      the official numbering, including the Hub's next invoice number -
+ *      cannot change underneath it, and two issues can never take the same
+ *      Hub number                                          -> 409 finance_settings_busy
  *   3. load everything UNDER the lock and re-check every precondition
  *      (issue: the F5 review is recomputed now)            -> 400 / 404 / 409, nothing written
  *   4. the Airtable writes, each registered with its undo
  *   5. the audit events, in ONE insert
- *   Failure in 4 or 5 undoes this request's writes (the invoice, its lines
- *   and the draft stamp go together or not at all) and returns 503; if the
- *   undo fails the caller gets 500 (never "success").
- *   6. release the lock (always)
+ *   Failure in 4 or 5 undoes this request's writes (the invoice, its lines,
+ *   the draft stamp and the Hub next-number advance go together or not at
+ *   all) and returns 503; if the undo fails the caller gets 500 (never
+ *   "success").
+ *   6. release the locks (always)
  */
 import type { FinanceCaller, OrganisationContext } from "./finance-access.ts";
 import { authorizeFinance } from "./finance-orchestrator.ts";
 import { todayIn } from "./finance-commercial.ts";
 import type { Row } from "./finance-commercial-mapping.ts";
 import { acquireWriteLock, insertAuditEvents, releaseWriteLock } from "./finance-commercial-repository.ts";
-import { type Draft, type Line, DRAFT_EVENTS, ENTITY_DRAFT, auditDraft, auditLine, classifyWork, defaultPaymentTerms, lineFromResolution, publicDraft, reviewDraft, totalsOf } from "./finance-invoicing.ts";
+import { FIELD_NAMES as SETTINGS_FIELDS, SETTINGS_TABLE } from "./finance-settings.ts";
+import { acquireSettingsLock, releaseSettingsLock } from "./finance-settings-repository.ts";
+import { type Draft, type Line, DRAFT_EVENTS, ENTITY_DRAFT, auditDraft, auditLine, classifyWork, lineFromResolution, publicDraft, reviewDraft, totalsOf } from "./finance-invoicing.ts";
 import { formatMinor } from "./finance-money.ts";
 import { INVOICING_TABLES, buildDrafts, draftFields, draftRestoreFields, lineCreateFields } from "./finance-invoicing-mapping.ts";
 import { type ClientWork, type InvoicingDeps, DraftTxn, draftBody, loadClientWork, loadDraft, uniqueIds } from "./finance-invoicing-orchestrator.ts";
@@ -51,6 +59,7 @@ import {
   auditInvoiceLine,
   creditState,
   invoiceHistory,
+  invoiceNumberPlan,
   issueAuditEvent,
   issueGate,
   newIssueId,
@@ -71,6 +80,7 @@ import {
   listInvoiceLineRows,
   listInvoiceRowsByClient,
   listInvoiceRowsByCorrection,
+  listInvoiceRowsByHubNumber,
   listInvoiceRowsBySourceDraft,
   listInvoiceRowsReplacing,
 } from "./finance-issue-repository.ts";
@@ -214,7 +224,7 @@ export async function listInvoices(deps: IssueDeps, caller: FinanceCaller, clien
         const mine = notes.filter((x) => x.invoiceId === inv.invoiceId);
         const creditedGross = mine.reduce((a, x) => a + x.grossMinor, 0);
         const p = publicInvoice(inv);
-        return { invoiceId: p.invoiceId, reference: p.reference, status: p.status, statusLabel: p.statusLabel, invoiceDate: p.invoiceDate, dueDate: p.dueDate, period: p.period, totals: p.totals, creditNotes: mine.map((x) => x.creditNoteId), creditedGross: formatMinor(creditedGross), replacesInvoiceId: p.replacesInvoiceId, sourceDraftId: p.sourceDraftId, external: p.external };
+        return { invoiceId: p.invoiceId, reference: p.reference, officialNumber: p.numbering.officialNumber, numberAuthority: p.numbering.authority, status: p.status, statusLabel: p.statusLabel, invoiceDate: p.invoiceDate, dueDate: p.dueDate, period: p.period, totals: p.totals, creditNotes: mine.map((x) => x.creditNoteId), creditedGross: formatMinor(creditedGross), replacesInvoiceId: p.replacesInvoiceId, sourceDraftId: p.sourceDraftId, external: p.external };
       }),
     },
   };
@@ -259,6 +269,8 @@ type Ctx = {
   today: string;
   userId: string;
   ev: (eventType: string, entityType: string, recordId: string, before: Record<string, unknown> | null, after: Record<string, unknown>, reason: string | null, context?: Record<string, unknown>) => AuditRow;
+  /** Also hold this organisation's Finance Settings lock until the request ends (null = held). */
+  lockSettings: () => Promise<Fail | null>;
 };
 type Plan = { httpStatus: 200 | 201; run: (txn: DraftTxn) => Promise<{ events: AuditRow[]; body: () => Promise<Record<string, unknown>> | Record<string, unknown> }> } | Fail;
 
@@ -274,6 +286,7 @@ async function underLock(deps: IssueDeps, caller: FinanceCaller, route: string, 
     return fail(503, "finance_invoices_unavailable", "The change could not be saved just now - try again");
   }
   if (!token) return fail(409, "finance_commercial_busy", "Finance is being changed by someone else right now - try again in a moment");
+  let settingsToken: string | null = null;
   try {
     const atDate = now(deps);
     const ctx: Ctx = {
@@ -283,6 +296,15 @@ async function underLock(deps: IssueDeps, caller: FinanceCaller, route: string, 
       today: todayIn(org.timezone, atDate),
       userId: caller.userId,
       ev: (eventType, entityType, recordId, before, after, reason, context = {}) => issueAuditEvent({ organisationId: org.organisationId, actorUserId: caller.userId, eventType, entityType, recordId, before, after, reason, route, context }),
+      lockSettings: async () => {
+        try {
+          settingsToken = await acquireSettingsLock(deps.grants, org.organisationId);
+        } catch (e) {
+          console.error(e);
+          return fail(503, "finance_invoices_unavailable", "The change could not be saved just now - try again");
+        }
+        return settingsToken ? null : fail(409, "finance_settings_busy", "Finance Settings are being changed right now - try again in a moment");
+      },
     };
     const p = await plan(ctx);
     if ("status" in p) return p;
@@ -304,6 +326,13 @@ async function underLock(deps: IssueDeps, caller: FinanceCaller, route: string, 
     }
     return { status: "ok", httpStatus: p.httpStatus, body: { contract: ISSUE_CONTRACT, organisation: orgBody(org), access: "manage", changed: true, ...(await result.body()) } };
   } finally {
+    if (settingsToken) {
+      try {
+        await releaseSettingsLock(deps.grants, org.organisationId, settingsToken);
+      } catch (e) {
+        console.error("Finance Settings lock release failed (expires on its own)", e);
+      }
+    }
     try {
       await releaseWriteLock(deps.grants, lockKey(org), token);
     } catch (e) {
@@ -319,6 +348,9 @@ async function underLock(deps: IssueDeps, caller: FinanceCaller, route: string, 
  */
 export function issueDraft(deps: IssueDeps, caller: FinanceCaller, draftId: string, revision: number, reason: string | null): Promise<Ok | Fail> {
   return underLock(deps, caller, `POST /invoice-drafts/${draftId}/issue`, async (c) => {
+    // Settings (issuer + official numbering) are read and the Hub number advanced under the Settings lock too.
+    const busy = await c.lockSettings();
+    if (busy) return busy;
     const [l, existingRows] = await Promise.all([loadDraft(deps, c.org, draftId), guarded(() => listInvoiceRowsBySourceDraft(deps.airtable, c.org.recordId, draftId))]);
     if (isFail(l)) return l;
     if (isFail(existingRows)) return existingRows;
@@ -340,6 +372,14 @@ export function issueDraft(deps: IssueDeps, caller: FinanceCaller, draftId: stri
       if (isFail(one) && one.httpStatus !== 404) return one;
       replaced = isFail(one) ? null : one.value;
     }
+    // Hub numbering: the number this issue would take must not already be on an issued invoice (never reused).
+    let numberTaken = false;
+    const np = invoiceNumberPlan(cw.settings);
+    if (np.ok && np.plan.authority === "hub") {
+      const taken = await guarded(() => listInvoiceRowsByHubNumber(deps.airtable, c.org.recordId, np.plan.number as string));
+      if (isFail(taken)) return taken;
+      numberTaken = taken.length > 0;
+    }
     const review = reviewDraft({ draft, lines, client: cw.client?.value ?? null, current: cw.current, work: cw.work, claims: cw.claims });
     const included = lines.filter((x) => x.status === "included");
     const invoiceId = newIssueId("FIV", hex(deps));
@@ -353,6 +393,7 @@ export function issueDraft(deps: IssueDeps, caller: FinanceCaller, draftId: stri
       settings: cw.settings,
       organisation: { organisationId: c.org.organisationId, name: c.org.name },
       existingFromDraft,
+      numberTaken,
       replaced,
       reviewedRevision: revision,
       ids: { invoiceId, lineIds },
@@ -360,15 +401,20 @@ export function issueDraft(deps: IssueDeps, caller: FinanceCaller, draftId: stri
     });
     if (!p.ok) return fail(p.httpStatus, p.code, p.error, p.fields);
     const inv = p.invoice;
+    const num = p.numbering;
+    if (num.authority === "hub" && !cw.settingsRecordId) return fail(409, "invoice_numbering_not_configured", "Hub invoice numbering needs a Finance Settings record - nothing was issued");
     const after: Draft = { ...draft, issuedInvoiceId: inv.invoiceId, revision: draft.revision + 1, updatedBy: c.userId, updatedAt: c.at };
+    const numbering = { authority: num.authority, officialNumber: num.number, sequence: num.sequence, nextNumberBefore: num.sequence, nextNumberAfter: num.nextAfter };
     return {
       httpStatus: 201,
       run: async (txn) => {
+        // The Hub's next number advances in the same all-or-nothing write as the invoice (undone with it).
+        if (num.authority === "hub") await txn.patch(SETTINGS_TABLE, [{ id: cw.settingsRecordId as string, fields: { [SETTINGS_FIELDS.invoiceNumberNext]: num.nextAfter }, restore: { [SETTINGS_FIELDS.invoiceNumberNext]: num.sequence } }]);
         const [created] = await txn.create(ISSUE_TABLES.invoices, [invoiceCreateFields(inv, c.org.recordId)]);
         await txn.create(ISSUE_TABLES.lines, p.lines.map((x) => invoiceLineCreateFields(x, c.org.recordId)));
         await txn.patch(INVOICING_TABLES.drafts, [{ id: l.draft.recordId, fields: draftFields(after, { userId: c.userId, at: c.at }), restore: draftRestoreFields(draft) }]);
         const events = [
-          c.ev(ISSUE_EVENTS.issued, ENTITY_INVOICE, inv.invoiceId, null, { invoice: auditInvoice(inv), lines: p.lines.map(auditInvoiceLine) }, reason, { sourceDraftId: draft.draftId, reviewedRevision: revision, warnings: review.warnings.map((w) => w.code), approvedOmissions: inv.approvedOmissions.map((e) => e.occurrenceId) }),
+          c.ev(ISSUE_EVENTS.issued, ENTITY_INVOICE, inv.invoiceId, null, { invoice: auditInvoice(inv), lines: p.lines.map(auditInvoiceLine) }, reason, { sourceDraftId: draft.draftId, reviewedRevision: revision, warnings: review.warnings.map((w) => w.code), approvedOmissions: inv.approvedOmissions.map((e) => e.occurrenceId), numbering }),
           c.ev(ISSUE_EVENTS.draftIssued, ENTITY_DRAFT, draft.draftId, auditDraft(draft), auditDraft(after), reason, { invoiceId: inv.invoiceId }),
         ];
         if (replaced) events.push(c.ev(ISSUE_EVENTS.replacementLinked, ENTITY_INVOICE, replaced.invoiceId, { status: replaced.status, revision: replaced.revision }, { replacementInvoiceId: inv.invoiceId, correctionId: inv.correctionId, status: replaced.status, revision: replaced.revision }, reason, { replacementDraftId: draft.draftId }));
@@ -426,8 +472,12 @@ export function createCreditNote(deps: IssueDeps, caller: FinanceCaller, invoice
  * POST /credit-notes/{id}/replacement-draft - the correction path: a new F5
  * draft, scoped to exactly the credited occurrences, built from today's F4
  * results (the credited invoice's claims on those occurrences are released
- * to this draft only). It then goes through normal F5 review / Ready and F6
- * issue, and the replacement invoice links back to the original.
+ * to this draft only). Its payment terms, PO number, PO requirement and PO
+ * override reason start as the ORIGINAL invoice's frozen values (terms
+ * source "original_invoice") - never the client's current defaults. It then
+ * goes through normal F5 review / Ready and F6 issue (where Management may
+ * deliberately change terms / PO, audited as usual), and the replacement
+ * invoice links back to the original.
  */
 export function startReplacementDraft(deps: IssueDeps, caller: FinanceCaller, creditNoteId: string, reason: string): Promise<Ok | Fail> {
   return underLock(deps, caller, `POST /credit-notes/${creditNoteId}/replacement-draft`, async (c) => {
@@ -460,7 +510,8 @@ export function startReplacementDraft(deps: IssueDeps, caller: FinanceCaller, cr
     const [draftId] = uniqueIds(deps, "FID", 1, new Set());
     const lineIds = uniqueIds(deps, "FIL", cw.work.available.length, new Set());
     const lines: Line[] = cw.work.available.map((res, i) => lineFromResolution(res, { lineId: lineIds[i], draftId }, { userId: c.userId, at: c.at, resolvedOn: c.today }));
-    const terms = defaultPaymentTerms(client, cw.settingsDays);
+    // The replacement STARTS from the corrected invoice's own commercial details (terms, PO, PO requirement / override) -
+    // never today's client defaults. Management may deliberately change them in the normal F5 review (details route).
     const draft: Draft = {
       draftId,
       clientId: client.clientId,
@@ -468,9 +519,9 @@ export function startReplacementDraft(deps: IssueDeps, caller: FinanceCaller, cr
       status: "draft",
       periodFrom: inv.periodFrom,
       periodTo: inv.periodTo,
-      paymentTermsDays: terms.days,
-      paymentTermsSource: terms.source,
-      poRequired: client.poRequired,
+      paymentTermsDays: inv.paymentTermsDays,
+      paymentTermsSource: "original_invoice",
+      poRequired: inv.poRequired,
       poNumber: inv.poNumber,
       poOverrideReason: inv.poOverrideReason,
       ...totalsOf(lines),

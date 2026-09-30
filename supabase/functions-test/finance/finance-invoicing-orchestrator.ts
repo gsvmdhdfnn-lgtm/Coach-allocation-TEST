@@ -75,8 +75,8 @@ import {
 import { type StoredDraft, type StoredLine, INVOICING_TABLES, buildDrafts, buildLines, draftFields, draftRestoreFields, lineCreateFields, lineStatusFields } from "./finance-invoicing-mapping.ts";
 import { createRows, deleteCreatedRows, findDraftRows, listClientDraftRows, listDraftLineRows, listIncludedLineRows, listOccurrencesForSessions, listSessionsForServices, patchRows } from "./finance-invoicing-repository.ts";
 import { formatMinor } from "./finance-money.ts";
-import { buildInvoiceLines } from "./finance-issue-mapping.ts";
-import { listInvoiceLineClaimRows } from "./finance-issue-repository.ts";
+import { buildInvoiceLines, buildInvoices } from "./finance-issue-mapping.ts";
+import { findInvoiceRows, listInvoiceLineClaimRows } from "./finance-issue-repository.ts";
 
 export type InvoicingDeps = CommercialDeps;
 
@@ -134,7 +134,7 @@ export class DraftTxn {
 // Loading
 // ---------------------------------------------------------------------
 
-async function loadSettings(deps: InvoicingDeps, org: OrganisationContext): Promise<{ ok: true; settings: FinanceSettings | null } | Fail> {
+async function loadSettings(deps: InvoicingDeps, org: OrganisationContext): Promise<{ ok: true; settings: FinanceSettings | null; recordId: string | null } | Fail> {
   let rows;
   try {
     rows = await loadSettingsRows(deps.airtable, org.recordId);
@@ -142,17 +142,19 @@ async function loadSettings(deps: InvoicingDeps, org: OrganisationContext): Prom
     console.error(e);
     return fail(503, "finance_settings_unavailable", "Finance Settings could not be loaded just now - try again");
   }
-  if (rows.length === 0) return { ok: true, settings: null };
+  if (rows.length === 0) return { ok: true, settings: null, recordId: null };
   if (rows.length > 1) return fail(409, "finance_settings_ambiguous", "More than one Finance Settings record exists for your organisation");
   const p = fromStoredRow(rows[0]);
   if (!p.ok) return fail(409, "finance_settings_invalid", `Stored Finance Settings are not valid (${p.problems.join(", ")})`);
-  return { ok: true, settings: p.state.settings };
+  return { ok: true, settings: p.state.settings, recordId: rows[0].id };
 }
 
 export interface ClientWork {
   world: World;
   client: Stored<Client> | null;
   settings: FinanceSettings | null;
+  /** The Finance Settings row (F6 issue advances its Hub invoice number); null when unconfigured. */
+  settingsRecordId: string | null;
   settingsDays: number | null;
   current: Map<string, Resolution>;
   claims: Claim[];
@@ -218,7 +220,7 @@ export async function loadClientWork(deps: InvoicingDeps, org: OrganisationConte
   const current = new Map(scoped.rs.map((r) => [r.occurrence.occurrenceId, r]));
   const claims = scoped.claims;
   const s = settings.settings;
-  return { world, client, settings: s, settingsDays: s ? s.defaultPaymentTermsDays : null, current, claims, work: classifyWork(scoped.rs, claims), resolvedOn: today };
+  return { world, client, settings: s, settingsRecordId: settings.recordId, settingsDays: s ? s.defaultPaymentTermsDays : null, current, claims, work: classifyWork(scoped.rs, claims), resolvedOn: today };
 }
 
 export async function loadDraft(deps: InvoicingDeps, org: OrganisationContext, draftId: string): Promise<{ draft: StoredDraft; lines: StoredLine[] } | Fail> {
@@ -400,7 +402,22 @@ export async function writeDraft(deps: InvoicingDeps, caller: FinanceCaller, inp
       const loaded = await loadClientWork(deps, org, d.clientId, d.periodFrom, d.periodTo, atDate, today, l.lines.map((x) => x.value.occurrenceId), d.correctionScope);
       if ("status" in loaded) return loaded;
       cw = loaded;
-      plan = planDraftWrite(deps, cw, l.draft, l.lines, input, { userId: caller.userId, at, today, orgRecordId: org.recordId, ev });
+      // A replacement draft's "default" terms are the terms of the invoice it corrects (read only when asked for).
+      let originalTermsDays: number | null = null;
+      if (input.route === "draft.details" && input.req.paymentTermsDays === null && d.replacesInvoiceId) {
+        let rows: Row[];
+        try {
+          rows = await findInvoiceRows(deps.airtable, org.recordId, d.replacesInvoiceId);
+        } catch (e) {
+          console.error(e);
+          return unavailable();
+        }
+        const b = buildInvoices(rows, org.recordId);
+        if (!b.ok) return fail(409, "invoice_data_invalid", b.error);
+        if (b.invoices.length !== 1) return fail(409, "replaced_invoice_not_found", `The invoice this draft replaces (${d.replacesInvoiceId}) cannot be found - its terms cannot be restored`);
+        originalTermsDays = b.invoices[0].value.paymentTermsDays;
+      }
+      plan = planDraftWrite(deps, cw, l.draft, l.lines, input, { userId: caller.userId, at, today, orgRecordId: org.recordId, ev, originalTermsDays });
     }
     if ("status" in plan) return plan;
     if (plan.kind === "noop") return { status: "ok", httpStatus: 200, body: { ...base, changed: false, ...draftBody(plan.draft, plan.lines, cw) } };
@@ -434,7 +451,7 @@ export async function writeDraft(deps: InvoicingDeps, caller: FinanceCaller, inp
   }
 }
 
-type Meta = { userId: string; at: string; today: string; orgRecordId: string; ev: (eventType: string, draftId: string, before: Record<string, unknown> | null, after: Record<string, unknown>, reason: string | null, context?: Record<string, unknown>) => AuditRow };
+type Meta = { userId: string; at: string; today: string; orgRecordId: string; originalTermsDays?: number | null; ev: (eventType: string, draftId: string, before: Record<string, unknown> | null, after: Record<string, unknown>, reason: string | null, context?: Record<string, unknown>) => AuditRow };
 
 export function uniqueIds(deps: InvoicingDeps, prefix: "FID" | "FIL", n: number, taken: Set<string>): string[] {
   const out: string[] = [];
@@ -619,7 +636,9 @@ function planDraftWrite(deps: InvoicingDeps, cw: ClientWork, stored: StoredDraft
     if (r.poNumber !== undefined) next.poNumber = r.poNumber;
     if (r.poOverrideReason !== undefined) next.poOverrideReason = r.poOverrideReason;
     if (r.paymentTermsDays !== undefined) {
-      if (r.paymentTermsDays === null) {
+      if (r.paymentTermsDays === null && before.replacesInvoiceId) {
+        next = { ...next, paymentTermsDays: m.originalTermsDays ?? null, paymentTermsSource: "original_invoice" as TermsSource };
+      } else if (r.paymentTermsDays === null) {
         if (!cw.client) return fail(409, "client_not_found", `Client ${before.clientId} no longer exists in Finance`);
         const t = defaultPaymentTerms(cw.client.value, cw.settingsDays);
         next = { ...next, paymentTermsDays: t.days, paymentTermsSource: t.source };

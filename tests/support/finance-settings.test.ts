@@ -65,6 +65,10 @@ const FULL: FinanceSettings = {
   defaultVatTreatment: "vat_included",
   defaultPaymentTermsDays: 14,
   coachPaymentDayOfFollowingMonth: 7,
+  invoiceNumberAuthority: "hub",
+  invoiceNumberPrefix: "INV-",
+  invoiceNumberNext: 1001,
+  invoiceNumberDigits: 4,
 };
 const storedRow = (s: FinanceSettings, over: Record<string, unknown> = {}, id = "recSettingsRow001") => ({
   id,
@@ -213,6 +217,13 @@ async function main() {
     ck("S13. Stored fractional rate / day 32 / day 7.5 / negative revision -> invalid", [{ [FIELD_NAMES.defaultVatRateBasisPoints]: 2000.5 }, { [FIELD_NAMES.coachPaymentDayOfFollowingMonth]: 32 }, { [FIELD_NAMES.coachPaymentDayOfFollowingMonth]: 7.5 }, { Revision: -1 }].every((o) => !(fromStoredRow(storedRow(FULL, o)) as any).ok));
     ck("S14. Stored cross-field contradiction -> invalid", !(fromStoredRow(storedRow({ ...notReg, vatNumber: "GB1" })) as any).ok);
     ck("S15. Stored blank optional fields read as null (Airtable omits empty cells)", (fromStoredRow(storedRow({ ...FULL, companyNumber: null })) as any).state.settings.companyNumber === null);
+    // F6 correction: official invoice numbering settings
+    const pu = (settings: Record<string, unknown>) => parseUpdateBody(JSON.stringify({ settings }), isTenantKey) as any;
+    ck("SN1. Numbering authority: hub / xero / null accepted; anything else refused", pu({ invoiceNumberAuthority: "hub" }).ok && pu({ invoiceNumberAuthority: "xero" }).ok && pu({ invoiceNumberAuthority: null }).ok && pu({ invoiceNumberAuthority: "sage" }).fields?.invoiceNumberAuthority && pu({ invoiceNumberAuthority: "Hub" }).fields?.invoiceNumberAuthority);
+    ck("SN2. Prefix: letters / digits / - _ / only, at most 12, trimmed; quotes / spaces / leading symbol refused", pu({ invoiceNumberPrefix: " INV- " }).patch?.invoiceNumberPrefix === "INV-" && pu({ invoiceNumberPrefix: "TEST-INV/26_" }).ok && ["IN V-", "INV'", "-INV", "ABCDEFGHIJKLM", 'IN"V'].every((v) => pu({ invoiceNumberPrefix: v }).fields?.invoiceNumberPrefix));
+    ck("SN3. Next number: whole 1..1,000,000,000 (the value after the last assignable 999,999,999); digits 1..9", pu({ invoiceNumberNext: 1 }).ok && pu({ invoiceNumberNext: 1_000_000_000 }).ok && [0, -1, 1.5, "1001", 1_000_000_001].every((v) => pu({ invoiceNumberNext: v }).fields?.invoiceNumberNext) && pu({ invoiceNumberDigits: 9 }).ok && [0, 10, 2.5].every((v) => pu({ invoiceNumberDigits: v }).fields?.invoiceNumberDigits));
+    ck("SN4. Stored authority is a select label (Hub / Xero); an unknown label fails closed", (fromStoredRow(storedRow({ ...FULL, invoiceNumberAuthority: "xero" })) as any).state.settings.invoiceNumberAuthority === "xero" && storedRow(FULL).fields[FIELD_NAMES.invoiceNumberAuthority] === "Hub" && !(fromStoredRow(storedRow(FULL, { [FIELD_NAMES.invoiceNumberAuthority]: "Sage" })) as any).ok && !(fromStoredRow(storedRow(FULL, { [FIELD_NAMES.invoiceNumberNext]: 0 })) as any).ok);
+    ck("SN5. Numbering never changes completeness (Xero is optional; issuing checks numbering itself)", completeness({ ...FULL, invoiceNumberAuthority: null, invoiceNumberPrefix: null, invoiceNumberNext: null, invoiceNumberDigits: null }).complete && completeness(FULL).requiredTotal === 8);
     ck("S16. changedKeys lists only real differences; applyPatch touches only patched keys", changedKeys(FULL, applyPatch(FULL, { defaultPaymentTermsDays: 30, vatNumber: "GB123456789" })).join() === "defaultPaymentTermsDays" && applyPatch(FULL, {}).invoiceLegalName === FULL.invoiceLegalName);
     const ev = buildSettingsAuditEvent({ organisationId: ORG, actorUserId: MGR, recordId: "recX", before: { configured: false, recordId: null, revision: 0, updatedAt: null, settings: EMPTY_SETTINGS }, after: FULL, revision: 1, changed: ["invoiceLegalName"], reason: "r" });
     ck("S17. Audit event for a first write: created, before null, after + revision, context lists changed fields, no client timestamp", ev.event_type === "finance_settings.created" && ev.before === null && (ev.after as any).revision === 1 && JSON.stringify((ev.context as any).changedFields) === '["invoiceLegalName"]' && !("occurred_at" in ev));

@@ -91,9 +91,18 @@ export const LINE_STATUS_LABELS: Record<LineStatus, string> = {
   superseded: "Superseded by a refreshed line",
 };
 
-export const TERMS_SOURCES = ["client", "finance_settings", "invoice_override"] as const;
+/**
+ * Where a draft's / invoice's payment terms came from. "original_invoice"
+ * (F6 correction): a replacement draft starts from the terms frozen on the
+ * invoice it corrects - never today's client default. Like
+ * "invoice_override", it is a deliberate invoice-level value that a
+ * refresh keeps.
+ */
+export const TERMS_SOURCES = ["client", "finance_settings", "invoice_override", "original_invoice"] as const;
 export type TermsSource = (typeof TERMS_SOURCES)[number];
-export const TERMS_SOURCE_LABELS: Record<TermsSource, string> = { client: "Client payment terms", finance_settings: "Finance Settings default", invoice_override: "Set on this invoice" };
+export const TERMS_SOURCE_LABELS: Record<TermsSource, string> = { client: "Client payment terms", finance_settings: "Finance Settings default", invoice_override: "Set on this invoice", original_invoice: "Original invoice terms" };
+/** Terms that are the invoice's own (kept on refresh), not re-read from the client / Finance Settings. */
+export const isInvoiceLevelTerms = (s: TermsSource | null): boolean => s === "invoice_override" || s === "original_invoice";
 
 /**
  * A draft-specific approved exception: "leave this delivered occurrence,
@@ -451,7 +460,8 @@ export interface RefreshPlan {
  * new line (the old one is kept, never edited); new available work is
  * added. Occurrences Management excluded from this draft stay excluded.
  * Client name / PO requirement / default payment terms are re-read from the
- * client (an invoice-level terms override is kept).
+ * client (invoice-level terms - an override, or a replacement's original
+ * invoice terms - are kept).
  */
 export function planRefresh(input: { draft: Draft; lines: readonly Line[]; current: ReadonlyMap<string, Resolution>; work: Work; client: Client; settingsDefaultTerms: number | null }): RefreshPlan {
   const { draft, lines, current, work } = input;
@@ -468,7 +478,7 @@ export function planRefresh(input: { draft: Draft; lines: readonly Line[]; curre
   }
   const onDraft = new Set([...included.map((l) => l.occurrenceId), ...excluded]);
   const add = work.available.filter((r) => !onDraft.has(r.occurrence.occurrenceId));
-  const terms = draft.paymentTermsSource === "invoice_override" ? { days: draft.paymentTermsDays, source: draft.paymentTermsSource as TermsSource } : defaultPaymentTerms(input.client, input.settingsDefaultTerms);
+  const terms = isInvoiceLevelTerms(draft.paymentTermsSource) ? { days: draft.paymentTermsDays, source: draft.paymentTermsSource as TermsSource } : defaultPaymentTerms(input.client, input.settingsDefaultTerms);
   const header = { clientName: input.client.name, poRequired: input.client.poRequired, paymentTermsDays: terms.days, paymentTermsSource: terms.source };
   const headerChanged = header.clientName !== draft.clientName || header.poRequired !== draft.poRequired || header.paymentTermsDays !== draft.paymentTermsDays || header.paymentTermsSource !== draft.paymentTermsSource;
   return { close, add, header, changed: close.length > 0 || add.length > 0 || headerChanged };
@@ -811,8 +821,9 @@ export type DetailsRequest = { poNumber?: string | null; poOverrideReason?: stri
 /**
  * POST /invoice-drafts/{id}/details: any of poNumber (text or null to
  * clear), poOverrideReason (text or null to clear), paymentTermsDays
- * (0-365 = set on this invoice; null = back to the client / Finance
- * Settings default), and an optional reason.
+ * (0-365 = set on this invoice; null = back to the default: the client /
+ * Finance Settings terms, or - on a replacement draft - the terms of the
+ * invoice it corrects), and an optional reason.
  */
 export function parseDetails(raw: string, isTenantKey: (k: string) => boolean): { ok: true; req: DetailsRequest } | Invalid {
   const b = jsonObject(raw, ["poNumber", "poOverrideReason", "paymentTermsDays", "reason"], isTenantKey);

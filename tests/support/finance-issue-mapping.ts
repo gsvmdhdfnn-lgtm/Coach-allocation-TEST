@@ -11,8 +11,8 @@
  *
  *   - An invoice row is created once, complete. Afterwards ONLY its credit
  *     state (Status) and its revision / last-changed fields are ever
- *     patched (invoiceStateFields) - never an amount, date, term, PO or
- *     snapshot.
+ *     patched (invoiceStateFields) - never an amount, date, term, PO,
+ *     snapshot or official number.
  *   - An invoice line row and a credit note row are created once and never
  *     edited.
  *
@@ -36,9 +36,11 @@ import {
   type Issuer,
   CREDIT_NOTE_ID_PATTERN,
   CURRENCY,
+  HUB_INVOICE_NUMBER_PATTERN,
   INVOICE_ID_PATTERN,
   INVOICE_LINE_ID_PATTERN,
 } from "./finance-issue.ts";
+import { type InvoiceNumberAuthority, INVOICE_NUMBER_MAX } from "./finance-settings.ts";
 
 export const ISSUE_TABLES = { invoices: "Finance Invoices", lines: "Finance Invoice Lines", creditNotes: "Finance Credit Notes" } as const;
 
@@ -68,6 +70,9 @@ export const FV = {
     lineCount: "Line Count",
     status: "Status",
     authority: "Issue Authority",
+    numberAuthority: "Invoice Number Authority",
+    hubNumber: "Hub Invoice Number",
+    hubSequence: "Hub Invoice Sequence",
     extProvider: "External Provider",
     extId: "External Invoice ID",
     extNumber: "External Invoice Number",
@@ -136,7 +141,8 @@ export const FV = {
 
 const INVOICE_STATUS: Record<InvoiceStatus, string> = { issued: "Issued", partially_credited: "Partially credited", credited: "Credited" };
 const AUTHORITY: Record<IssueAuthority, string> = { hub: "Hub", external_accounting: "External accounting" };
-const TERMS_SOURCE: Record<TermsSource, string> = { client: "Client", finance_settings: "Finance Settings", invoice_override: "Invoice override" };
+const NUMBER_AUTHORITY: Record<InvoiceNumberAuthority, string> = { hub: "Hub", xero: "Xero" };
+const TERMS_SOURCE: Record<TermsSource, string> = { client: "Client", finance_settings: "Finance Settings", invoice_override: "Invoice override", original_invoice: "Original invoice" };
 const QTY_SOURCES: readonly QuantitySource[] = ["default_commercial_quantity", "occurrence_override", "per_session"];
 const UNIT_SOURCES: readonly UnitAmountSource[] = ["commercial_terms", "occurrence_override"];
 const MAX_LINE_MINOR = MAX_UNIT_AMOUNT_MINOR * MAX_BILLABLE_QUANTITY;
@@ -222,6 +228,14 @@ export function invoiceFromRow(r: Row): Parsed<Invoice> {
   const status = reverse(INVOICE_STATUS, f[x.status]);
   const authority = reverse(AUTHORITY, f[x.authority]);
   if (!status || !authority) return bad("invalid Status / Issue Authority");
+  const numberAuthority = reverse(NUMBER_AUTHORITY, f[x.numberAuthority]);
+  if (!numberAuthority) return bad("invalid Invoice Number Authority");
+  const hubNumber = str(f[x.hubNumber]);
+  const hubSequence = f[x.hubSequence] === undefined || f[x.hubSequence] === null ? null : int(f[x.hubSequence], 1, INVOICE_NUMBER_MAX);
+  if (numberAuthority === "hub") {
+    // A Hub number is the prefix + its sequence (possibly zero-padded): both present and consistent.
+    if (!hubNumber || !HUB_INVOICE_NUMBER_PATTERN.test(hubNumber) || typeof hubSequence !== "number" || !hubNumber.endsWith(String(hubSequence))) return bad("invalid Hub invoice number / sequence");
+  } else if (hubNumber !== null || hubSequence !== null) return bad("a Xero-numbered invoice cannot carry a Hub invoice number");
   const replaces = str(f[x.replaces]);
   const correctionId = str(f[x.correctionId]);
   if ((replaces === null) !== (correctionId === null) || (replaces && (!INVOICE_ID_PATTERN.test(replaces) || replaces === id)) || (correctionId && !CREDIT_NOTE_ID_PATTERN.test(correctionId))) return bad("invalid replacement references");
@@ -264,6 +278,9 @@ export function invoiceFromRow(r: Row): Parsed<Invoice> {
       lineCount,
       status,
       issueAuthority: authority,
+      numberAuthority,
+      hubInvoiceNumber: hubNumber,
+      hubInvoiceSequence: hubSequence as number | null,
       externalProvider: str(f[x.extProvider]),
       externalInvoiceId: str(f[x.extId]),
       externalInvoiceNumber: str(f[x.extNumber]),
@@ -510,6 +527,9 @@ export function invoiceCreateFields(i: Invoice, orgRecordId: string): Record<str
     [x.lineCount]: i.lineCount,
     [x.status]: INVOICE_STATUS[i.status],
     [x.authority]: AUTHORITY[i.issueAuthority],
+    [x.numberAuthority]: NUMBER_AUTHORITY[i.numberAuthority],
+    [x.hubNumber]: i.hubInvoiceNumber,
+    [x.hubSequence]: i.hubInvoiceSequence,
     [x.extProvider]: i.externalProvider,
     [x.extId]: i.externalInvoiceId,
     [x.extNumber]: i.externalInvoiceNumber,

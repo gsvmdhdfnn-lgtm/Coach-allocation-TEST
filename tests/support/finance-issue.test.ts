@@ -12,6 +12,9 @@
  *   AC  access + tenant
  *   CN  credit notes (whole lines, amounts, remaining, duplicate / excess refused, original unchanged)
  *   RP  correction -> replacement draft -> replacement invoice (links both ways)
+ *   NB  official invoice numbering (F6 correction): internal FIV vs official number; Xero vs Hub authority;
+ *       per-organisation sequence; concurrency; failed issue; never reused / never changed; Xero fields later
+ *   RI  replacement drafts inherit the ORIGINAL invoice's terms / PO / PO context (F6 correction)
  *   AU  audit (exact events; none on reads / rejected; atomic rollback; undo failure)
  *   PF  bounded reads / batched writes
  *   RT  routes + request parsing
@@ -21,7 +24,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type FinanceGrantRow, FINANCE_MODULE_KEY, isTenantKey } from "./finance-access.ts";
-import { EMPTY_SETTINGS, toStoredFields } from "./finance-settings.ts";
+import { EMPTY_SETTINGS, parseUpdateBody, toStoredFields } from "./finance-settings.ts";
+import { updateFinanceSettings } from "./finance-settings-orchestrator.ts";
 import { TABLES } from "./finance-commercial-mapping.ts";
 import { COMMERCIAL_RETRY_DELAYS_MS } from "./finance-commercial-repository.ts";
 import { SETTINGS_RETRY_DELAYS_MS } from "./finance-settings-repository.ts";
@@ -36,7 +40,7 @@ import { checkInvoicingQuery, formatDay, matchInvoicingRoute, parseDetails, pars
 import { INVOICING_TABLES, buildDrafts, buildLines } from "./finance-invoicing-mapping.ts";
 import { WRITE_BATCH } from "./finance-invoicing-repository.ts";
 import { type DraftWrite, listClientDrafts, markLineNotBillable, readDraft, readEligibleWork, writeDraft } from "./finance-invoicing-orchestrator.ts";
-import { addDays, checkInvoiceListQuery, matchIssueRoute, parseCreditNote, parseIssue, parseReplacement, planCreditNote } from "./finance-issue.ts";
+import { addDays, checkInvoiceListQuery, formatHubInvoiceNumber, invoiceNumberPlan, matchIssueRoute, parseCreditNote, parseIssue, parseReplacement, planCreditNote } from "./finance-issue.ts";
 import { ISSUE_TABLES, buildInvoices } from "./finance-issue-mapping.ts";
 import { createCreditNote, issueDraft, listInvoiceCreditNotes, listInvoices, readCreditNote, readInvoice, startReplacementDraft } from "./finance-issue-orchestrator.ts";
 
@@ -60,7 +64,7 @@ const g = (level: unknown): FinanceGrantRow => ({ organisation_id: ORG, access_l
 const mgr = { userId: MGR, role: "management", active: true, organisationId: ORG };
 const viewer = { userId: VIEWER, role: "management", active: true, organisationId: ORG };
 
-const SETTINGS = { ...EMPTY_SETTINGS, invoiceLegalName: "T Ltd", invoiceAddress: "1 St", vatRegistered: true, vatNumber: "GB1", defaultVatRateBasisPoints: 2000, defaultVatTreatment: "plus_vat" as const, defaultPaymentTermsDays: 30, coachPaymentDayOfFollowingMonth: 7 };
+const SETTINGS = { ...EMPTY_SETTINGS, invoiceLegalName: "T Ltd", invoiceAddress: "1 St", vatRegistered: true, vatNumber: "GB1", defaultVatRateBasisPoints: 2000, defaultVatTreatment: "plus_vat" as const, defaultPaymentTermsDays: 30, coachPaymentDayOfFollowingMonth: 7, invoiceNumberAuthority: "xero" as const };
 const settingsRow = (s: any) => ({ id: "recSettingsRow001", fields: { Organisation: [ORG_REC], "Finance Settings ID": "FINSET", Revision: 1, ...Object.fromEntries(Object.entries(toStoredFields(s, Object.keys(s) as any)).filter(([, v]) => v !== null)) } });
 
 // ---------------------------------------------------------------------------
@@ -73,6 +77,10 @@ interface World {
   audit: any[];
   lockHeld: string | null;
   lockMode: "ok" | "busy" | "error";
+  settingsLockHeld: string | null;
+  settingsLockMode: "ok" | "busy" | "error";
+  /** Every settings-lock acquire / release, in order (to prove it is held across the whole issue). */
+  settingsLockLog: string[];
   failCreateOn?: string;
   failPatchOn?: string;
   auditStatus?: number;
@@ -107,6 +115,9 @@ function reset() {
     audit: [],
     lockHeld: null,
     lockMode: "ok",
+    settingsLockHeld: null,
+    settingsLockMode: "ok",
+    settingsLockLog: [],
   };
   calls = [];
   NOW = new Date("2026-09-29T12:00:00.000Z");
@@ -135,6 +146,22 @@ globalThis.fetch = (async (input: any, init: any = {}) => {
   if (url.includes("/rpc/release_finance_write_lock")) {
     const ok = body?.p_lock_token === world.lockHeld && body?.p_lock_key === `commercial:${ORG}`;
     if (ok) world.lockHeld = null;
+    return json(ok);
+  }
+  if (url.includes("/rpc/acquire_finance_settings_lock")) {
+    if (world.settingsLockMode === "error") return json({ message: "boom" }, 500);
+    if (body?.p_organisation_id !== ORG) return json({ message: "wrong org" }, 400);
+    if (world.settingsLockMode === "busy" || world.settingsLockHeld) return json(null);
+    world.settingsLockHeld = "33333333-3333-4333-8333-333333333333";
+    world.settingsLockLog.push("acquire");
+    return json(world.settingsLockHeld);
+  }
+  if (url.includes("/rpc/release_finance_settings_lock")) {
+    const ok = body?.p_lock_token === world.settingsLockHeld && body?.p_organisation_id === ORG;
+    if (ok) {
+      world.settingsLockHeld = null;
+      world.settingsLockLog.push("release");
+    }
     return json(ok);
   }
   if (url.includes("/rest/v1/finance_audit_events") && method === "POST") {
@@ -308,6 +335,18 @@ async function readyDraft(clientId: string, from = "2026-09-01", to = "2026-09-3
   return r.body;
 }
 const stripVolatile = (b: any) => JSON.stringify({ invoice: b.invoice, lines: b.lines });
+const settingsRows = () => world.tables["Finance Settings"];
+/** Replace this organisation's stored Finance Settings (SETTINGS + patch). */
+const setSettings = (patch: Record<string, unknown>) => {
+  settingsRows()[0] = settingsRow({ ...SETTINGS, ...patch });
+};
+const nextNumber = () => settingsRows()[0].fields["Next Invoice Number"];
+const HUB = { invoiceNumberAuthority: "hub", invoiceNumberPrefix: "INV-", invoiceNumberNext: 1001, invoiceNumberDigits: null };
+const settingsUpdate = (settings: Record<string, unknown>) => {
+  const p = parseUpdateBody(JSON.stringify({ settings }), isTenantKey) as any;
+  if (!p.ok) throw new Error("bad settings update");
+  return updateFinanceSettings(deps, mgr, p) as Promise<any>;
+};
 
 async function main() {
   for (const a of [RETRY_DELAYS_MS, SETTINGS_RETRY_DELAYS_MS, COMMERCIAL_RETRY_DELAYS_MS]) a.splice(0, a.length, 1, 1, 1, 1, 1);
@@ -695,6 +734,190 @@ async function main() {
     ck("RP13. A manual-billing client gets no Hub replacement (409 manual_billing_client)", (await replace(cn.creditNoteId)).code === "manual_billing_client");
   }
 
+
+  // ===== NB. Official invoice numbering (F6 correction) =====
+  {
+    // Xero authority: FIV now, no official number invented, nothing advanced
+    const ids = await seed();
+    addOcc(S.ppa, "2026-09-10");
+    setSettings({ invoiceNumberAuthority: "xero", invoiceNumberPrefix: "INV-", invoiceNumberNext: 1001 });
+    const rd = await readyDraft(ids.parkside);
+    world.audit = [];
+    calls = [];
+    const r = await issue(rd.draft.draftId, rd.draft.revision);
+    const n = r.body.invoice.numbering;
+    ck("NB1. Internal FIV reference exists whatever the authority (Xero here): numbering.internalReference = invoiceId = reference", r.httpStatus === 201 && /^FIV-[0-9A-F]{12}$/.test(n.internalReference) && n.internalReference === r.body.invoice.invoiceId && r.body.invoice.reference === n.internalReference);
+    ck("NB2. Xero authority: no official number is invented - pending from Xero; no Hub number stored; external fields blank", n.authority === "xero" && n.officialNumber === null && n.status === "pending_external" && n.hubSequence === null && invRows()[0].fields["Invoice Number Authority"] === "Xero" && !("Hub Invoice Number" in invRows()[0].fields) && !("Hub Invoice Sequence" in invRows()[0].fields) && r.body.invoice.external.invoiceNumber === null && !/INV-1001/.test(JSON.stringify(r.body)));
+    ck("NB2b. Xero authority: the Settings next number is untouched and never written", nextNumber() === 1001 && !airtableWrites().some((c) => tableOfCall(c) === "Finance Settings"));
+  }
+  {
+    // Hub authority: organisation sequence
+    const ids = await seed();
+    addOcc(S.ppa, "2026-09-10");
+    addOcc(S.stannes, "2026-09-10");
+    setSettings(HUB);
+    const a = await readyDraft(ids.parkside);
+    const b = await readyDraft(ids.stannes);
+    world.audit = [];
+    const r1 = await issue(a.draft.draftId, a.draft.revision);
+    const n1 = r1.body.invoice.numbering;
+    ck("NB3. Hub authority: the invoice gets the organisation's next official number (prefix + next) at issue, alongside its FIV reference", r1.httpStatus === 201 && n1.authority === "hub" && n1.officialNumber === "INV-1001" && n1.status === "assigned" && n1.hubSequence === 1001 && /^FIV-/.test(n1.internalReference) && invRows()[0].fields["Hub Invoice Number"] === "INV-1001" && invRows()[0].fields["Hub Invoice Sequence"] === 1001 && invRows()[0].fields["Invoice Number Authority"] === "Hub");
+    ck("NB3b. The Settings next number advanced to 1002 in the same write; the issue audit records the number and the sequence step", nextNumber() === 1002 && JSON.stringify(world.audit.find((e) => e.event_type === "finance_invoice.issued").context.numbering) === JSON.stringify({ authority: "hub", officialNumber: "INV-1001", sequence: 1001, nextNumberBefore: 1001, nextNumberAfter: 1002 }) && world.audit.find((e) => e.event_type === "finance_invoice.issued").after.invoice.hubInvoiceNumber === "INV-1001");
+    const r2 = await issue(b.draft.draftId, b.draft.revision);
+    ck("NB4. A second Hub invoice gets the next number (INV-1002); next becomes 1003", r2.body.invoice.numbering.officialNumber === "INV-1002" && r2.body.invoice.numbering.hubSequence === 1002 && nextNumber() === 1003);
+    ck("NB4b. Padding is deliberate: prefix + number zero-padded to the minimum digits, never cut", formatHubInvoiceNumber("INV-", 7, 3) === "INV-007" && formatHubInvoiceNumber("INV-", 1001, 3) === "INV-1001" && formatHubInvoiceNumber("TEST-INV-", 42, null) === "TEST-INV-42");
+    ck("NB4c. Not configured -> 409 invoice_numbering_not_configured (no authority; Hub without prefix / next); used-up sequence -> 409", (invoiceNumberPlan({ ...EMPTY_SETTINGS } as any) as any).code === "invoice_numbering_not_configured" && (invoiceNumberPlan({ ...EMPTY_SETTINGS, invoiceNumberAuthority: "hub", invoiceNumberNext: 5 } as any) as any).code === "invoice_numbering_not_configured" && (invoiceNumberPlan({ ...EMPTY_SETTINGS, invoiceNumberAuthority: "hub", invoiceNumberPrefix: "INV-" } as any) as any).code === "invoice_numbering_not_configured" && (invoiceNumberPlan({ ...EMPTY_SETTINGS, invoiceNumberAuthority: "hub", invoiceNumberPrefix: "INV-", invoiceNumberNext: 1_000_000_000 } as any) as any).code === "invoice_number_sequence_exhausted" && invoiceNumberPlan(null).ok === false);
+  }
+  {
+    // Not configured: refused through the orchestrator, nothing written
+    const ids = await seed();
+    addOcc(S.ppa, "2026-09-10");
+    // A prefix and next number are set, but no authority: never inferred as Hub.
+    setSettings({ invoiceNumberAuthority: null, invoiceNumberPrefix: "INV-", invoiceNumberNext: 1001 });
+    const rd = await readyDraft(ids.parkside);
+    world.audit = [];
+    const r = await issue(rd.draft.draftId, rd.draft.revision);
+    ck("NB4d. No numbering authority chosen (even with a prefix + next number set) -> 409 invoice_numbering_not_configured, never inferred; nothing written, no audit, draft not stamped", r.httpStatus === 409 && r.code === "invoice_numbering_not_configured" && invRows().length === 0 && world.audit.length === 0 && nextNumber() === 1001 && (await read(rd.draft.draftId)).body.draft.issued === false);
+  }
+  {
+    // Different organisations: independent sequences
+    const ids = await seed();
+    addOcc(S.ppa, "2026-09-10");
+    setSettings(HUB);
+    settingsRows().push({ id: "recOtherSettings01", fields: { Organisation: [OTHER_ORG_REC], "Finance Settings ID": "FINSET-OTHER", Revision: 1, ...Object.fromEntries(Object.entries(toStoredFields({ ...SETTINGS, ...HUB, invoiceNumberNext: 5 } as any, ["invoiceNumberAuthority", "invoiceNumberPrefix", "invoiceNumberNext"])).filter(([, v]) => v !== null)) } });
+    // Another organisation already issued INV-1001 in ITS sequence
+    invRows().push({ id: "recOtherInvoice01", fields: { Organisation: [OTHER_ORG_REC], "Invoice ID": "FIV-0THER0000001", "Hub Invoice Number": "INV-1001", "Hub Invoice Sequence": 1001, "Invoice Number Authority": "Hub" } });
+    const rd = await readyDraft(ids.parkside);
+    const r = await issue(rd.draft.draftId, rd.draft.revision);
+    ck("NB5. Sequences are per organisation: another organisation's INV-1001 neither blocks nor shifts ours, and its next number (5) is untouched", r.httpStatus === 201 && r.body.invoice.numbering.officialNumber === "INV-1001" && nextNumber() === 1002 && settingsRows()[1].fields["Next Invoice Number"] === 5);
+  }
+  {
+    // Concurrency: never the same number twice
+    const ids = await seed();
+    addOcc(S.ppa, "2026-09-10");
+    addOcc(S.stannes, "2026-09-10");
+    setSettings(HUB);
+    const a = await readyDraft(ids.parkside);
+    const b = await readyDraft(ids.stannes);
+    const [x, y] = await Promise.all([issue(a.draft.draftId, a.draft.revision), issue(b.draft.draftId, b.draft.revision)]);
+    const ok = [x, y].filter((r) => r.httpStatus === 201);
+    const busy = [x, y].filter((r) => r.code === "finance_commercial_busy");
+    const retry = busy.length ? await issue(busy[0] === x ? a.draft.draftId : b.draft.draftId, (busy[0] === x ? a : b).draft.revision) : null;
+    const numbers = invRows().map((r) => r.fields["Hub Invoice Number"]);
+    ck("NB6. Two simultaneous issues: one gets INV-1001, the other is refused busy (never a shared number); the retry gets INV-1002", ok.length === 1 && busy.length === 1 && ok[0].body.invoice.numbering.officialNumber === "INV-1001" && retry?.body.invoice.numbering.officialNumber === "INV-1002" && new Set(numbers).size === numbers.length && numbers.length === 2 && nextNumber() === 1003);
+    ck("NB6b. The Settings lock is held for the whole issue and always released (acquire/release pairs; nothing left held)", world.settingsLockLog.length >= 4 && world.settingsLockLog.every((e, i) => e === (i % 2 ? "release" : "acquire")) && world.settingsLockHeld === null && world.lockHeld === null);
+  }
+  {
+    // A Settings change racing an issue cannot corrupt the sequence
+    const ids = await seed();
+    addOcc(S.ppa, "2026-09-10");
+    setSettings(HUB);
+    const rd = await readyDraft(ids.parkside);
+    world.settingsLockMode = "busy";
+    const r = await issue(rd.draft.draftId, rd.draft.revision);
+    ck("NB6c. While Finance Settings are being changed, issue is refused 409 finance_settings_busy - nothing written, number not taken", r.httpStatus === 409 && r.code === "finance_settings_busy" && invRows().length === 0 && nextNumber() === 1001 && world.lockHeld === null);
+    world.settingsLockMode = "ok";
+    const [i1, s1] = await Promise.all([issue(rd.draft.draftId, rd.draft.revision), settingsUpdate({ invoiceNumberNext: 5000 })]);
+    const issuedNo = i1.httpStatus === 201 ? i1.body.invoice.numbering.officialNumber : null;
+    const consistent = i1.httpStatus === 201 && s1.status === "ok" ? (issuedNo === "INV-1001" && nextNumber() === 5000) || (issuedNo === "INV-5000" && nextNumber() === 5001) : i1.httpStatus === 201 ? issuedNo === "INV-1001" && nextNumber() === 1002 : s1.status === "ok" && nextNumber() === 5000 && invRows().length === 0;
+    ck("NB6d. An issue racing a Settings change of the next number: they never interleave (one waits / is refused); the result is one consistent sequence", consistent && (i1.httpStatus === 201 || i1.code === "finance_settings_busy") && world.settingsLockHeld === null, `${i1.httpStatus} ${i1.code ?? issuedNo} / ${s1.status} ${s1.code ?? ""} / next ${nextNumber()}`);
+  }
+  {
+    // Failed issue: nothing partial, number not consumed (gap-free)
+    const ids = await seed();
+    addOcc(S.ppa, "2026-09-10");
+    setSettings(HUB);
+    const rd = await readyDraft(ids.parkside);
+    world.failCreateOn = ISSUE_TABLES.lines;
+    const f1 = await issue(rd.draft.draftId, rd.draft.revision);
+    world.failCreateOn = undefined;
+    ck("NB7. A failed issue (line write fails) leaves no invoice, no number taken: next stays 1001, draft not stamped (503)", f1.httpStatus === 503 && invRows().length === 0 && invLineRows().length === 0 && nextNumber() === 1001 && (await read(rd.draft.draftId)).body.draft.issued === false);
+    world.auditStatus = 500;
+    const f2 = await issue(rd.draft.draftId, rd.draft.revision);
+    world.auditStatus = undefined;
+    ck("NB7b. A failed audit write also rolls the number back (503; no invoice; next 1001)", f2.code === "finance_audit_unavailable" && invRows().length === 0 && nextNumber() === 1001);
+    const ok = await issue(rd.draft.draftId, rd.draft.revision);
+    ck("NB7c. The next successful issue takes INV-1001 - no gap from the failed attempts", ok.httpStatus === 201 && ok.body.invoice.numbering.officialNumber === "INV-1001" && nextNumber() === 1002);
+    // Never reused: Settings set back to a used number -> refused, not skipped or reused
+    addOcc(S.stannes, "2026-09-10");
+    const b = await readyDraft(ids.stannes);
+    setSettings({ ...HUB, invoiceNumberNext: 1001 });
+    const dup = await issue(b.draft.draftId, b.draft.revision);
+    ck("NB8. A number already on an issued invoice is never reused: next set back to 1001 -> 409 invoice_number_taken, nothing written", dup.httpStatus === 409 && dup.code === "invoice_number_taken" && invRows().length === 1 && nextNumber() === 1001);
+    const invId = ok.body.invoice.invoiceId;
+    setSettings({ ...HUB, invoiceNumberPrefix: "NEW-", invoiceNumberNext: 7000 });
+    await credit(invId, null, "Whole invoice disputed");
+    const again = (await readInv(invId)).body.invoice;
+    ck("NB8b. An issued invoice's official number never changes: after a Settings prefix / next change and a credit note it is still INV-1001 (seq 1001)", again.numbering.officialNumber === "INV-1001" && again.numbering.hubSequence === 1001 && again.status === "credited" && invRows()[0].fields["Hub Invoice Number"] === "INV-1001");
+  }
+  {
+    // Xero later filling the external fields coexists with the FIV
+    const ids = await seed();
+    addOcc(S.ppa, "2026-09-10");
+    const rd = await readyDraft(ids.parkside);
+    const r = await issue(rd.draft.draftId, rd.draft.revision);
+    const invId = r.body.invoice.invoiceId;
+    Object.assign(invRows()[0].fields, { "External Provider": "Xero", "External Invoice ID": "xero-guid-0001", "External Invoice Number": "INV-0042" });
+    const after = (await readInv(invId)).body.invoice;
+    ck("NB9. When Xero's number is recorded later (F9), it becomes the official number next to the unchanged FIV reference", after.invoiceId === invId && after.numbering.internalReference === invId && after.numbering.officialNumber === "INV-0042" && after.numbering.status === "assigned" && after.external.provider === "Xero" && after.external.invoiceId === "xero-guid-0001");
+    const c = await credit(invId, null, "Cancelled");
+    ck("NB9b. ... and the invoice keeps working (credit note 201) with both identities intact", c.httpStatus === 201 && c.body.invoice.numbering.officialNumber === "INV-0042");
+    invRows()[0].fields["Hub Invoice Number"] = "INV-9";
+    const bad = await readInv(invId);
+    ck("NB9c. Stored data is strict: a Xero-numbered invoice carrying a Hub number is invalid (409), never guessed", bad.httpStatus === 409 && bad.code === "invoice_data_invalid");
+    delete invRows()[0].fields["Hub Invoice Number"];
+    invRows()[0].fields["Invoice Number Authority"] = "Hub";
+    ck("NB9d. ... and a Hub-numbered invoice without its number / sequence is invalid (409)", (await readInv(invId)).code === "invoice_data_invalid");
+  }
+
+  // ===== RI. Replacement inherits the original invoice's terms / PO (F6 correction) =====
+  {
+    const ids = await seed();
+    const aft = addOcc(S.after, "2026-09-10");
+    const rd = await readyDraft(ids.parkside);
+    const r = await issue(rd.draft.draftId, rd.draft.revision);
+    const orig = r.body.invoice;
+    const origRow = JSON.stringify(invRows()[0].fields);
+    ck("RI10. Original invoice: 30-day client terms, PO PO-77", orig.paymentTerms.days === 30 && orig.paymentTerms.source === "client" && orig.po.number === "PO-77" && orig.po.required === true);
+    await W({ route: "client.update", clientId: ids.parkside, patch: { paymentTermsDaysOverride: 14 }, reason: "new contract: 14 days" });
+    ck("RI11. The client's current default is now 14 days", (await create(ids.parkside)).code === "no_eligible_work" && world.tables[TABLES.clients].find((c) => c.fields["Finance Client ID"] === ids.parkside)?.fields["Payment Terms Override (Days)"] === 14);
+    const cn = (await credit(orig.invoiceId, null, "Headcount wrong")).body.creditNote;
+    await ovCreate(aft, '{"override":{"kind":"quantity","quantity":20},"reason":"register shows 20"}');
+    world.audit = [];
+    const rp = (await replace(cn.creditNoteId)).body;
+    ck("RI12. The replacement draft STARTS at the original 30 days (source original_invoice) - not the client's new 14", rp.draft.paymentTerms.days === 30 && rp.draft.paymentTerms.source === "original_invoice" && rp.draft.paymentTerms.sourceLabel === "Original invoice terms");
+    ck("RI13. The original PO number is inherited (PO-77) and the draft has no PO / terms blocker", rp.draft.po.number === "PO-77" && rp.draft.po.required === true && !rp.review.blockers.some((b: any) => ["po_missing", "payment_terms_missing"].includes(b.code)));
+    const rf = await refresh(rp.draft.draftId);
+    ck("RI12b. A refresh of the replacement keeps the inherited 30 days (never silently re-read as 14)", rf.body.draft.paymentTerms.days === 30 && rf.body.draft.paymentTerms.source === "original_invoice");
+    const d21 = await details(rp.draft.draftId, '{"paymentTermsDays":21,"reason":"Agreed 21 days for the corrected invoice"}');
+    const ev = world.audit.find((e) => e.event_type === "finance_invoice_draft.payment_terms_changed");
+    ck("RI15. Management may deliberately change the terms in review: 21 days (set on this invoice), audited before -> after with the reason", d21.body.draft.paymentTerms.days === 21 && d21.body.draft.paymentTerms.source === "invoice_override" && ev && ev.before.paymentTermsDays === 30 && ev.before.paymentTermsSource === "original_invoice" && ev.after.paymentTermsDays === 21 && ev.reason === "Agreed 21 days for the corrected invoice");
+    const back = await details(rp.draft.draftId, '{"paymentTermsDays":null}');
+    ck("RI15b. Resetting a replacement's terms (null) goes back to the ORIGINAL invoice's 30 days - never the client's 14", back.body.draft.paymentTerms.days === 30 && back.body.draft.paymentTerms.source === "original_invoice");
+    const d21b = await details(rp.draft.draftId, '{"paymentTermsDays":21,"reason":"Agreed 21 days"}');
+    const rr = await ready(rp.draft.draftId, d21b.body.draft.revision);
+    const ri = await issue(rp.draft.draftId, rr.body.draft.revision);
+    ck("RI16. The replacement invoice snapshots the final reviewed value: 21 days, due = invoice date + 21, PO-77", ri.httpStatus === 201 && ri.body.invoice.paymentTerms.days === 21 && ri.body.invoice.paymentTerms.source === "invoice_override" && ri.body.invoice.dueDate === addDays(ri.body.invoice.invoiceDate, 21) && ri.body.invoice.po.number === "PO-77");
+    const origNow = (await readInv(orig.invoiceId)).body.invoice;
+    const rowNow = { ...invRows()[0].fields };
+    const strip = (f: Record<string, unknown>) => JSON.stringify({ ...f, Status: undefined, Revision: undefined, "Last Changed By User ID": undefined, "Last Changed At": undefined });
+    ck("RI17. The original invoice is unchanged (terms 30 / client, PO-77, totals, dates; only its credit state moved)", origNow.paymentTerms.days === 30 && origNow.paymentTerms.source === "client" && origNow.po.number === "PO-77" && origNow.totals.gross === orig.totals.gross && origNow.dueDate === orig.dueDate && strip(rowNow) === strip(JSON.parse(origRow)));
+  }
+  {
+    // PO override context: original had no PO number but an override reason; the client later stops requiring a PO
+    const ids = await seed();
+    const aft = addOcc(S.after, "2026-09-10");
+    const d = (await create(ids.parkside)).body;
+    const x = await details(d.draft.draftId, '{"poOverrideReason":"School confirmed no PO for September"}');
+    const rdy = (await ready(d.draft.draftId, x.body.draft.revision)).body;
+    const orig = (await issue(rdy.draft.draftId, rdy.draft.revision)).body.invoice;
+    await W({ route: "client.update", clientId: ids.parkside, patch: { poRequired: false, paymentTermsDaysOverride: 14 }, reason: "trust pays now" });
+    const cn = (await credit(orig.invoiceId, null, "Wrong")).body.creditNote;
+    await ovCreate(aft, '{"override":{"kind":"quantity","quantity":20},"reason":"register shows 20"}');
+    const rp = (await replace(cn.creditNoteId)).body;
+    ck("RI14. PO override context is preserved: PO required (as on the original), no number, the original override reason kept; terms still 30", rp.draft.po.required === true && rp.draft.po.number === null && rp.draft.po.overrideReason === "School confirmed no PO for September" && rp.draft.paymentTerms.days === 30 && !rp.review.blockers.some((b: any) => b.code === "po_missing") && rp.review.warnings.some((w: any) => w.code === "po_override_recorded"));
+  }
+
   // ===== AU. Audit =====
   {
     const ids = await seed();
@@ -797,8 +1020,9 @@ async function main() {
     const F6 = ["finance-issue.ts", "finance-issue-mapping.ts", "finance-issue-repository.ts", "finance-issue-orchestrator.ts"];
     const all = F6.map((f) => noComments(code(f))).join("\n");
     ck("Z1. Domain + mapping are pure (no fetch / Deno / Supabase / Airtable URLs)", ["finance-issue.ts", "finance-issue-mapping.ts"].every((f) => !/fetch\(|Deno\.|createClient|api\.airtable\.com/.test(code(f))));
-    ck("Z2. No payment / overdue / sending / PDF / Xero / Stripe / Needs Attention code in F6", !/xero|stripe|sendEmail|paidAt|overdue|pdf|refund|needs_attention|needsAttention|amountPaid|paymentReceived/i.test(all));
-    ck("Z3. No invented legal numbering (no INV- literal, no counter / sequence number allocation)", !/INV-|nextNumber|autoNumber|counter/i.test(all));
+    ck("Z2. No payment / overdue / sending / PDF / Xero or Stripe integration / Needs Attention code in F6 (\"xero\" is only a Settings authority value)", !/api\.xero|xero\.com|xeroClient|stripe|sendEmail|paidAt|overdue|pdf|refund|needs_attention|needsAttention|amountPaid|paymentReceived/i.test(all));
+    const orchSrc = noComments(code("finance-issue-orchestrator.ts"));
+    ck("Z3. Official numbers come ONLY from the organisation's Finance Settings (no hard-coded prefix, no platform-wide counter); the only sequence write is that Settings row's next number", !/INV-|autoNumber|counter|globalSequence/i.test(all) && /invoiceNumberPlan\(cw\.settings\)/.test(orchSrc) && (orchSrc.match(/SETTINGS_FIELDS\.invoiceNumberNext/g) || []).length === 2 && /txn\.patch\(SETTINGS_TABLE/.test(orchSrc));
     const orch = code("finance-issue-orchestrator.ts");
     ck("Z4. Reads + writes authorise via F1 authorizeFinance (read + manage); no new auth path", /authorizeFinance\(deps, caller, "read"\)/.test(orch) && /authorizeFinance\(deps, caller, "manage"\)/.test(orch) && !/createClient|profiles/.test(orch));
     ck("Z5. The shared Finance write lock and a single audit insert are reused", /acquireWriteLock\(deps\.grants, lockKey\(org\)\)/.test(orch) && (orch.match(/insertAuditEvents\(/g) || []).length === 1 && /`commercial:\$\{o\.organisationId\}`/.test(orch));

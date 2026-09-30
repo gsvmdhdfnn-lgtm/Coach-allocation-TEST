@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "61ce856e661f18cca1bab575252f9d2dce1da634e2ca9bbc64628c693c1cf323",
-  "artifactBytes": 220370,
+  "artifactSha256": "83a015150eeffbc4041e53fb7e1e808720232ed57029b1c4f1fcacb7ea15460c",
+  "artifactBytes": 226222,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "e545b99fc8da927c5c31cb2b4baca1fe7e32aa67c23d1ea71fd8b4c278e24950",
+  "sourceSha256": "a9dfd40d84ef8fd77a8a53713bcf609d6139b2e4fae5dc2d1be13e105a481054",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -71,11 +71,11 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-invoicing-mapping.ts",
-      "sha256": "834950121ddf644b8f423fcca64f25188176b2859cf14a14b9f641eb34ffc44d"
+      "sha256": "0a8f458c8403a2524c581699abf97470a7c62e87f02aad6fafedc94160a9d46e"
     },
     {
       "path": "supabase/functions-test/finance/finance-invoicing-orchestrator.ts",
-      "sha256": "88926a409899cd3a49cce4ad1d2628bbd82cd37925d3d4380bfad213b616f220"
+      "sha256": "053c0aa41b171c55e51e306167e2523e2d409e551d14b76d3a9d9d29956d4ee3"
     },
     {
       "path": "supabase/functions-test/finance/finance-invoicing-repository.ts",
@@ -83,23 +83,23 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-invoicing.ts",
-      "sha256": "3a69f3f324ca27f570aa55648e794cce47421968db62fb848a35ee0256e30fd1"
+      "sha256": "84a736e0d1488d9442ec9bff0d0b33034558b3a86f786646437ad9425092001c"
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-mapping.ts",
-      "sha256": "780e7304affd94627f3d64bebfaa9cedf5a9a562c27bd31f8b47e42f317aac18"
+      "sha256": "0a15e14afe9854858c618227333b14ef9ba1f154a8d143cd0ede4f3708c07d18"
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-orchestrator.ts",
-      "sha256": "63d4c1212a1650d48b096944cd68cb33683612f68fa1f178b139477b0f69204a"
+      "sha256": "5e13729b10eb02a74e06313f124684308052b09aa5d9fdcbcde79ffc54d52081"
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-repository.ts",
-      "sha256": "c1d34108d50fdfa3051ccc266828a431ef6ceb49a75c132f6ee64d20968a6af7"
+      "sha256": "ffa29bfb6d79a16e72e4b2ff796ed6ed54e1b603db6029e3ec21a669381f31ba"
     },
     {
       "path": "supabase/functions-test/finance/finance-issue.ts",
-      "sha256": "567a8c8b35ad9726b79ef67a18ab842beda42724d785e88a0d9ad7e9f0661f42"
+      "sha256": "a2f6b9d274f73d9089cfed5a469453fca69191c93266c657414d7cab13ee0187"
     },
     {
       "path": "supabase/functions-test/finance/finance-lifecycle.ts",
@@ -119,7 +119,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-settings.ts",
-      "sha256": "3282647b1f37ef4a6795258019e47093bf4706b5b96742e3afcedaf966b0a7d7"
+      "sha256": "290719688ba164232dbb66ec7ffbdcf70c165f7a2a01f86a4675b7e9828f8f95"
     },
     {
       "path": "supabase/functions-test/finance/index.ts",

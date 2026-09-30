@@ -19,9 +19,19 @@
  *   - default payment terms (days);
  *   - Coach payment rule: day N (1-31) of the month after the work; in a
  *     shorter month it resolves to that month's last day (see
- *     resolveCoachPaymentDate). The stored day itself never changes.
- * Optional integrations (Stripe / Xero / Sheets) are not settings here and
- * never affect completeness. No credentials are stored.
+ *     resolveCoachPaymentDate). The stored day itself never changes;
+ *   - official invoice numbering (F6 correction): WHO assigns the
+ *     customer-facing invoice number - "xero" (Xero assigns it later; the
+ *     Hub never invents one) or "hub" (the Hub assigns the organisation's
+ *     own sequential number at issue: prefix + next number, optionally
+ *     zero-padded to a minimum number of digits). The Hub's internal FIV-
+ *     reference exists either way. The next number is advanced ONLY by a
+ *     successful issue (under this organisation's Finance write lock AND
+ *     this Settings lock); Management may set it (e.g. the starting number).
+ * Optional integration connections (Stripe / Xero / Sheets) are not
+ * settings here and never affect completeness (nor does the numbering
+ * choice: issuing an invoice checks it). Choosing "xero" connects nothing.
+ * No credentials are stored.
  */
 import { type VatTreatment, VAT_TREATMENTS, isRateBasisPoints, isVatTreatment } from "./finance-money.ts";
 
@@ -41,6 +51,10 @@ export const SETTINGS_KEYS = [
   "defaultVatTreatment",
   "defaultPaymentTermsDays",
   "coachPaymentDayOfFollowingMonth",
+  "invoiceNumberAuthority",
+  "invoiceNumberPrefix",
+  "invoiceNumberNext",
+  "invoiceNumberDigits",
 ] as const;
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 
@@ -54,7 +68,17 @@ export interface FinanceSettings {
   defaultVatTreatment: VatTreatment | null;
   defaultPaymentTermsDays: number | null;
   coachPaymentDayOfFollowingMonth: number | null;
+  invoiceNumberAuthority: InvoiceNumberAuthority | null;
+  invoiceNumberPrefix: string | null;
+  invoiceNumberNext: number | null;
+  invoiceNumberDigits: number | null;
 }
+
+/** Who assigns the official (customer-facing) invoice number. Explicit - never inferred from whether a number exists. */
+export const INVOICE_NUMBER_AUTHORITIES = ["hub", "xero"] as const;
+export type InvoiceNumberAuthority = (typeof INVOICE_NUMBER_AUTHORITIES)[number];
+/** The largest number the Hub will assign; a stored next number of MAX + 1 means the sequence is used up. */
+export const INVOICE_NUMBER_MAX = 999_999_999;
 
 export const EMPTY_SETTINGS: FinanceSettings = Object.freeze({
   invoiceLegalName: null,
@@ -66,6 +90,10 @@ export const EMPTY_SETTINGS: FinanceSettings = Object.freeze({
   defaultVatTreatment: null,
   defaultPaymentTermsDays: null,
   coachPaymentDayOfFollowingMonth: null,
+  invoiceNumberAuthority: null,
+  invoiceNumberPrefix: null,
+  invoiceNumberNext: null,
+  invoiceNumberDigits: null,
 });
 
 // ---------------------------------------------------------------------
@@ -91,10 +119,15 @@ export const FIELD_NAMES: Record<SettingsKey, string> = {
   defaultVatTreatment: "Default VAT Treatment",
   defaultPaymentTermsDays: "Default Payment Terms (Days)",
   coachPaymentDayOfFollowingMonth: "Coach Payment Day",
+  invoiceNumberAuthority: "Invoice Number Authority",
+  invoiceNumberPrefix: "Invoice Number Prefix",
+  invoiceNumberNext: "Next Invoice Number",
+  invoiceNumberDigits: "Invoice Number Digits",
 };
 
 const VAT_REGISTRATION_CHOICES = { registered: "Registered", notRegistered: "Not registered" } as const;
 const TREATMENT_CHOICES: Record<VatTreatment, string> = { plus_vat: "Plus VAT", vat_included: "VAT Included", no_vat: "No VAT" };
+const AUTHORITY_CHOICES: Record<InvoiceNumberAuthority, string> = { hub: "Hub", xero: "Xero" };
 
 // ---------------------------------------------------------------------
 // Per-field validation (shared by request input AND stored values)
@@ -137,6 +170,10 @@ export const FIELD_VALIDATORS: Record<SettingsKey, (v: unknown) => FieldCheck> =
   defaultVatTreatment: (v) => (v === null || isVatTreatment(v) ? { ok: true, value: v } : { ok: false, error: `must be one of ${VAT_TREATMENTS.join(", ")} or null` }),
   defaultPaymentTermsDays: (v) => int(v, 0, 365),
   coachPaymentDayOfFollowingMonth: (v) => int(v, COACH_PAYMENT_DAY_MIN, COACH_PAYMENT_DAY_MAX),
+  invoiceNumberAuthority: (v) => (v === null || (INVOICE_NUMBER_AUTHORITIES as readonly unknown[]).includes(v) ? { ok: true, value: v } : { ok: false, error: `must be one of ${INVOICE_NUMBER_AUTHORITIES.join(", ")} or null` }),
+  invoiceNumberPrefix: (v) => text(v, 12, { pattern: /^[A-Za-z0-9][A-Za-z0-9/_-]*$/, patternError: "must start with a letter or digit and contain only letters, digits, -, _ and /" }),
+  invoiceNumberNext: (v) => int(v, 1, INVOICE_NUMBER_MAX + 1),
+  invoiceNumberDigits: (v) => int(v, 1, 9),
 };
 
 /** Rules across fields, checked on the MERGED result of an update. Empty object = consistent. */
@@ -319,6 +356,10 @@ export function fromStoredRow(row: StoredSettingsRow): { ok: true; state: Settin
       const hit = (Object.keys(TREATMENT_CHOICES) as VatTreatment[]).find((t) => TREATMENT_CHOICES[t] === raw);
       raw = hit ?? { unknown: raw };
     }
+    if (k === "invoiceNumberAuthority" && raw !== null) {
+      const hit = INVOICE_NUMBER_AUTHORITIES.find((a) => AUTHORITY_CHOICES[a] === raw);
+      raw = hit ?? { unknown: raw };
+    }
     const r = FIELD_VALIDATORS[k](raw);
     if (r.ok) out[k] = r.value;
     else problems.push(FIELD_NAMES[k]);
@@ -342,6 +383,7 @@ export function toStoredFields(s: FinanceSettings, keys: readonly SettingsKey[])
     const v = s[k];
     if (k === "vatRegistered") out[FIELD_NAMES[k]] = v === null ? null : v ? VAT_REGISTRATION_CHOICES.registered : VAT_REGISTRATION_CHOICES.notRegistered;
     else if (k === "defaultVatTreatment") out[FIELD_NAMES[k]] = v === null ? null : TREATMENT_CHOICES[v as VatTreatment];
+    else if (k === "invoiceNumberAuthority") out[FIELD_NAMES[k]] = v === null ? null : AUTHORITY_CHOICES[v as InvoiceNumberAuthority];
     else out[FIELD_NAMES[k]] = v;
   }
   return out;

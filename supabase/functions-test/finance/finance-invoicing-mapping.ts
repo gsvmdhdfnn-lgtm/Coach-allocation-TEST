@@ -110,7 +110,7 @@ export const FI = {
 
 const DRAFT_STATUS: Record<DraftStatus, string> = { draft: "Draft", ready_for_issue: "Ready for issue" };
 const LINE_STATUS: Record<LineStatus, string> = { included: "Included", excluded: "Excluded", removed: "Removed", superseded: "Superseded" };
-const TERMS_SOURCE: Record<TermsSource, string> = { client: "Client", finance_settings: "Finance Settings", invoice_override: "Invoice override" };
+const TERMS_SOURCE: Record<TermsSource, string> = { client: "Client", finance_settings: "Finance Settings", invoice_override: "Invoice override", original_invoice: "Original invoice" };
 const QTY_SOURCES: readonly QuantitySource[] = ["default_commercial_quantity", "occurrence_override", "per_session"];
 const UNIT_SOURCES: readonly UnitAmountSource[] = ["commercial_terms", "occurrence_override"];
 const MAX_LINE_MINOR = MAX_UNIT_AMOUNT_MINOR * MAX_BILLABLE_QUANTITY;
