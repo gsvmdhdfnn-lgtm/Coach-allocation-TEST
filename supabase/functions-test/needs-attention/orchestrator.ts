@@ -22,6 +22,14 @@
  * case (pure policy in exceptions.ts), and serialise per Organisation +
  * Case Key through the needs_attention_exception_locks lock. The only
  * writes are one Exceptions row create or one Exceptions row patch.
+ *
+ * Finance F8a adds the Finance capability filter: when a Finance
+ * (module_finance) rule would run, the caller's F1 Finance grant is looked
+ * up ONCE (deps.financeAccess). Without Finance View / Manage every Finance
+ * rule is skipped before any source is loaded, so no Finance case, count,
+ * title, amount or suppressed Finance case can reach that caller. With View
+ * the cases are shown but cannot be excepted; only Finance Manage may
+ * create or revoke an exception on a Finance case.
  */
 import {
   ENGINE_VERSION,
@@ -59,6 +67,7 @@ import {
   parseRevokeBody,
 } from "./exceptions.ts";
 import type { LockClient } from "./lock-client.ts";
+import { type FinanceAccess, canManageFinanceExceptions, isFinanceRule, needsFinanceAccess, restrictFinanceRules } from "./finance.ts";
 import { type AirtableConfig, type Reader, CONFIG_TABLES, createExceptionRecord, createReader, loadConfig, updateExceptionRecord } from "./repository.ts";
 
 export interface Deps {
@@ -66,6 +75,12 @@ export interface Deps {
   registry: readonly EvaluatorRegistration[];
   /** Required only by the exception write routes (Slice 5). */
   lock?: LockClient;
+  /**
+   * F8a: the caller's Finance access (F1 grant) in their profile organisation.
+   * Called at most once per evaluation, and only when a Finance rule would
+   * run. Missing = "none" (fail closed); a throw = "none" + incomplete.
+   */
+  financeAccess?: (caller: Caller) => Promise<FinanceAccess>;
 }
 
 export interface Caller {
@@ -104,6 +119,8 @@ export interface Evaluation {
   issues: ConfigIssue[];
   evaluated: { ruleKey: string; candidates: number; active: number; suppressed: number }[];
   complete: boolean;
+  /** F8a: the caller's Finance access, or null when no Finance rule would run (not looked up). */
+  financeAccess: FinanceAccess | null;
 }
 
 /**
@@ -124,7 +141,7 @@ export async function evaluate(deps: Deps, caller: Caller, opts: { onlyRuleKey: 
 
   const catalogue = buildCatalogue(cfg.rules);
   const settings = settingsForOrganisation(cfg.settings, organisation.recordId);
-  const plan = planEvaluation({
+  let plan = planEvaluation({
     catalogue,
     settings: settings.byRuleRecordId,
     featureRecords: cfg.features,
@@ -133,10 +150,23 @@ export async function evaluate(deps: Deps, caller: Caller, opts: { onlyRuleKey: 
   });
   const issues: ConfigIssue[] = [...catalogue.issues, ...settings.issues, ...plan.issues];
   const exceptions = cfg.exceptions.map(parseException);
+  let complete = true;
+
+  // F8a Finance capability filter - BEFORE any source is loaded.
+  let financeAccess: FinanceAccess | null = null;
+  if (needsFinanceAccess(plan)) {
+    try {
+      financeAccess = deps.financeAccess ? await deps.financeAccess(caller) : "none";
+    } catch (e) {
+      financeAccess = "none";
+      complete = false;
+      issues.push({ code: "finance_access_unavailable", detail: `Finance access could not be checked, so Finance rules were not evaluated (${e instanceof Error ? e.message : String(e)})` });
+    }
+    plan = restrictFinanceRules(plan, financeAccess);
+  }
 
   const sources = plan.sourcesToLoad.length ? await reader.listMany(plan.sourcesToLoad) : {};
 
-  let complete = true;
   const active: NeedsAttentionCase[] = [];
   const suppressed: SuppressedCase[] = [];
   const evaluated: { ruleKey: string; candidates: number; active: number; suppressed: number }[] = [];
@@ -156,6 +186,11 @@ export async function evaluate(deps: Deps, caller: Caller, opts: { onlyRuleKey: 
     try {
       const candidates = ev.evaluate({ now, organisation, sources: Object.freeze(ctxSources), reportIssue });
       const m = materialiseCases(entry, candidates, { organisation, exceptions, now });
+      // Finance cases: only Finance Manage may except them (View reads only).
+      if (isFinanceRule(entry.rule) && !canManageFinanceExceptions(financeAccess)) {
+        for (const c of m.active) c.exceptionAllowed = false;
+        for (const sc of m.suppressed) sc.case.exceptionAllowed = false;
+      }
       active.push(...m.active);
       suppressed.push(...m.suppressed);
       issues.push(...m.issues);
@@ -166,7 +201,7 @@ export async function evaluate(deps: Deps, caller: Caller, opts: { onlyRuleKey: 
     }
   }
 
-  return { status: "ok", organisation, catalogue, plan, reader, exceptionRows: exceptions, active, suppressed, issues, evaluated, complete };
+  return { status: "ok", organisation, catalogue, plan, reader, exceptionRows: exceptions, active, suppressed, issues, evaluated, complete, financeAccess };
 }
 
 export async function getCases(deps: Deps, caller: Caller, query: CasesQuery, now = new Date()): Promise<CasesOutcome> {
@@ -192,6 +227,7 @@ export async function getCases(deps: Deps, caller: Caller, query: CasesQuery, no
           evaluated,
           skipped: plan.entries.filter((e) => !e.run).map((e) => ({ ruleKey: e.rule.ruleKey, ruleId: e.rule.ruleId, reason: e.skipReason, detail: e.skipDetail })),
           sourcesLoaded: plan.sourcesToLoad,
+          financeAccess: ev.financeAccess ?? "not_checked",
           reads: reader.stats(),
           suppressedCases: suppressed.map((s) => ({ caseKey: s.case.caseKey, ruleKey: s.case.ruleKey, exceptionId: s.exceptionId, exceptionRecordId: s.exceptionRecordId, effectiveUntil: s.effectiveUntil })),
         },
@@ -293,6 +329,11 @@ export async function createException(deps: Deps, caller: Caller, body: unknown,
       const ev = await evaluate(deps, caller, { onlyRuleKey: req.ruleKey, now });
       if (ev.status === "rejected") return ev;
       const entry = ev.plan.entries.find((e) => e.rule.ruleKey === req.ruleKey) ?? null;
+      // F8a: a Finance case exists for this caller only with Finance View / Manage (otherwise the rule was
+      // skipped and decideCreate answers case_not_found); View may see it but only Manage may except it.
+      if (entry && entry.run && isFinanceRule(entry.rule) && !canManageFinanceExceptions(ev.financeAccess)) {
+        return reject(403, "finance_manage_required", "Exceptions on Finance cases need Finance Manage access");
+      }
       const inForce = inForceFor(ev.exceptionRows, ev.organisation.recordId, req.caseKey, now);
       const decision = decideCreate({ caseKey: req.caseKey, ruleKey: req.ruleKey, entry, complete: ev.complete, active: ev.active, suppressed: ev.suppressed, inForce });
       if (decision.kind === "rejected") {
@@ -355,8 +396,8 @@ export async function revokeException(deps: Deps, caller: Caller, body: unknown,
   if (!deps.lock) throw new Error("revokeException needs a lock client");
   const revoker = actorFromProfile({ userId: caller.userId, displayName: caller.displayName, email: caller.email });
 
-  // Locate: only the two tables needed to resolve the tenant and the row.
-  const pre = await createReader(deps.airtable).listMany([CONFIG_TABLES.organisations, CONFIG_TABLES.exceptions]);
+  // Locate: the tenant, the row, and (F8a) the catalogue to know whether the row is a Finance case.
+  const pre = await createReader(deps.airtable).listMany([CONFIG_TABLES.organisations, CONFIG_TABLES.exceptions, CONFIG_TABLES.rules]);
   const org = resolveOrganisation(caller.organisationId, pre[CONFIG_TABLES.organisations]);
   if (!org.ok) return reject(409, org.code, org.error);
   const organisation = org.organisation;
@@ -364,6 +405,20 @@ export async function revokeException(deps: Deps, caller: Caller, body: unknown,
   if (!target) return reject(404, "exception_not_found", "No exception with that id belongs to your organisation");
   const caseKey = target.caseKey ?? `invalid-key:${target.recordId}`;
   const ruleKey = target.caseKey ? parseCaseKey(target.caseKey)?.ruleKey ?? null : null;
+
+  // F8a: a Finance case's exception is Finance Manage only; without any Finance access it does not exist for the caller.
+  const rules = buildCatalogue(pre[CONFIG_TABLES.rules]).rules;
+  const financeRow = rules.some((r) => isFinanceRule(r) && (target.ruleIds.includes(r.recordId) || (ruleKey !== null && r.ruleKey === ruleKey)));
+  if (financeRow) {
+    let access: FinanceAccess;
+    try {
+      access = deps.financeAccess ? await deps.financeAccess(caller) : "none";
+    } catch {
+      return reject(503, "finance_access_unavailable", "Finance access could not be checked just now - try again");
+    }
+    if (access !== "view" && access !== "manage") return reject(404, "exception_not_found", "No exception with that id belongs to your organisation");
+    if (!canManageFinanceExceptions(access)) return reject(403, "finance_manage_required", "Revoking an exception on a Finance case needs Finance Manage access");
+  }
 
   const out = await withLock(
     deps.lock,

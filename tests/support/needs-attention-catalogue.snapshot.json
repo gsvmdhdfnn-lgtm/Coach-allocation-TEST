@@ -1,5 +1,5 @@
 {
- "_comment": "Full snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e / tblyawQ8vSEN945Qp) taken 2026-09-29 for Needs Attention Slice 9 (foundation freeze). Airtable REST shape: fields by name, selects as names, unticked checkboxes absent. Description text omitted (non-behavioural). ATT-018 venue_missing corrected Active -> Planned on 2026-09-29 (catalogue status correction: Active means a live evaluator exists).",
+ "_comment": "Full snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e / tblyawQ8vSEN945Qp) taken 2026-09-29 for Needs Attention Slice 9 (foundation freeze). Airtable REST shape: fields by name, selects as names, unticked checkboxes absent. Description text omitted (non-behavioural). ATT-018 venue_missing corrected Active -> Planned on 2026-09-29 (catalogue status correction: Active means a live evaluator exists). F8a (2026-09-30): + ATT-047 invoice_overdue (Active, module_finance, Default Enabled off, base Warning, no thresholds) and ATT-048 invoice_draft_blocked (Planned until F8b) - 40 rows: 15 Active, 25 Planned, 0 Retired.",
  "records": [
   {
    "id": "rec7MaSdZV4VE02uL",
@@ -766,6 +766,42 @@
     "Rule Name": "Work summary blocked",
     "Sort Order": 46,
     "Supports Warning Threshold": true
+   }
+  },
+  {
+   "id": "recC80hmlglLibk7I",
+   "fields": {
+    "Action Label": "Review Receivable",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Active",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-047",
+    "Rule Key": "invoice_overdue",
+    "Rule Name": "Invoice overdue",
+    "Sort Order": 47,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recqJL02MwyCcMogr",
+   "fields": {
+    "Action Label": "Review Invoice Draft",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Planned",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-048",
+    "Rule Key": "invoice_draft_blocked",
+    "Rule Name": "Invoice draft blocked",
+    "Sort Order": 48,
+    "Supports Override": true
    }
   }
  ]

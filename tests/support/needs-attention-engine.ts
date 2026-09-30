@@ -601,7 +601,9 @@ export type SkipReason =
   | "registry_mismatch"
   | "module_off"
   | "disabled"
-  | "settings_disabled";
+  | "settings_disabled"
+  /** F8a: a Finance (module_finance) rule, and the caller holds neither Finance View nor Manage. Applied before any source is loaded. */
+  | "finance_access_required";
 
 export interface PlanEntry {
   rule: RuleDef;

@@ -304,6 +304,22 @@
    "requiredModule": "module_coaches",
    "defaultEnabled": true,
    "active": true
+  },
+  {
+   "ruleId": "ATT-047",
+   "ruleKey": "invoice_overdue",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_finance",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-048",
+   "ruleKey": "invoice_draft_blocked",
+   "evaluationStatus": "Planned",
+   "requiredModule": "module_finance",
+   "defaultEnabled": false,
+   "active": true
   }
  ]
 }

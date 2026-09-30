@@ -1,0 +1,86 @@
+{
+  "function": "needs-attention",
+  "project": "TEST only",
+  "artifact": "supabase/deploy-artifacts/needs-attention/index.js",
+  "artifactSha256": "f224d2d9f22f84a21d98809b790484ab9db102802d5a3791d3b4feaeeb5d98bd",
+  "artifactBytes": 109420,
+  "entrypoint": "index.js",
+  "externalImports": [
+    "jsr:@supabase/supabase-js@2"
+  ],
+  "esbuild": "0.28.2",
+  "options": {
+    "entryPoints": [
+      "supabase/functions-test/needs-attention/index.ts"
+    ],
+    "bundle": true,
+    "format": "esm",
+    "platform": "neutral",
+    "target": "es2022",
+    "external": [
+      "jsr:*"
+    ],
+    "minify": true,
+    "lineLimit": 160,
+    "legalComments": "none",
+    "charset": "utf8",
+    "sourcemap": false,
+    "logLevel": "warning"
+  },
+  "sourceSha256": "e257cd92c909ccd327973806163a966f296181ee2537c160fd7a8b554e0b9fa9",
+  "sources": [
+    {
+      "path": "supabase/functions-test/needs-attention/coach-schedule.ts",
+      "sha256": "d368d2df705a696aabb2c2c4140eecdba5b12f0f0d3529fe1b5ed6929642f525"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/compliance.ts",
+      "sha256": "6a3b909ea625d15b8dff26bed06136440cecddb0aa09b32ccc3243431de768ac"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/cover.ts",
+      "sha256": "1d1951041ba067edacd03c3711ed7316d02861119d901385042a750eb75bb8bc"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/exceptions.ts",
+      "sha256": "f9908de3607b3740d9ec4ad70fde0b26ffb88441f74c2036e7f3440794a2c1ca"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/finance.ts",
+      "sha256": "b9a44ab3895015d9b43395cb50faa51c7bf8a1c62c35e57f7c1a5261df275f2b"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/index.ts",
+      "sha256": "d77633b1d7d09b47c62172be264abf5f97354cb934b8906b47b13295b8c64d99"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/lock-client.ts",
+      "sha256": "f88c38ba5b4b8966319348abc8fddd195119b862513dab35f49680831b492b9e"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/needs-attention.ts",
+      "sha256": "950679b44d1988d7be30cba805380683be87096418a36d90088dba8c0c62b8b4"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/orchestrator.ts",
+      "sha256": "62f373131f319b3bdaf6a4623c609111a48b8f1114eca7f0082ab52374103090"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/registry.ts",
+      "sha256": "0998c1d4b3f3e3ab424ed425f1a440b4ede855917f776cf099c7789614b281b1"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/repository.ts",
+      "sha256": "ba241cdb48a67665d8f4c8c7844606099db364ff46ea08c8441aebb135eb6da5"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/staffing.ts",
+      "sha256": "36fb46f0ca31f2f2d6c190b18659ce81aeeb63812478616bfd0542ec580244dd"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/work-summaries.ts",
+      "sha256": "a9f4fcfcc5cdf191340f0973ad7b2f29ed4df2a6e6b07e48550345a52b52e035"
+    }
+  ],
+  "unusedSources": []
+}

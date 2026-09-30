@@ -9,11 +9,16 @@
  * same under Node (unit tests, mocked global fetch) and Deno. Same 429
  * retry/backoff as the other TEST repositories (copied, not shared).
  *
+ * F8a adds one read-only Supabase lookup: the caller's own F1 Finance grant
+ * rows (loadFinanceGrants, copied from finance/repository.ts).
+ *
  * Read model: createReader() returns a per-request reader that lists each
  * table AT MOST ONCE (memoised promise per table name) and counts every
  * page request per table, so the orchestrator can prove "config tables
  * read once, gated-off evaluators read nothing, no query per rule".
  */
+
+import type { FinanceGrantRow } from "./finance.ts";
 
 export interface AirtableConfig {
   baseId: string;
@@ -163,3 +168,42 @@ export function updateExceptionRecord(config: AirtableConfig, recordId: string, 
   if (!/^rec[A-Za-z0-9]{14}$/.test(recordId)) throw new Error(`Invalid exception record id: ${recordId}`);
   return writeException(config, "PATCH", `/${recordId}`, fields);
 }
+
+// ---------------------------------------------------------------------
+// Finance access (F8a): the caller's own F1 grant rows, read with the
+// service-role key (GET only; the pure policy is finance.ts's copied
+// resolveFinanceAccess). Nothing here writes to Supabase.
+// ---------------------------------------------------------------------
+
+// ===== COPIED FROM finance/repository.ts - DO NOT EDIT HERE =====
+export interface GrantStoreConfig {
+  supabaseUrl: string;
+  serviceRoleKey: string;
+}
+
+export const GRANTS_TABLE = "finance_access_grants";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Every grant row (revoked or not) for exactly this user id; the pure
+ * policy decides which one, if any, counts. Throws on any store error so
+ * the caller fails closed (503) rather than treating "unreadable" as "none".
+ */
+export async function loadFinanceGrants(config: GrantStoreConfig, userId: string): Promise<FinanceGrantRow[]> {
+  if (!UUID_RE.test(userId)) throw new Error("Finance grant lookup refused: caller user id is not a UUID");
+  const url = new URL(`${config.supabaseUrl.replace(/\/+$/, "")}/rest/v1/${GRANTS_TABLE}`);
+  url.searchParams.set("select", "organisation_id,access_level,revoked_at");
+  url.searchParams.set("user_id", `eq.${userId}`);
+  const response = await fetch(url.toString(), {
+    headers: { apikey: config.serviceRoleKey, Authorization: `Bearer ${config.serviceRoleKey}`, Accept: "application/json" },
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Finance grant store error: ${response.status} ${message}`);
+  }
+  const rows = await response.json();
+  if (!Array.isArray(rows)) throw new Error("Finance grant store returned a non-array body");
+  return rows as FinanceGrantRow[];
+}
+// ===== END COPIED BLOCK =====

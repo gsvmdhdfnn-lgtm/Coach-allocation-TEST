@@ -21,11 +21,18 @@
  * key is rejected with 400 rather than ignored. The only writes are the
  * two exception routes (one Needs Attention Exceptions row created or
  * patched); no Settings or other table is ever written, nothing deleted.
+ *
+ * Finance F8a: Finance (module_finance) cases are shown only to a caller
+ * holding Finance View or Manage - the caller's own F1 grant rows are read
+ * (GET, service role) only when a Finance rule would run - and only Finance
+ * Manage may create / revoke an exception on a Finance case.
  */
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { createSupabaseLockClient } from "./lock-client.ts";
 import { createException, getCases, revokeException, type Caller, type Deps, type WriteOutcome } from "./orchestrator.ts";
 import { IMPLEMENTED_EVALUATORS } from "./registry.ts";
+import { loadFinanceGrants } from "./repository.ts";
+import { resolveFinanceAccess } from "./finance.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
 const AIRTABLE_BASE_ID = Deno.env.get("AIRTABLE_BASE_ID")!;
@@ -53,7 +60,7 @@ if (!/^app[A-Za-z0-9]{14}$/.test(AIRTABLE_BASE_ID || "")) {
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-/** Used ONLY for the needs_attention_exception_locks RPCs (service_role-only functions). */
+/** Used ONLY for the needs_attention_exception_locks RPCs (service_role-only functions) and (F8a) the caller's own Finance grant rows (GET). */
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const corsHeaders = {
@@ -99,6 +106,12 @@ const deps: Deps = {
   airtable: { baseId: AIRTABLE_BASE_ID, token: AIRTABLE_TOKEN },
   registry: IMPLEMENTED_EVALUATORS,
   lock: createSupabaseLockClient({ supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY }),
+  // F8a: the F1 policy over the caller's own grant rows (role / active / organisation from the profile only).
+  financeAccess: async (caller) =>
+    resolveFinanceAccess(
+      { userId: caller.userId, role: caller.role, active: caller.active, organisationId: caller.organisationId },
+      await loadFinanceGrants({ supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY }, caller.userId)
+    ).access,
 };
 
 async function readJson(req: Request): Promise<unknown> {

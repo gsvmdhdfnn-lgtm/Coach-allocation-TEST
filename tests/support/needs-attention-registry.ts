@@ -28,8 +28,10 @@
  * coach_outcome_pending and the three Work Summary rules (work-summaries.ts):
  * one shared coach-outcome pass and one shared Work Summary pass (effective
  * status recomputed from the domain's own copied rules, never stored Status).
- * Later slices append their own registrations; gated-off rules never cause
- * any domain read.
+ * Finance F8a adds invoice_overdue (finance.ts): one shared receivable pass
+ * over the six F6 / F7 Finance tables, run only for callers holding Finance
+ * View or Manage (restrictFinanceRules). Later slices append their own
+ * registrations; gated-off rules never cause any domain read.
  *
  * Drift protection: validateRegistry() (needs-attention.ts) reports
  * duplicate registrations, registrations with no catalogue row, and Rule
@@ -42,5 +44,6 @@ import { COVER_EVALUATOR } from "./needs-attention-cover.ts";
 import { COMPLIANCE_EVALUATORS } from "./needs-attention-compliance.ts";
 import { COACH_SCHEDULE_EVALUATORS } from "./needs-attention-coach-schedule.ts";
 import { WORK_SUMMARY_EVALUATORS } from "./needs-attention-work-summaries.ts";
+import { FINANCE_EVALUATORS } from "./needs-attention-finance.ts";
 
-export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS, COVER_EVALUATOR, ...COMPLIANCE_EVALUATORS, ...COACH_SCHEDULE_EVALUATORS, ...WORK_SUMMARY_EVALUATORS];
+export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS, COVER_EVALUATOR, ...COMPLIANCE_EVALUATORS, ...COACH_SCHEDULE_EVALUATORS, ...WORK_SUMMARY_EVALUATORS, ...FINANCE_EVALUATORS];
