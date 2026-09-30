@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "6d2588ffacb69658ae198f1f184d1b9e215635f64e4c8b104983bf644e5a3534",
-  "artifactBytes": 228285,
+  "artifactSha256": "0b1477e5dde29630af72a03990baa8fdb02f4ed5bdeb7d059d830f26b250414d",
+  "artifactBytes": 290148,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "2cdf17f932672c953eb3d2eae19d409faef9bea6d014a8b2873ed89696f25bef",
+  "sourceSha256": "a1f92a4da82fe94b813483b26e86d6c93ed841881b07412f00dc9e4590aae41e",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -91,7 +91,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-orchestrator.ts",
-      "sha256": "691a30e0baa59588d1c69102198fa68ba882ac851616f98541304386c37799d6"
+      "sha256": "6c4a23add929c229fc8b79f4cd48c034010be9a3f6e742eb75ceb932b320be76"
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-repository.ts",
@@ -110,6 +110,22 @@
       "sha256": "456272324d7e84006dd77e3e39bb1ff0f0b9b98df5f507c748bce1155633c17d"
     },
     {
+      "path": "supabase/functions-test/finance/finance-receivables-mapping.ts",
+      "sha256": "1ab57c4f63856280715de3e928166c9137160dca1f17548d9a28c8d403fbfe81"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-receivables-orchestrator.ts",
+      "sha256": "864b1169ed34e2efb27e719e0fd1bdc302b33bf7e7a39c68968f0789d8de562e"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-receivables-repository.ts",
+      "sha256": "0f28256462903dff08a6c1e694c0f92dc2511c406e5f7316ea01b439b61f019f"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-receivables.ts",
+      "sha256": "89c60bb04de5c7f0a0104f6a5f965faa9ad3cf7679728554b6b5f9193cf069eb"
+    },
+    {
       "path": "supabase/functions-test/finance/finance-settings-orchestrator.ts",
       "sha256": "0cc5fe887d41e8efdf9613f1cddecc05c3d631d3102dd6cdeb43fdda755f0ed3"
     },
@@ -123,7 +139,7 @@
     },
     {
       "path": "supabase/functions-test/finance/index.ts",
-      "sha256": "68b42ebc6822bb3b3294c7a2681ee9fb6ec56e3e02c1134583fea6e534ab056b"
+      "sha256": "8c327f61078939a70685772af1772d5e136f216c1180a387f38d87da71c6822d"
     },
     {
       "path": "supabase/functions-test/finance/orchestrator.ts",

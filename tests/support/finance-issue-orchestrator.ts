@@ -117,10 +117,10 @@ function oneInvoice(rows: Row[], orgRec: string, invoiceId: string): StoredInvoi
   return b.invoices[0];
 }
 
-type LoadedInvoice = { invoice: StoredInvoice; lines: InvoiceLine[]; notes: CreditNote[] };
+export type LoadedInvoice = { invoice: StoredInvoice; lines: InvoiceLine[]; notes: CreditNote[] };
 
-/** An invoice with its lines and credit notes (3 reads), validated against each other. */
-async function loadInvoice(deps: IssueDeps, org: OrganisationContext, invoiceId: string): Promise<LoadedInvoice | Fail> {
+/** An invoice with its lines and credit notes (3 reads), validated against each other. Also F7's starting point for a receivable. */
+export async function loadInvoice(deps: IssueDeps, org: OrganisationContext, invoiceId: string): Promise<LoadedInvoice | Fail> {
   const r = await guarded(() => Promise.all([findInvoiceRows(deps.airtable, org.recordId, invoiceId), listInvoiceLineRows(deps.airtable, org.recordId, invoiceId), listCreditNoteRowsForInvoice(deps.airtable, org.recordId, invoiceId)]));
   if (isFail(r)) return r;
   const [invRows, lineRows, noteRows] = r;

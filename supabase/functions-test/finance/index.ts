@@ -1,6 +1,6 @@
 /**
- * Finance - access boundary + core API (Finance Foundation F1-F6; see
- * TEST-ENV.md "Finance Foundation - F1" / "- F2" / "- F3" / "- F4" / "- F5" / "- F6"). Thin HTTP
+ * Finance - access boundary + core API (Finance Foundation F1-F7; see
+ * TEST-ENV.md "Finance Foundation - F1" / "- F2" / "- F3" / "- F4" / "- F5" / "- F6" / "- F7"). Thin HTTP
  * wrapper, same convention as the Coaches / Needs Attention functions:
  * policy lives in finance-access.ts / finance-settings.ts /
  * finance-money.ts / finance-commercial.ts (pure), reads and writes in the
@@ -53,7 +53,24 @@
  *   POST /invoices/{FIV-id}/credit-notes            { lineIds?, reason }  credit whole lines (all remaining if omitted)
  *   GET  /credit-notes/{FCN-id}                     credit note + links
  *   POST /credit-notes/{FCN-id}/replacement-draft   { reason }  start the replacement draft (F5) for the credited work
- *   No sending, PDF, payment, overdue, Stripe or accounting-system routes (F7 / F9 / F22).
+ *   No sending, PDF, payment, overdue, Stripe or accounting-system routes here (payments + overdue: F7 below).
+ *
+ * F7 receivables + payments received + client credit (Finance read = GET, Finance manage = POST):
+ *   GET  /receivables[?clientId=FCL-..][&asOf=YYYY-MM-DD]   issued invoices' derived receivable state + summary
+ *   GET  /invoices/{FIV-id}/receivable[?asOf=]              one invoice: state + payments + credit applications + due date history
+ *   GET  /invoices/{FIV-id}/payments                        payment history
+ *   POST /invoices/{FIV-id}/payments                        { amount | settleRemaining: true, receivedDate, method?, reference?, reason? }  Mark as Received
+ *   POST /invoices/{FIV-id}/due-date                        { dueDate, reason }  deliberate move (original kept)
+ *   POST /payments/{FPY-id}/reverse                         { reason }  payment recorded in error (full amount)
+ *   POST /payments/{FPY-id}/overpayment-credit              { amount, reason }  keep extra cash as client credit
+ *   POST /credit-notes/{FCN-id}/client-credit               { amount, reason }  keep an already-paid correction as client credit
+ *   GET  /clients/{FCL-id}/credits                          the client's credits
+ *   GET  /client-credits/{FCC-id}                           one credit + its applications
+ *   POST /client-credits/{FCC-id}/applications              { invoiceId, amount, reason? }  apply to the same client's issued invoice
+ *   POST /client-credits/{FCC-id}/void                      { reason }  only while unapplied
+ *   POST /client-credit-applications/{FCA-id}/reverse       { reason }  unapply
+ *   GET  /receipts?from=YYYY-MM-DD&to=YYYY-MM-DD            trusted cash receipts (the Actual Revenue fact)
+ *   No reminders, Xero / Stripe sync, Cash Flow, Month Report or Needs Attention routes (F8 / F9 / later).
  *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
@@ -82,6 +99,23 @@ import { checkInvoicingQuery, matchInvoicingRoute, parseDetails, parseDraftCreat
 import { listClientDrafts, markLineNotBillable, readDraft, readEligibleWork, writeDraft } from "./finance-invoicing-orchestrator.ts";
 import { checkInvoiceListQuery, matchIssueRoute, parseCreditNote, parseIssue, parseReplacement } from "./finance-issue.ts";
 import { createCreditNote, issueDraft, listInvoiceCreditNotes, listInvoices, readCreditNote, readInvoice, startReplacementDraft } from "./finance-issue-orchestrator.ts";
+import { checkReceiptsQuery, checkReceivablesQuery, matchReceivablesRoute, parseApplication, parseCreditCreate, parseDueDateChange, parsePayment, parseRequiredReason } from "./finance-receivables.ts";
+import {
+  applyClientCredit,
+  changeDueDate,
+  creditFromCreditNote,
+  creditFromOverpayment,
+  listClientCredits,
+  listInvoicePayments,
+  listReceipts,
+  listReceivables,
+  readClientCredit,
+  readReceivable,
+  recordPayment,
+  reverseApplication,
+  reversePayment,
+  voidClientCredit,
+} from "./finance-receivables-orchestrator.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
 const AIRTABLE_BASE_ID = Deno.env.get("AIRTABLE_BASE_ID")!;
@@ -318,6 +352,60 @@ async function handleIssue(req: Request, url: URL, match: NonNullable<ReturnType
   return commercialResponse(await startReplacementDraft(deps, caller, r.params.creditNoteId, p.reason));
 }
 
+/** F7 routes: same order as F3-F6 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleReceivables(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchReceivablesRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  if (r.name === "receivables.list" || r.name === "invoice.receivable") {
+    const q = checkReceivablesQuery(url.searchParams, r.name === "receivables.list", isTenantKey);
+    if (!q.ok) return commercialResponse({ status: "error", ...q });
+    if (r.name === "receivables.list") return commercialResponse(await listReceivables(deps, caller, q.clientId, q.asOf));
+    return commercialResponse(await readReceivable(deps, caller, r.params.invoiceId, q.asOf));
+  }
+  if (r.name === "receipts.list") {
+    const q = checkReceiptsQuery(url.searchParams, isTenantKey);
+    if (!q.ok) return commercialResponse({ status: "error", ...q });
+    return commercialResponse(await listReceipts(deps, caller, q.from, q.to));
+  }
+  const query = checkCommercialQuery(url.searchParams, [], isTenantKey);
+  if (!query.ok) return jsonResponse({ error: query.error, code: query.code, ...(query.fields ? { fields: query.fields } : {}) }, 400);
+  if (r.name === "invoice.payments") return commercialResponse(await listInvoicePayments(deps, caller, r.params.invoiceId));
+  if (r.name === "client.credits") return commercialResponse(await listClientCredits(deps, caller, r.params.clientId));
+  if (r.name === "client_credit.read") return commercialResponse(await readClientCredit(deps, caller, r.params.creditId));
+  const raw = await req.text();
+  if (r.name === "invoice.payment_create") {
+    const p = parsePayment(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await recordPayment(deps, caller, r.params.invoiceId, p.req));
+  }
+  if (r.name === "invoice.due_date") {
+    const p = parseDueDateChange(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await changeDueDate(deps, caller, r.params.invoiceId, p.dueDate, p.reason));
+  }
+  if (r.name === "credit_note.client_credit" || r.name === "payment.overpayment_credit") {
+    const p = parseCreditCreate(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    if (r.name === "credit_note.client_credit") return commercialResponse(await creditFromCreditNote(deps, caller, r.params.creditNoteId, p.amountMinor, p.reason));
+    return commercialResponse(await creditFromOverpayment(deps, caller, r.params.paymentId, p.amountMinor, p.reason));
+  }
+  if (r.name === "client_credit.apply") {
+    const p = parseApplication(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await applyClientCredit(deps, caller, r.params.creditId, p.invoiceId, p.amountMinor, p.reason));
+  }
+  const p = parseRequiredReason(raw, isTenantKey, r.name === "client_credit.void" ? "voided" : "reversed");
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  if (r.name === "payment.reverse") return commercialResponse(await reversePayment(deps, caller, r.params.paymentId, p.reason));
+  if (r.name === "client_credit.void") return commercialResponse(await voidClientCredit(deps, caller, r.params.creditId, p.reason));
+  if (r.name === "application.reverse") return commercialResponse(await reverseApplication(deps, caller, r.params.applicationId, p.reason));
+  return jsonResponse({ error: "Unknown route" }, 404);
+}
+
 /** Path segments URL-decoded (an Occurrence ID contains ":"); null when a segment is not valid percent-encoding. */
 function decodedPath(route: string): string | null {
   try {
@@ -338,7 +426,11 @@ Deno.serve(async (req: Request) => {
   try {
     const decoded = decodedPath(route);
     if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
-    // F6 first: invoice-drafts/{id}/issue is F6's, every other invoice-drafts path stays F5's.
+    // F7 first: it owns only its own sub-paths (invoices/{id}/payments, clients/{id}/credits, ...) and returns null for the rest.
+    const receivables = matchReceivablesRoute(route, req.method);
+    if (receivables) return await handleReceivables(req, url, receivables);
+
+    // F6 next: invoice-drafts/{id}/issue is F6's, every other invoice-drafts path stays F5's.
     const issue = matchIssueRoute(route, req.method);
     if (issue) return await handleIssue(req, url, issue);
 
