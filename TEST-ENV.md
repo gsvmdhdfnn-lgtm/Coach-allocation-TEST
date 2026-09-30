@@ -14607,18 +14607,17 @@ Attention rules. **F6 owns issue, immutability and corrections.**
   - **setup**: `configuration_error`, `finance_service_not_found` or
     `missing_finance_service`. Shown as the blocker
     `unresolved_configuration`; never a £0 line.
-  - **noTerms**: `missing_commercial_terms`. Shown as the warning
-    `work_without_terms` (see the decision below).
+  - **noTerms**: `missing_commercial_terms` on **delivered + confirmed**
+    work. Shown as the **blocker** `missing_commercial_terms` unless the
+    draft carries an approved exception (FIN5.18). Missing-terms work that
+    is still awaiting confirmation is **pending**; cancelled, postponed or
+    not-yet-delivered missing-terms work is **other**.
   - **other** (never invoiceable): cancelled, postponed, not billable,
     service not operating, parent-paid / subscription deferred, and similar.
-- **Decision (live finding, commit `71341ab`): missing terms is a warning,
-  not a blocker.**
-  - F3 forbids backdating terms, and F4 checks terms before `not_billable`.
-  - So a past occurrence with no terms can be neither priced nor marked not
-    billable.
-  - As a blocker it would block that client's drafts forever. It is shown
-    as a warning and never becomes a line.
-  - An approved-exception path for it is future debt (FIN5.13).
+- **SUPERSEDED (F5 correction, 2026-09-30).** Commit `71341ab` had made
+  missing terms a warning (`work_without_terms`). That was reversed: missing
+  terms could change the invoice total, so it is a **blocker** again, and
+  the draft-specific approved exception in FIN5.18 is the only way past it.
 - **Manual-billing clients** get no Hub draft (409 `manual_billing_client`).
   Their work stays in Finance reporting.
 
@@ -14716,11 +14715,14 @@ Attention rules. **F6 owns issue, immutability and corrections.**
     manual_billing_client, billing_email_missing, po_missing,
     payment_terms_missing, source_changed (an included line no longer
     matches today's F4 figures), duplicate_claim, unresolved_configuration,
-    totals_do_not_reconcile.
+    totals_do_not_reconcile, **missing_commercial_terms** (F5 correction).
   - **Warnings:** client_inactive, po_requirement_changed,
     po_override_recorded, payment_terms_overridden, excluded_work,
-    billing_overrides, zero_value_lines, work_without_terms,
+    billing_overrides, zero_value_lines,
+    **missing_terms_exception_approved** (replaces `work_without_terms`),
     unconfirmed_work, new_eligible_work.
+  - **Approved exceptions** are listed separately in
+    `review.approvedExceptions` (FIN5.18).
 - **States: Draft → Ready for issue.**
   - Ready needs zero blockers **and** the revision that was reviewed. A
     stale revision → 409 `draft_revision_mismatch`; blockers → 409
@@ -14789,7 +14791,12 @@ Finance **Manage**.
   - `module_finance` off → 403 `finance_module_disabled`;
   - tenant switch → 400.
 
-### FIN5.13 Deploy (method change)
+### FIN5.13 Deploy (method change) — SUPERSEDED by FIN5.19
+
+> The GitHub-at-runtime deploy entry described below (v9, v10) is **no
+> longer an accepted baseline**. It was removed in the F5 correction.
+> `finance` v11+ is deployed from a committed, deterministic local bundle
+> (FIN5.19). The text below is kept as history.
 
 The inline 22-file (~365 KB) deploy through the Supabase tool repeatedly
 failed or was truncated. v8 stayed live the whole time; nothing half-deployed.
@@ -14839,11 +14846,15 @@ logins.
 
 - **Drafts:**
   - **D1 `FID-958179549E2E`** (Parkside, Sep 2026): **Ready for issue**,
-    rev 6; 9 included lines + 1 excluded; 1113.00 / 30.00 / 1143.00; PO
-    `PO-TEST-PARKSIDE-2026-09`; terms 30 (client).
-  - **D2 `FID-0E9BBC309EE1`** (Parkside, Sep 2026): open **Draft**, rev 2;
-    Breakfast 24 Sep 40.00 / 8.00 / 48.00; PO override reason recorded;
-    terms 21 (the client value at creation, kept as the snapshot).
+    rev 9 (after the F5 correction: reopened, approved missing-terms
+    exception for Camp 17 Sep, Ready again); 9 included lines + 1
+    excluded; 1113.00 / 30.00 / 1143.00; PO `PO-TEST-PARKSIDE-2026-09`;
+    terms 30 (client).
+  - **D2 `FID-0E9BBC309EE1`** (Parkside, Sep 2026): **Ready for issue**,
+    rev 4 (after the F5 correction: approved missing-terms exception for
+    Camp 17 Sep, then Ready); Breakfast 24 Sep 40.00 / 8.00 / 48.00; PO
+    override reason recorded; terms 21 (the client value at creation, kept
+    as the snapshot).
   - **D3 `FID-D5F457285BDC`** (St Anne's, Sep 2026): **Ready for issue**,
     rev 3; 8 Sep 45.00 / 9.00 / 54.00; 15 Sep line Removed (not billable);
     terms 30 (Finance Settings).
@@ -14900,7 +14911,189 @@ logins.
   Finance UI.
 - F5 follow-ups:
   - a draft cancel/delete that releases claims;
-  - an approved-exception path for past work without commercial terms;
+  - (done in the F5 correction: the draft-specific approved exception for
+    past work without commercial terms, FIN5.18) - a later historical
+    correction path that prices such work properly is still future work;
   - display grouping of lines;
   - separate invoices per billing contact, if the design later requires
     them.
+
+---
+
+## Finance Foundation — F5 correction (missing historical terms + deployment method) — TEST only — 2026-09-30
+
+This correction covers **two F5 issues only**. Everything else in F5 is
+unchanged. F6 was not started. Production Airtable, production Supabase,
+production Finance and Sessions, Xero, Stripe, Google Sheets and legacy
+Financials were not touched.
+
+### FIN5.18 Missing historical terms: blocker + draft-specific approved exception
+
+**Rule (locked):** if unresolved information could change the invoice
+total, the draft must not become Ready until it is fixed, or Management
+records an explicit approved exception. Delivered work with no commercial
+terms on its date could change the total.
+
+- **What blocks.** F4 returns `missing_commercial_terms` before it checks
+  delivery, so F5 now uses the occurrence's Schedule eligibility status:
+  - **delivered + confirmed** (`eligible`) with no terms → the **blocker**
+    `missing_commercial_terms`, naming the exact occurrence ids;
+  - still awaiting confirmation (or a delivery exception not yet
+    resolved) → *pending* (warning `unconfirmed_work`, as for any
+    unconfirmed work);
+  - cancelled, postponed or not yet delivered → *not invoiceable* (it
+    cannot change the total).
+- Such work **never becomes a line**: there is no £0 line and no guessed
+  price.
+- **The approved exception** (the only way past this blocker; there is no
+  generic bypass for other blockers):
+  - `POST /invoice-drafts/{FID}/missing-terms-exceptions` with body
+    `{ "occurrenceIds": [exact ids, 1-50, no repeats], "reason": "..." }`;
+    Finance **Manage** only; a reason is required.
+  - Only occurrences that currently raise this draft's
+    `missing_commercial_terms` blocker qualify (delivered + confirmed, the
+    draft's client and period, no terms on the date). Anything else →
+    409 `occurrence_not_missing_terms`: nothing written, nothing audited.
+  - Stored **on the draft only**, in the TEST Airtable field
+    `Finance Invoice Drafts.Missing Terms Exceptions`
+    (`fldsbeE6BHsS40omn`, long text).
+    - It is a JSON array of
+      `{occurrenceId, occurrenceDate, serviceId, reason, approvedBy, approvedAt}`.
+    - It is **append-only**: an already-approved occurrence is a no-op
+      (200 `changed:false`), never overwritten.
+    - It is validated on every read: bad JSON, missing reason, duplicate
+      entries or extra keys make the draft data invalid (409), never
+      guessed.
+  - **Draft-specific:** another draft for the same period is blocked
+    again for the same occurrence until it has its own exception.
+  - Only an **open Draft** can take an exception; a Ready draft →
+    409 `draft_not_open`. A refresh keeps the exceptions.
+  - **Audit:** one `finance_invoice_draft.missing_terms_exception_approved`
+    event per request, carrying the reason, the exact `occurrenceIds`
+    (context) and the approved entries (after). Revision +1, and actor and
+    time are recorded.
+  - It **does not touch F3** (no terms created, edited or backdated), does
+    not use today's terms, does not create a line and does not price the
+    work. The occurrence stays **unresolved in Finance**: the eligible-work
+    read still lists it under `withoutTerms`. Invoicing it properly later
+    needs a historical-correction path in a later slice.
+- **Review output** keeps the two cases apart:
+  - unresolved → blocker `missing_commercial_terms` (`occurrenceIds`);
+  - approved → `review.approvedExceptions[]` (`type`, `occurrenceId`,
+    `date`, `serviceId`, `reason`, `approvedBy`, `approvedAt`,
+    `stillMissingTerms`) plus the warning
+    `missing_terms_exception_approved`;
+  - the draft body also lists `missingTermsExceptions`.
+- **Ready rule:** Ready is refused (409 `draft_has_blockers`, field
+  `missing_commercial_terms`) while any such occurrence has no exception.
+
+### FIN5.19 Deployment: deterministic local bundle (replaces the GitHub-runtime stub)
+
+- **Removed:** `supabase/deploy-entries/finance/index.ts` (the GitHub
+  raw-URL import). No runtime GitHub import remains, and nothing depends
+  on the repo being public.
+- **Build:** `node scripts/build-finance-bundle.mjs` (committed).
+  - Input: the committed `supabase/functions-test/finance/*.ts` (entry
+    `index.ts`), the only source.
+  - esbuild is **pinned** (`package.json` devDependency `esbuild`
+    `0.28.2`, exact; `package-lock.json` committed). The script refuses to
+    run with any other esbuild version.
+  - Options are fixed in the script: bundle, ESM, platform neutral,
+    es2022, minify, line limit 160, no source map, no legal comments, and
+    external `jsr:*` only.
+  - The only external import is `jsr:@supabase/supabase-js@2`, which the
+    source already declares; Supabase resolves it from the jsr registry at
+    deploy time, exactly as v1–v8 did.
+  - Output:
+    - `supabase/deploy-artifacts/finance/index.js` — the single deployed
+      file. The banner carries the esbuild version and the source sha256.
+      It is never hand-edited.
+    - `supabase/deploy-artifacts/finance/manifest.json` — artifact sha256
+      and size, esbuild version, options, per-file source sha256 and the
+      source-tree sha256.
+  - The script fails if the bundle pulls in a file outside the finance
+    folder, has an unexpected external import, or mentions GitHub.
+- **Check:** `node scripts/build-finance-bundle.mjs --check` rebuilds in
+  memory and byte-compares with the committed artifact and manifest.
+  `tests/e2e/financebundletest.js` (in `run-all`) runs it, and also boots
+  the artifact with a stubbed `Deno` and supabase-js to prove it serves
+  requests.
+- **Deploy:** upload `index.js` as the function's only file (entrypoint
+  `index.js`, `verify_jwt: true`) with the Supabase deploy tool.
+- **Provenance check after every deploy:** fetch the deployed file with
+  `get_edge_function` and sha256 it. It must equal
+  `manifest.json.artifactSha256`, and `--check` must MATCH at the
+  committed HEAD.
+- **Current:** `finance` **v11**, entrypoint `index.js`, **168,338 bytes,
+  sha256 `db2ecddb70b3f7dd5b7971abe2a3113dadd78fdfaa1fe40723e46ae8f5c00a40`**:
+  - the deployed file is byte-identical to the committed artifact;
+  - a fresh `git clone` of commit `25cb3e9` + `npm ci` +
+    `build-finance-bundle.mjs --check` reproduces it byte for byte;
+  - source-tree sha256 `b80544f0421e817fe47d58168d3e3b078e7d6ed95a628fbb3ed6c58f80ec7793`.
+- **Production** is untouched. A production deploy would use the same
+  build from the production source tree.
+
+### FIN5.20 Tests and regression (F5 correction)
+
+- `finance-invoicing.test.ts`: **147/147**.
+  - EL10 now expects the blocker.
+  - New MT1–MT16 cover:
+    - delivered-only classification (awaiting → pending, cancelled → not
+      invoiceable);
+    - the blocker, and Ready refused;
+    - input validation and the tenant key;
+    - only exact missing-terms occurrences qualify; View cannot approve;
+    - approval clears the blocker, shown apart in review; audited exactly
+      once;
+    - no line, no £0 and no F3 change;
+    - no-op re-approval; refresh keeps exceptions; Ready after the
+      exception; frozen when Ready;
+    - draft-specific; stored-value validation; the route.
+- **Mutations:** 45 of 47 caught. All 8 new mutants were caught; the 2
+  equivalent survivors are the same as in F5.
+- `financebundletest.js`: 7/7 (reproducible, no GitHub, single jsr
+  import, manifest hash + pinned esbuild, stub removed, boots and routes).
+- F1–F4 Finance suites (56 / 105 / 100 / 47 / 92) and the confirmation
+  writer (102): all pass.
+- Full `tests/run-all.js`: **74/74 test files** pass (73 before + `financebundletest.js`).
+
+### FIN5.21 Live TEST verification (2026-09-30, `finance` v11, real HTTP via `pg_net`)
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Past delivered work with missing terms creates a blocker | Parkside Holiday camp **17 Sep** (`recn3DiwagOHu8m5H:2026-09-17`, delivered + confirmed, no terms) → D2 and D1 review: blocker `missing_commercial_terms` naming exactly that occurrence; eligible read lists it under `withoutTerms` |
+| 2 | Ready blocked while unresolved | D2 `ready` rev 2 → 409 `draft_has_blockers` (`missing_commercial_terms`) |
+| 3 | Approved exception with reason allows progression | no reason → 400; awaiting (16 Sep) or claimed (10 Sep) occurrence → 409 `occurrence_not_missing_terms`; with reason → 200 rev 3, blocker gone, `readyForIssue:true`; D2 Ready rev 4 |
+| 4 | Visible in review + audited | `review.approvedExceptions` has the occurrence, reason, approver, time and `stillMissingTerms:true`, plus the warning `missing_terms_exception_approved`; audit `…missing_terms_exception_approved` with the exact occurrence id |
+| 5 | No F3 historical terms modified | Parkside client + services + full terms history hash identical before/after (`a12f7a82…`); 0 F3/F4 audit events |
+| 6 | No fake £0 line | D2 still 1 line 48.00, D1 still 1143.00; no line for 17 Sep |
+| 7 | Normal drafts unchanged | St Anne's D3 (no missing terms): Ready, 54.00, no blockers, no approved exceptions |
+| 8 | No runtime GitHub import | v11 is one file `index.js`; the only import is `jsr:@supabase/supabase-js@2` |
+| 9 | Reproducible from committed source | the deployed file's sha256 equals the committed artifact; a fresh clone + `npm ci` + `--check` MATCH (`db2ecddb…`) |
+| 10 | Protections unchanged | Coach / Parent 403 `management_required`; no token 401; tenant key in the body 400 `tenant_param_rejected`; View reads 200 but approve 403 `finance_manage_required`; module off 403 `finance_module_disabled` (restored ON) |
+
+- **Draft-specific:** D1 (Ready from before the correction, now showing
+  the blocker) was reopened, given its **own** exception and marked Ready
+  again (rev 9).
+- **Audit since the start of the proof:** exactly 5 events (48 → 53):
+  - D2: exception_approved, marked_ready;
+  - D1: returned_to_draft, exception_approved, marked_ready.
+  - None for the 11 refused requests.
+  - One write sent concurrently with another got 409
+    `finance_commercial_busy` (the org lock, as designed) and was resent.
+- **Needs Attention:** Clear, total 0.
+
+### FIN5.22 Resting TEST data after the correction
+
+- All three draft fixtures are **Ready for issue**:
+  - D1 `FID-958179549E2E` rev 9 and D2 `FID-0E9BBC309EE1` rev 4 each hold
+    one approved missing-terms exception (Camp 17 Sep);
+  - D3 `FID-D5F457285BDC` rev 3 is unchanged.
+- The 17 Sep camp occurrence remains unresolved in Finance, on purpose, as
+  the fixture for a later historical-correction slice.
+- **Baseline:**
+  - `module_finance` ON;
+  - one active grant (the deliberate Manage grant; the View probe grant
+    was revoked);
+  - all lock tables empty; probe schema dropped;
+  - no invoice issued, no email sent.
