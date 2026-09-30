@@ -23,6 +23,11 @@
  *   undo fails the caller gets 500 (never "success").
  *   7. release the lock (always)
  *
+ * F6 hooks: the claims also include every issued invoice line (so issued
+ * work is claimed for good, even if a draft row were lost); an issued draft
+ * can never be reopened; a replacement draft is read through its correction
+ * scope. Issuing itself lives in finance-issue-orchestrator.ts.
+ *
  * "Mark not billable" from a draft is a convenience that DELEGATES to the F4
  * override write (its own lock, validation and audit), and only then closes
  * the draft line under the lock. There is no F5 not-billable flag.
@@ -33,7 +38,7 @@ import { type Client, type Stored, todayIn } from "./finance-commercial.ts";
 import type { Row, World } from "./finance-commercial-mapping.ts";
 import { acquireWriteLock, insertAuditEvents, releaseWriteLock } from "./finance-commercial-repository.ts";
 import { type CommercialDeps, loadWorld } from "./finance-commercial-orchestrator.ts";
-import { fromStoredRow } from "./finance-settings.ts";
+import { type FinanceSettings, fromStoredRow } from "./finance-settings.ts";
 import { loadSettingsRows } from "./finance-settings-repository.ts";
 import { type Resolution, OCCURRENCE_ID_PATTERN, resolveOccurrenceBilling } from "./finance-billing.ts";
 import { FB, buildOverrides, occurrenceFacts } from "./finance-billing-mapping.ts";
@@ -41,6 +46,7 @@ import { listOverrideRows } from "./finance-billing-repository.ts";
 import { readOccurrenceBilling, serviceFinder, writeOverride } from "./finance-billing-orchestrator.ts";
 import {
   type Claim,
+  type CorrectionScope,
   type CreateRequest,
   type DetailsRequest,
   type Draft,
@@ -49,6 +55,7 @@ import {
   type Work,
   DRAFT_EVENTS,
   INVOICING_CONTRACT,
+  applyCorrectionScope,
   auditDraft,
   auditLine,
   classifyWork,
@@ -68,6 +75,8 @@ import {
 import { type StoredDraft, type StoredLine, INVOICING_TABLES, buildDrafts, buildLines, draftFields, draftRestoreFields, lineCreateFields, lineStatusFields } from "./finance-invoicing-mapping.ts";
 import { createRows, deleteCreatedRows, findDraftRows, listClientDraftRows, listDraftLineRows, listIncludedLineRows, listOccurrencesForSessions, listSessionsForServices, patchRows } from "./finance-invoicing-repository.ts";
 import { formatMinor } from "./finance-money.ts";
+import { buildInvoiceLines } from "./finance-issue-mapping.ts";
+import { listInvoiceLineClaimRows } from "./finance-issue-repository.ts";
 
 export type InvoicingDeps = CommercialDeps;
 
@@ -125,7 +134,7 @@ export class DraftTxn {
 // Loading
 // ---------------------------------------------------------------------
 
-async function loadSettingsDefault(deps: InvoicingDeps, org: OrganisationContext): Promise<{ ok: true; days: number | null } | Fail> {
+async function loadSettings(deps: InvoicingDeps, org: OrganisationContext): Promise<{ ok: true; settings: FinanceSettings | null } | Fail> {
   let rows;
   try {
     rows = await loadSettingsRows(deps.airtable, org.recordId);
@@ -133,16 +142,17 @@ async function loadSettingsDefault(deps: InvoicingDeps, org: OrganisationContext
     console.error(e);
     return fail(503, "finance_settings_unavailable", "Finance Settings could not be loaded just now - try again");
   }
-  if (rows.length === 0) return { ok: true, days: null };
+  if (rows.length === 0) return { ok: true, settings: null };
   if (rows.length > 1) return fail(409, "finance_settings_ambiguous", "More than one Finance Settings record exists for your organisation");
   const p = fromStoredRow(rows[0]);
   if (!p.ok) return fail(409, "finance_settings_invalid", `Stored Finance Settings are not valid (${p.problems.join(", ")})`);
-  return { ok: true, days: p.state.settings.defaultPaymentTermsDays };
+  return { ok: true, settings: p.state.settings };
 }
 
-interface ClientWork {
+export interface ClientWork {
   world: World;
   client: Stored<Client> | null;
+  settings: FinanceSettings | null;
   settingsDays: number | null;
   current: Map<string, Resolution>;
   claims: Claim[];
@@ -154,10 +164,13 @@ interface ClientWork {
  * Everything one client + period needs: the F3 snapshot, Finance Settings,
  * the client's Sessions and their occurrences in the period, the F4
  * overrides, today's F4 resolution for each, and every Included line that
- * claims one of them (plus `alsoClaimIds`, e.g. a draft's own lines).
+ * claims one of them (plus `alsoClaimIds`, e.g. a draft's own lines) -
+ * Included draft lines AND issued invoice lines. A replacement draft's
+ * `scope` narrows the work to the corrected occurrences and releases the
+ * corrected invoice's claims on them for that draft only.
  */
-async function loadClientWork(deps: InvoicingDeps, org: OrganisationContext, clientId: string, from: string, to: string, at: Date, today: string, alsoClaimIds: string[] = []): Promise<ClientWork | Fail> {
-  const [loaded, settings] = await Promise.all([loadWorld(deps, org, today), loadSettingsDefault(deps, org)]);
+export async function loadClientWork(deps: InvoicingDeps, org: OrganisationContext, clientId: string, from: string, to: string, at: Date, today: string, alsoClaimIds: string[] = [], scope: CorrectionScope | null = null): Promise<ClientWork | Fail> {
+  const [loaded, settings] = await Promise.all([loadWorld(deps, org, today), loadSettings(deps, org)]);
   if ("status" in loaded) return loaded;
   if ("status" in settings) return settings;
   const world = loaded.world;
@@ -167,15 +180,17 @@ async function loadClientWork(deps: InvoicingDeps, org: OrganisationContext, cli
   let occRows: Row[] = [];
   let overrideRows: Row[] = [];
   let claimRows: Row[] = [];
+  let issuedRows: Row[] = [];
   try {
     sessions = serviceIds.length ? await listSessionsForServices(deps.airtable, serviceIds) : [];
     const refs = sessions.map((s) => ({ recordId: s.id, sessionId: typeof s.fields[FB.session.id] === "string" ? s.fields[FB.session.id] : "" })).filter((s) => /^[A-Za-z0-9_-]{1,64}$/.test(s.sessionId));
     occRows = refs.length ? await listOccurrencesForSessions(deps.airtable, refs, from, to) : [];
     const occIds = occRows.map((o) => String(o.fields[FB.occurrence.id] ?? "")).filter((id) => OCCURRENCE_ID_PATTERN.test(id));
     const claimIds = [...new Set([...occIds, ...alsoClaimIds])];
-    [overrideRows, claimRows] = await Promise.all([
+    [overrideRows, claimRows, issuedRows] = await Promise.all([
       occIds.length ? listOverrideRows(deps.airtable, org.recordId, occIds) : Promise.resolve([]),
       claimIds.length ? listIncludedLineRows(deps.airtable, org.recordId, claimIds) : Promise.resolve([]),
+      claimIds.length ? listInvoiceLineClaimRows(deps.airtable, org.recordId, claimIds) : Promise.resolve([]),
     ]);
   } catch (e) {
     console.error(e);
@@ -185,6 +200,8 @@ async function loadClientWork(deps: InvoicingDeps, org: OrganisationContext, cli
   if (!ov.ok) return fail(409, "billing_override_data_invalid", ov.error);
   const cl = buildLines(claimRows, org.recordId);
   if (!cl.ok) return fail(409, "invoice_draft_data_invalid", cl.error);
+  const il = buildInvoiceLines(issuedRows, org.recordId);
+  if (!il.ok) return fail(409, "invoice_data_invalid", il.error);
   const overrides = ov.overrides.map((o) => o.value);
   const byRecord = new Map(sessions.map((s) => [s.id, s]));
   const find = serviceFinder(world);
@@ -193,12 +210,18 @@ async function loadClientWork(deps: InvoicingDeps, org: OrganisationContext, cli
     const session = link.length === 1 ? byRecord.get(link[0]) ?? null : null;
     return resolveOccurrenceBilling({ occurrence: occurrenceFacts(occ, session), findService: find, overrides, now: at, today });
   });
-  const current = new Map(rs.map((r) => [r.occurrence.occurrenceId, r]));
-  const claims: Claim[] = cl.lines.filter((l) => l.value.status === "included").map((l) => ({ lineId: l.value.lineId, draftId: l.value.draftId, occurrenceId: l.value.occurrenceId }));
-  return { world, client, settingsDays: settings.days, current, claims, work: classifyWork(rs, claims), resolvedOn: today };
+  const allClaims: Claim[] = [
+    ...cl.lines.filter((l) => l.value.status === "included").map((l) => ({ lineId: l.value.lineId, draftId: l.value.draftId, occurrenceId: l.value.occurrenceId })),
+    ...il.lines.map((l) => ({ lineId: l.value.lineId, draftId: l.value.sourceDraftId, occurrenceId: l.value.occurrenceId, invoiceId: l.value.invoiceId })),
+  ];
+  const scoped = applyCorrectionScope(rs, allClaims, scope);
+  const current = new Map(scoped.rs.map((r) => [r.occurrence.occurrenceId, r]));
+  const claims = scoped.claims;
+  const s = settings.settings;
+  return { world, client, settings: s, settingsDays: s ? s.defaultPaymentTermsDays : null, current, claims, work: classifyWork(scoped.rs, claims), resolvedOn: today };
 }
 
-async function loadDraft(deps: InvoicingDeps, org: OrganisationContext, draftId: string): Promise<{ draft: StoredDraft; lines: StoredLine[] } | Fail> {
+export async function loadDraft(deps: InvoicingDeps, org: OrganisationContext, draftId: string): Promise<{ draft: StoredDraft; lines: StoredLine[] } | Fail> {
   let draftRows: Row[];
   let lineRows: Row[];
   try {
@@ -219,7 +242,7 @@ async function loadDraft(deps: InvoicingDeps, org: OrganisationContext, draftId:
 const STATUS_ORDER = { included: 0, excluded: 1, removed: 2, superseded: 3 } as const;
 const orderLines = (ls: readonly Line[]) => [...ls].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || `${a.occurrenceDate} ${a.occurrenceId} ${a.createdAt ?? ""}`.localeCompare(`${b.occurrenceDate} ${b.occurrenceId} ${b.createdAt ?? ""}`));
 
-function draftBody(draft: Draft, lines: readonly Line[], cw: ClientWork) {
+export function draftBody(draft: Draft, lines: readonly Line[], cw: ClientWork) {
   const review = reviewDraft({ draft, lines, client: cw.client?.value ?? null, current: cw.current, work: cw.work, claims: cw.claims });
   return { draft: publicDraft(draft), lines: orderLines(lines).map(publicLine), review, resolvedOn: cw.resolvedOn };
 }
@@ -295,7 +318,7 @@ export async function readDraft(deps: InvoicingDeps, caller: FinanceCaller, draf
   if ("status" in l) return l;
   const draft = l.draft.value;
   const lines = l.lines.map((x) => x.value);
-  const cw = await loadClientWork(deps, org, draft.clientId, draft.periodFrom, draft.periodTo, at, today, lines.map((x) => x.occurrenceId));
+  const cw = await loadClientWork(deps, org, draft.clientId, draft.periodFrom, draft.periodTo, at, today, lines.map((x) => x.occurrenceId), draft.correctionScope);
   if ("status" in cw) return cw;
   return { status: "ok", httpStatus: 200, body: { contract: INVOICING_CONTRACT, organisation: orgBody(org), access: auth.access, ...draftBody(draft, lines, cw) } };
 }
@@ -374,7 +397,7 @@ export async function writeDraft(deps: InvoicingDeps, caller: FinanceCaller, inp
       const l = await loadDraft(deps, org, input.draftId);
       if ("status" in l) return l;
       const d = l.draft.value;
-      const loaded = await loadClientWork(deps, org, d.clientId, d.periodFrom, d.periodTo, atDate, today, l.lines.map((x) => x.value.occurrenceId));
+      const loaded = await loadClientWork(deps, org, d.clientId, d.periodFrom, d.periodTo, atDate, today, l.lines.map((x) => x.value.occurrenceId), d.correctionScope);
       if ("status" in loaded) return loaded;
       cw = loaded;
       plan = planDraftWrite(deps, cw, l.draft, l.lines, input, { userId: caller.userId, at, today, orgRecordId: org.recordId, ev });
@@ -413,7 +436,7 @@ export async function writeDraft(deps: InvoicingDeps, caller: FinanceCaller, inp
 
 type Meta = { userId: string; at: string; today: string; orgRecordId: string; ev: (eventType: string, draftId: string, before: Record<string, unknown> | null, after: Record<string, unknown>, reason: string | null, context?: Record<string, unknown>) => AuditRow };
 
-function uniqueIds(deps: InvoicingDeps, prefix: "FID" | "FIL", n: number, taken: Set<string>): string[] {
+export function uniqueIds(deps: InvoicingDeps, prefix: "FID" | "FIL", n: number, taken: Set<string>): string[] {
   const out: string[] = [];
   for (let k = 0; k < n; k++) {
     let id = "";
@@ -460,6 +483,10 @@ function planCreate(deps: InvoicingDeps, cw: ClientWork, drafts: Draft[], req: C
       updatedBy: m.userId,
       updatedAt: m.at,
       termsExceptions: [],
+      issuedInvoiceId: null,
+      replacesInvoiceId: null,
+      correctionId: null,
+      correctionScope: null,
     },
     lines
   );
@@ -483,7 +510,9 @@ function planDraftWrite(deps: InvoicingDeps, cw: ClientWork, stored: StoredDraft
   const lines = storedLines.map((l) => l.value);
   const bump = (d: Draft, ls: readonly Line[]): Draft => ({ ...withTotals(d, ls), revision: before.revision + 1, updatedBy: m.userId, updatedAt: m.at });
   const patchDraft = (after: Draft) => ({ id: stored.recordId, fields: draftFields(after, { userId: m.userId, at: m.at }), restore: draftRestoreFields(before) });
-  const notOpen = () => fail(409, "draft_not_open", `${before.draftId} is ${before.status === "ready_for_issue" ? "Ready for issue - its snapshot is frozen; return it to Draft first" : "not open"}`);
+  const notOpen = () =>
+    fail(409, before.issuedInvoiceId ? "draft_issued" : "draft_not_open", before.issuedInvoiceId ? `${before.draftId} has been issued as ${before.issuedInvoiceId} - an issued draft never changes; correct the invoice instead` : `${before.draftId} is ${before.status === "ready_for_issue" ? "Ready for issue - its snapshot is frozen; return it to Draft first" : "not open"}`);
+  if (before.issuedInvoiceId) return notOpen();
 
   if (input.route === "draft.reopen") {
     if (before.status === "draft") return { kind: "noop", draft: before, lines };
@@ -672,6 +701,7 @@ export async function markLineNotBillable(deps: InvoicingDeps, caller: FinanceCa
   if (auth.status !== "ok") return fail(auth.httpStatus, auth.code, auth.error);
   const l = await loadDraft(deps, auth.organisation, draftId);
   if ("status" in l) return l;
+  if (l.draft.value.issuedInvoiceId) return fail(409, "draft_issued", `${draftId} has been issued as ${l.draft.value.issuedInvoiceId} - an issued draft never changes; correct the invoice instead`);
   if (l.draft.value.status !== "draft") return fail(409, "draft_not_open", `${draftId} is Ready for issue - its snapshot is frozen; return it to Draft first`);
   const line = l.lines.find((x) => x.value.lineId === lineId)?.value;
   if (!line) return fail(404, "invoice_line_not_found", `No line ${lineId} on ${draftId}`);

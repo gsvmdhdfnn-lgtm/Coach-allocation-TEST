@@ -644,7 +644,7 @@ async function main() {
     const stale = await ready(d.draft.draftId, 1);
     ck("ST1. Ready needs the revision Management reviewed (409 draft_revision_mismatch)", stale.code === "draft_revision_mismatch");
     const rd = await ready(d.draft.draftId, 2);
-    ck("ST2. Marked Ready for issue: status, ready stamp, revision 3; no invoice number / sent / issued anywhere", rd.body.draft.status === "ready_for_issue" && rd.body.draft.statusLabel === "Ready for issue" && rd.body.draft.readyAt === NOW.toISOString() && rd.body.draft.revision === 3 && !/invoiceNumber|"sent"|issued|xero/i.test(JSON.stringify(rd.body)));
+    ck("ST2. Marked Ready for issue: status, ready stamp, revision 3; NOT issued (issuing is the separate F6 step); no invoice number / sent anywhere", rd.body.draft.status === "ready_for_issue" && rd.body.draft.statusLabel === "Ready for issue" && rd.body.draft.readyAt === NOW.toISOString() && rd.body.draft.revision === 3 && rd.body.draft.issued === false && rd.body.draft.issuedInvoiceId === null && !/invoiceNumber|"sent"|xero/i.test(JSON.stringify(rd.body)));
     const lid = lineOf(rd.body, a).lineId;
     const frozen = [await refresh(d.draft.draftId), await exclude(d.draft.draftId, lid), await details(d.draft.draftId, '{"poNumber":"PO-2"}'), await DW({ route: "line.restore", draftId: d.draft.draftId, lineId: lid, reason: null })];
     ck("ST3. A Ready draft is frozen: refresh / exclude / details / restore refused (409 draft_not_open)", frozen.every((x) => x.code === "draft_not_open"));

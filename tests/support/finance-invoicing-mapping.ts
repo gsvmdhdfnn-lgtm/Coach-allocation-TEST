@@ -16,6 +16,9 @@
  *   - A line row is created once with its snapshot; afterwards ONLY its
  *     status fields change (Included <-> Excluded, or closed as Removed /
  *     Superseded). Its figures are never edited.
+ *   - F6: "Issued Invoice ID" is set once when the draft is issued; a
+ *     replacement draft carries "Replaces Invoice ID", "Correction ID" and
+ *     its "Correction Scope" (JSON) from creation - all three or none.
  *
  * Every row is validated on read; a row that does not validate makes the
  * draft data INVALID (409) - never skipped or guessed (same rule as F3/F4).
@@ -28,6 +31,7 @@ import { OCCURRENCE_ID_PATTERN } from "./finance-billing.ts";
 import {
   type Draft,
   type DraftStatus,
+  type CorrectionScope,
   type Line,
   type LineStatus,
   type QuantitySource,
@@ -35,7 +39,9 @@ import {
   type TermsSource,
   type UnitAmountSource,
   CLIENT_ID_PATTERN,
+  CORRECTION_ID_PATTERN,
   DRAFT_ID_PATTERN,
+  INVOICE_ID_PATTERN,
   LINE_ID_PATTERN,
   PO_NUMBER_MAX,
 } from "./finance-invoicing.ts";
@@ -68,6 +74,10 @@ export const FI = {
     changedBy: "Last Changed By User ID",
     changedAt: "Last Changed At",
     termsExceptions: "Missing Terms Exceptions",
+    issuedInvoiceId: "Issued Invoice ID",
+    replacesInvoiceId: "Replaces Invoice ID",
+    correctionId: "Correction ID",
+    correctionScope: "Correction Scope",
   },
   line: {
     id: "Line ID",
@@ -156,6 +166,23 @@ function termsExceptionsOf(v: unknown): TermsException[] | undefined {
   return out;
 }
 
+/** A replacement draft's scope: JSON { correctionId, invoiceId, occurrenceIds, releasedDraftIds }; blank = none; anything else invalid. */
+function correctionScopeOf(v: unknown): CorrectionScope | null | undefined {
+  if (v === undefined || v === null || (typeof v === "string" && !v.trim())) return null;
+  if (typeof v !== "string") return undefined;
+  let o: any;
+  try {
+    o = JSON.parse(v);
+  } catch {
+    return undefined;
+  }
+  if (!o || typeof o !== "object" || Array.isArray(o) || Object.keys(o).sort().join(",") !== "correctionId,invoiceId,occurrenceIds,releasedDraftIds") return undefined;
+  if (typeof o.correctionId !== "string" || !CORRECTION_ID_PATTERN.test(o.correctionId) || typeof o.invoiceId !== "string" || !INVOICE_ID_PATTERN.test(o.invoiceId)) return undefined;
+  const list = (a: unknown, re: RegExp) => Array.isArray(a) && a.length > 0 && a.every((x) => typeof x === "string" && re.test(x)) && new Set(a).size === a.length;
+  if (!list(o.occurrenceIds, OCCURRENCE_ID_PATTERN) || !list(o.releasedDraftIds, DRAFT_ID_PATTERN)) return undefined;
+  return { correctionId: o.correctionId, invoiceId: o.invoiceId, occurrenceIds: [...o.occurrenceIds], releasedDraftIds: [...o.releasedDraftIds] };
+}
+
 export function draftFromRow(r: Row): Parsed<Draft> {
   const f = r.fields ?? {};
   const x = FI.draft;
@@ -189,6 +216,14 @@ export function draftFromRow(r: Row): Parsed<Draft> {
   if (revision === undefined) return bad("invalid Revision");
   const termsExceptions = termsExceptionsOf(f[x.termsExceptions]);
   if (termsExceptions === undefined) return bad("invalid Missing Terms Exceptions");
+  const issuedInvoiceId = str(f[x.issuedInvoiceId]);
+  if (issuedInvoiceId !== null && (!INVOICE_ID_PATTERN.test(issuedInvoiceId) || status !== "ready_for_issue")) return bad("invalid Issued Invoice ID (an issued draft stays Ready for issue)");
+  const replacesInvoiceId = str(f[x.replacesInvoiceId]);
+  const correctionId = str(f[x.correctionId]);
+  const correctionScope = correctionScopeOf(f[x.correctionScope]);
+  if (correctionScope === undefined) return bad("invalid Correction Scope");
+  const replacement = [replacesInvoiceId, correctionId, correctionScope].filter((v) => v !== null).length;
+  if (replacement !== 0 && (replacement !== 3 || correctionScope?.invoiceId !== replacesInvoiceId || correctionScope?.correctionId !== correctionId)) return bad("replacement references must be all set and consistent, or all blank");
   return {
     ok: true,
     recordId: r.id,
@@ -216,6 +251,10 @@ export function draftFromRow(r: Row): Parsed<Draft> {
       updatedBy: str(f[x.changedBy]),
       updatedAt: str(f[x.changedAt]),
       termsExceptions,
+      issuedInvoiceId,
+      replacesInvoiceId,
+      correctionId,
+      correctionScope,
     },
   };
 }
@@ -338,7 +377,20 @@ function buildAll<T>(rows: Row[], orgRec: string, parse: (r: Row) => Parsed<T>, 
 export function draftFields(d: Draft, meta: { userId: string; at: string }, orgRecordId?: string): Record<string, unknown> {
   const x = FI.draft;
   return {
-    ...(orgRecordId ? { [FI.org]: [orgRecordId], [x.id]: d.draftId, [x.clientId]: d.clientId, [x.from]: d.periodFrom, [x.to]: d.periodTo, [x.createdBy]: d.createdBy, [x.createdAt]: d.createdAt } : {}),
+    ...(orgRecordId
+      ? {
+          [FI.org]: [orgRecordId],
+          [x.id]: d.draftId,
+          [x.clientId]: d.clientId,
+          [x.from]: d.periodFrom,
+          [x.to]: d.periodTo,
+          [x.createdBy]: d.createdBy,
+          [x.createdAt]: d.createdAt,
+          [x.replacesInvoiceId]: d.replacesInvoiceId,
+          [x.correctionId]: d.correctionId,
+          [x.correctionScope]: d.correctionScope ? JSON.stringify(d.correctionScope) : null,
+        }
+      : {}),
     [x.clientName]: d.clientName,
     [x.status]: DRAFT_STATUS[d.status],
     [x.termsDays]: d.paymentTermsDays,
@@ -356,6 +408,7 @@ export function draftFields(d: Draft, meta: { userId: string; at: string }, orgR
     [x.changedBy]: meta.userId,
     [x.changedAt]: meta.at,
     [x.termsExceptions]: d.termsExceptions.length ? JSON.stringify(d.termsExceptions) : null,
+    [x.issuedInvoiceId]: d.issuedInvoiceId,
   };
 }
 

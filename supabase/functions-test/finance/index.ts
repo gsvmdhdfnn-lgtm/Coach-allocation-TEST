@@ -1,6 +1,6 @@
 /**
- * Finance - access boundary + core API (Finance Foundation F1-F5; see
- * TEST-ENV.md "Finance Foundation - F1" / "- F2" / "- F3" / "- F4" / "- F5"). Thin HTTP
+ * Finance - access boundary + core API (Finance Foundation F1-F6; see
+ * TEST-ENV.md "Finance Foundation - F1" / "- F2" / "- F3" / "- F4" / "- F5" / "- F6"). Thin HTTP
  * wrapper, same convention as the Coaches / Needs Attention functions:
  * policy lives in finance-access.ts / finance-settings.ts /
  * finance-money.ts / finance-commercial.ts (pure), reads and writes in the
@@ -43,7 +43,17 @@
  *   POST /invoice-drafts/{FID-id}/lines/{FIL-id}/exclude       { reason }  this invoice only
  *   POST /invoice-drafts/{FID-id}/lines/{FIL-id}/restore       { reason? }
  *   POST /invoice-drafts/{FID-id}/lines/{FIL-id}/not-billable  { reason }  delegates to the F4 override
- *   Draft / Ready for issue only - no issue, number, sending, Xero or payment (F6+).
+ *   Draft / Ready for issue only; issuing is F6 (below).
+ *
+ * F6 invoice issue + credit notes + corrections (Finance read = GET, Finance manage = POST):
+ *   POST /invoice-drafts/{FID-id}/issue             { revision, reason? }  Ready draft -> immutable invoice
+ *   GET  /invoices?clientId=FCL-..                  the client's invoices
+ *   GET  /invoices/{FIV-id}                         invoice + lines + credit notes + links + history
+ *   GET  /invoices/{FIV-id}/credit-notes            its credit notes
+ *   POST /invoices/{FIV-id}/credit-notes            { lineIds?, reason }  credit whole lines (all remaining if omitted)
+ *   GET  /credit-notes/{FCN-id}                     credit note + links
+ *   POST /credit-notes/{FCN-id}/replacement-draft   { reason }  start the replacement draft (F5) for the credited work
+ *   No sending, PDF, payment, overdue, Stripe or accounting-system routes (F7 / F9 / F22).
  *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
@@ -70,6 +80,8 @@ import { checkRangeQuery, matchBillingRoute, parseOverrideCreate, parseOverrideR
 import { readOccurrenceBilling, readSessionBilling, writeOverride } from "./finance-billing-orchestrator.ts";
 import { checkInvoicingQuery, matchInvoicingRoute, parseDetails, parseDraftCreate, parseReady, parseReasonBody, parseTermsException } from "./finance-invoicing.ts";
 import { listClientDrafts, markLineNotBillable, readDraft, readEligibleWork, writeDraft } from "./finance-invoicing-orchestrator.ts";
+import { checkInvoiceListQuery, matchIssueRoute, parseCreditNote, parseIssue, parseReplacement } from "./finance-issue.ts";
+import { createCreditNote, issueDraft, listInvoiceCreditNotes, listInvoices, readCreditNote, readInvoice, startReplacementDraft } from "./finance-issue-orchestrator.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
 const AIRTABLE_BASE_ID = Deno.env.get("AIRTABLE_BASE_ID")!;
@@ -271,6 +283,41 @@ async function handleInvoicing(req: Request, url: URL, match: NonNullable<Return
   return commercialResponse(await markLineNotBillable(deps, caller, r.params.draftId, r.params.lineId, p.reason as string));
 }
 
+/** F6 routes: same order as F3-F5 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleIssue(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchIssueRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  if (r.name === "invoices.list") {
+    const q = checkInvoiceListQuery(url.searchParams, isTenantKey);
+    if (!q.ok) return commercialResponse({ status: "error", ...q });
+    return commercialResponse(await listInvoices(deps, caller, q.clientId));
+  }
+  const query = checkCommercialQuery(url.searchParams, [], isTenantKey);
+  if (!query.ok) return jsonResponse({ error: query.error, code: query.code, ...(query.fields ? { fields: query.fields } : {}) }, 400);
+  if (r.name === "invoice.read") return commercialResponse(await readInvoice(deps, caller, r.params.invoiceId));
+  if (r.name === "invoice.credit_notes") return commercialResponse(await listInvoiceCreditNotes(deps, caller, r.params.invoiceId));
+  if (r.name === "credit_note.read") return commercialResponse(await readCreditNote(deps, caller, r.params.creditNoteId));
+  const raw = await req.text();
+  if (r.name === "draft.issue") {
+    const p = parseIssue(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await issueDraft(deps, caller, r.params.draftId, p.revision, p.reason));
+  }
+  if (r.name === "invoice.credit_note_create") {
+    const p = parseCreditNote(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await createCreditNote(deps, caller, r.params.invoiceId, p.lineIds, p.reason));
+  }
+  if (r.name !== "credit_note.replacement") return jsonResponse({ error: "Unknown route" }, 404);
+  const p = parseReplacement(raw, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  return commercialResponse(await startReplacementDraft(deps, caller, r.params.creditNoteId, p.reason));
+}
+
 /** Path segments URL-decoded (an Occurrence ID contains ":"); null when a segment is not valid percent-encoding. */
 function decodedPath(route: string): string | null {
   try {
@@ -291,6 +338,10 @@ Deno.serve(async (req: Request) => {
   try {
     const decoded = decodedPath(route);
     if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
+    // F6 first: invoice-drafts/{id}/issue is F6's, every other invoice-drafts path stays F5's.
+    const issue = matchIssueRoute(route, req.method);
+    if (issue) return await handleIssue(req, url, issue);
+
     const invoicing = matchInvoicingRoute(route, req.method);
     if (invoicing) return await handleInvoicing(req, url, invoicing);
 

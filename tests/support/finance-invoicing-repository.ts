@@ -48,7 +48,7 @@ export const WRITE_BATCH = 10;
 
 const field = (name: string) => `{${name}}`;
 
-async function listByFormula(config: AirtableConfig, table: string, formula: string): Promise<Row[]> {
+export async function listByFormula(config: AirtableConfig, table: string, formula: string): Promise<Row[]> {
   const rows: Row[] = [];
   let offset = "";
   do {
@@ -62,7 +62,7 @@ async function listByFormula(config: AirtableConfig, table: string, formula: str
   return rows;
 }
 
-const chunk = <T>(xs: readonly T[], n: number): T[][] => {
+export const chunk = <T>(xs: readonly T[], n: number): T[][] => {
   const out: T[][] = [];
   for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
   return out;
@@ -106,7 +106,8 @@ export async function listIncludedLineRows(config: AirtableConfig, organisationR
   const results = await Promise.all(
     chunk(ids, CLAIM_READ_CHUNK).map((c) => listByFormula(config, INVOICING_TABLES.lines, `AND(${field(FI.line.status)}='Included',OR(${c.map((id) => `${field(FI.line.occurrenceId)}='${id}'`).join(",")}))`))
   );
-  return results.flat().filter((r) => inOrg(r, organisationRecordId) && ids.includes(r.fields[FI.line.occurrenceId]) && (r.fields[FI.line.status]?.name ?? r.fields[FI.line.status]) === "Included");
+  const seen = new Set<string>();
+  return results.flat().filter((r) => inOrg(r, organisationRecordId) && ids.includes(r.fields[FI.line.occurrenceId]) && (r.fields[FI.line.status]?.name ?? r.fields[FI.line.status]) === "Included" && !seen.has(r.id) && !!seen.add(r.id));
 }
 
 export async function findDraftRows(config: AirtableConfig, organisationRecordId: string, draftId: string): Promise<Row[]> {

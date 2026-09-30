@@ -25,8 +25,12 @@
  *     draft-specific approved exception for that exact occurrence (reason
  *     required). The exception only lets THIS draft leave the work off; it
  *     never prices it, never makes a £0 line and never touches F3.
- *   - Draft and Ready for issue are the only states. No issue, number,
- *     sending, payment, credit or overdue (F6/F7).
+ *   - Draft and Ready for issue are the only states. Issuing (F6) freezes a
+ *     Ready draft for good: it records the issued invoice's id on the draft,
+ *     after which the draft can never be reopened, edited or refreshed, and
+ *     its lines keep their claims. A draft started as the replacement for a
+ *     corrected invoice carries a correction scope (below). No sending,
+ *     payment or overdue here (F7+).
  */
 import { type Minor, type VatTreatment, formatMinor, formatRatePercent } from "./finance-money.ts";
 import { isIsoDate } from "./finance-effective-dating.ts";
@@ -52,6 +56,9 @@ export const DRAFT_EVENTS = {
 export const DRAFT_ID_PATTERN = /^FID-[0-9A-F]{12}$/;
 export const LINE_ID_PATTERN = /^FIL-[0-9A-F]{12}$/;
 export const CLIENT_ID_PATTERN = /^FCL-[0-9A-F]{12}$/;
+/** F6 references a draft may carry (the issued invoice; the correction that started a replacement draft). */
+export const INVOICE_ID_PATTERN = /^FIV-[0-9A-F]{12}$/;
+export const CORRECTION_ID_PATTERN = /^FCN-[0-9A-F]{12}$/;
 export function newDraftId(prefix: "FID" | "FIL", randomHex: string): string {
   return `${prefix}-${randomHex.replace(/[^0-9a-f]/gi, "").slice(0, 12).toUpperCase()}`;
 }
@@ -97,6 +104,20 @@ export interface TermsException {
   approvedAt: string;
 }
 
+/**
+ * A replacement draft's scope (F6 correction). The draft may only bill the
+ * corrected occurrences, and for exactly those occurrences the claims held
+ * by the corrected invoice(s) - lines of `releasedDraftIds` and the invoice
+ * lines issued from them - are released to THIS draft alone. Every other
+ * draft still sees them claimed.
+ */
+export interface CorrectionScope {
+  correctionId: string;
+  invoiceId: string;
+  occurrenceIds: string[];
+  releasedDraftIds: string[];
+}
+
 export interface Draft {
   draftId: string;
   clientId: string;
@@ -122,6 +143,12 @@ export interface Draft {
   updatedAt: string | null;
   /** Approved missing-terms exceptions for this draft (append-only). */
   termsExceptions: TermsException[];
+  /** Set once, when the draft is issued (F6): the draft is then frozen for good. */
+  issuedInvoiceId: string | null;
+  /** Replacement drafts only: the corrected invoice, the correction and its scope. */
+  replacesInvoiceId: string | null;
+  correctionId: string | null;
+  correctionScope: CorrectionScope | null;
 }
 
 export type QuantitySource = "default_commercial_quantity" | "occurrence_override" | "per_session";
@@ -162,11 +189,24 @@ export interface Line {
   createdAt: string | null;
 }
 
-/** An Included line elsewhere (possibly this draft) that claims an occurrence. */
+/** An Included line elsewhere (possibly this draft) that claims an occurrence; `invoiceId` when the claim is an issued invoice line. */
 export interface Claim {
   lineId: string;
   draftId: string;
   occurrenceId: string;
+  invoiceId?: string;
+}
+
+/**
+ * Applies a replacement draft's correction scope: only the corrected
+ * occurrences are this draft's work, and the claims the corrected invoice(s)
+ * hold on them are released (for this draft only). No scope = unchanged.
+ */
+export function applyCorrectionScope<R extends { occurrence: { occurrenceId: string } }>(rs: readonly R[], claims: readonly Claim[], scope: CorrectionScope | null): { rs: R[]; claims: Claim[] } {
+  if (!scope) return { rs: [...rs], claims: [...claims] };
+  const ids = new Set(scope.occurrenceIds);
+  const released = new Set(scope.releasedDraftIds);
+  return { rs: rs.filter((r) => ids.has(r.occurrence.occurrenceId)), claims: claims.filter((c) => !(ids.has(c.occurrenceId) && released.has(c.draftId))) };
 }
 
 // ---------------------------------------------------------------------
@@ -384,7 +424,7 @@ const overlaps = (a: { periodFrom: string; periodTo: string }, from: string, to:
 export function planDraftCreate(input: { client: Client; drafts: readonly Draft[]; work: Work; from: string; to: string; settingsDefaultTerms: number | null }): { ok: true; terms: { days: number | null; source: TermsSource | null } } | Refusal {
   const c = input.client;
   if (c.billingMethod === "manual") return refuse(409, "manual_billing_client", `${c.name} is billed manually outside the Hub - no Hub invoice draft is made for it`);
-  const open = input.drafts.find((d) => d.clientId === c.clientId && d.status === "draft" && overlaps(d, input.from, input.to));
+  const open = input.drafts.find((d) => d.clientId === c.clientId && d.status === "draft" && d.replacesInvoiceId === null && overlaps(d, input.from, input.to));
   if (open) return refuse(409, "open_draft_exists", `${open.draftId} is already an open draft for ${c.name} covering ${open.periodFrom} to ${open.periodTo} - refresh or finish it instead of starting another`);
   if (!input.work.available.length) return refuse(409, "no_eligible_work", `There is no eligible, unclaimed work for ${c.name} between ${input.from} and ${input.to}`);
   return { ok: true, terms: defaultPaymentTerms(c, input.settingsDefaultTerms) };
@@ -508,7 +548,7 @@ export function reviewDraft(input: { draft: Draft; lines: readonly Line[]; clien
   }
 
   // Duplicate claims: an occurrence Included more than once anywhere.
-  const dup = included.filter((l) => claims.some((c) => c.occurrenceId === l.occurrenceId && c.lineId !== l.lineId) || included.some((o) => o !== l && o.occurrenceId === l.occurrenceId));
+  const dup = included.filter((l) => claims.some((c) => c.occurrenceId === l.occurrenceId && c.draftId !== draft.draftId) || included.some((o) => o !== l && o.occurrenceId === l.occurrenceId));
   if (dup.length) b({ code: "duplicate_claim", message: `${dup.length} line(s) bill an occurrence that is also included on another line`, lineIds: dup.map((l) => l.lineId) });
 
   if (work.setup.length) {
@@ -582,6 +622,9 @@ export function publicDraft(d: Draft) {
     totals: { currency: "GBP", net: formatMinor(d.netMinor), vat: formatMinor(d.vatMinor), gross: formatMinor(d.grossMinor), includedLines: d.includedLines },
     revision: d.revision,
     missingTermsExceptions: d.termsExceptions.map((e) => ({ occurrenceId: e.occurrenceId, date: e.occurrenceDate, serviceId: e.serviceId, reason: e.reason, approvedBy: e.approvedBy, approvedAt: e.approvedAt })),
+    issued: d.issuedInvoiceId !== null,
+    issuedInvoiceId: d.issuedInvoiceId,
+    replacement: d.replacesInvoiceId ? { replacesInvoiceId: d.replacesInvoiceId, correctionId: d.correctionId, occurrenceIds: [...(d.correctionScope?.occurrenceIds ?? [])] } : null,
     createdAt: d.createdAt,
     readyAt: d.readyAt,
     updatedAt: d.updatedAt,
@@ -660,6 +703,9 @@ export const auditDraft = (d: Draft) => ({
   includedLines: d.includedLines,
   revision: d.revision,
   missingTermsExceptions: d.termsExceptions.map((e) => e.occurrenceId),
+  issuedInvoiceId: d.issuedInvoiceId,
+  replacesInvoiceId: d.replacesInvoiceId,
+  correctionId: d.correctionId,
 });
 export const auditLine = (l: Line) => ({ lineId: l.lineId, occurrenceId: l.occurrenceId, status: l.status, termsId: l.termsId, quantity: l.quantity, netMinor: l.netMinor, vatMinor: l.vatMinor, grossMinor: l.grossMinor, overrideIds: l.overrideIds });
 

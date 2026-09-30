@@ -1,4 +1,4 @@
-// Finance deploy artifact (F5 correction): the committed
+// Finance deploy artifact (F5 correction; F6 routes added): the committed
 // supabase/deploy-artifacts/finance/index.js must be exactly what the
 // committed source builds to, must not import anything from GitHub, and
 // must boot and route requests. Run by tests/run-all.js.
@@ -39,6 +39,13 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   const noAuth = await call('POST', 'invoice-drafts/FID-0123456789AB/missing-terms-exceptions');
   const unknown = await call('GET', 'nope');
   ck('B7. Routing works: CORS preflight 200, new exception route is POST-only (405), no token 401, unknown 404', opt.status === 200 && m405.status === 405 && noAuth.status === 401 && unknown.status === 404, `${opt.status}/${m405.status}/${noAuth.status}/${unknown.status}`);
+  const issue405 = await call('GET', 'invoice-drafts/FID-0123456789AB/issue');
+  const issue401 = await call('POST', 'invoice-drafts/FID-0123456789AB/issue');
+  const inv401 = await call('GET', 'invoices/FIV-0123456789AB');
+  const cn405 = await call('GET', 'credit-notes/FCN-0123456789AB/replacement-draft');
+  const send404 = await call('POST', 'invoices/FIV-0123456789AB/send');
+  const f5still = await call('GET', 'invoice-drafts/FID-0123456789AB/refresh');
+  ck('B8. F6 routes are live in the artifact: issue POST-only (405 / 401), invoice read 401 without a token, replacement POST-only, no send route (404), F5 draft routes unchanged (405)', issue405.status === 405 && issue401.status === 401 && inv401.status === 401 && cn405.status === 405 && send404.status === 404 && f5still.status === 405, `${issue405.status}/${issue401.status}/${inv401.status}/${cn405.status}/${send404.status}/${f5still.status}`);
 
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;
