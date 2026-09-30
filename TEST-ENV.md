@@ -15151,6 +15151,10 @@ original.
 
 ### FIN6.2 Invoice identity and numbering (decision point for David)
 
+> **Superseded by FIN6.15 (F6 correction, 2026-09-30).** Official
+> numbering is now an explicit per-organisation choice (Hub or Xero) in
+> Finance Settings. The text below describes F6 as first issued.
+
 - Every invoice gets an internal id **`FIV-` + 12 hex**, and the API
   returns it as `reference`. It is unique and permanent, and it is not a
   sequential legal invoice number.
@@ -15428,11 +15432,242 @@ original.
 
 ### FIN6.14 Deferred (later Finance slices — not started)
 
-- Legal sequential numbering, and Xero sync of the External fields
-  (FIN6.2 decision).
+- Xero sync of the External fields (F9). Hub sequential numbering was
+  added by the F6 correction (FIN6.15).
 - Payments, Actual Revenue, overdue, reminders, Stripe.
 - PDF, email, client portal.
 - Partial-amount credits, and voiding before issue to the client.
 - Supplier / coach costs, Cash Flow, Month Report.
 - Finance Needs Attention rules and the Finance UI.
 - Production promotion.
+
+## Finance Foundation — F6 correction (official invoice numbering + replacement terms inheritance) — TEST only — 2026-09-30
+
+This correction changes two things in F6 and nothing else:
+
+1. **Official invoice numbering** is now an explicit, per-organisation
+   choice in Finance Settings: the Hub or Xero.
+2. **A replacement draft inherits the original invoice's** payment terms,
+   PO number and PO override. It no longer takes today's client defaults.
+
+- **Unchanged:** credit notes, whole-line credits, replacement scope,
+  linkage, immutability, claims, F5 review, F4, VAT, totals, access and
+  audit architecture.
+- **Not built:** Xero integration, PDF, email and F7.
+- **Scope:** TEST Airtable `appQktredAuGa1X7e`, TEST Supabase
+  `dkqubldmfyeuudecxmvh`, org `ORG-TEST-001` only.
+- **Production** (Airtable, Supabase, Finance, Xero, Stripe, Sessions,
+  Sheets, legacy Financials) was not touched.
+- No email was sent. No production sequence exists. `TEST-INV-…`
+  numbers are TEST-only and are not legal invoices.
+
+### FIN6.15 Locked numbering model
+
+- **Two identities per invoice:**
+  - the **internal reference** `FIV-` + 12 hex, which every invoice
+    always has, is permanent and is never shown as the legal number;
+  - the **official invoice number**, whose source depends on the
+    organisation's `invoiceNumberAuthority`.
+- **Xero** (`"xero"`):
+  - the Hub never invents a number. `officialNumber` is null and
+    `numbering.status` is `pending_external` ("Awaiting the official
+    number from Xero");
+  - F9 will write `External Provider` / `External Invoice ID` /
+    `External Invoice Number`. The API then reports
+    `officialNumber = External Invoice Number`.
+- **Hub** (`"hub"`):
+  - at issue the invoice takes `prefix + next` (zero-padded to `digits`
+    when set), for example `TEST-INV-` + 1001 + 6 digits =
+    `TEST-INV-001001`;
+  - `Next Invoice Number` becomes +1 **in the same all-or-nothing write**
+    as the invoice, and `numbering.status` is `assigned`.
+- **Authority is never inferred.** An invoice gets no number, and a
+  missing number means nothing, unless the authority is explicitly set:
+  - no authority → 409 `invoice_numbering_not_configured`;
+  - Hub without a prefix or next number → the same 409;
+  - either way nothing is written.
+- **Per organisation:** the sequence lives on that organisation's Finance
+  Settings row. Uniqueness is checked within the organisation.
+- **Numbers are never reused:**
+  - before writing, the issue looks for an existing invoice (this
+    organisation) with the same `Hub Invoice Number`, and refuses with
+    409 `invoice_number_taken`. This covers a counter set back by hand;
+  - next > 999,999,999 → 409 `invoice_number_sequence_exhausted`;
+  - switching the authority keeps the prefix and counter, so returning to
+    Hub continues from where it stopped.
+- **Checked where:**
+  - numbering is checked at **issue**, after the issuer VAT check (FIN6.6
+    order plus this step);
+  - F2 settings completeness is unchanged. Per the design pack, Xero is
+    optional, so an organisation must not look incomplete without
+    numbering.
+- **API:**
+  - each invoice returns `numbering {internalReference, authority,
+    authorityLabel, officialNumber, status, statusLabel, hubSequence}`;
+  - list rows add `officialNumber` + `numberAuthority`;
+  - `Issue Authority` (where the invoice was issued = the Hub) is
+    unchanged and separate.
+
+### FIN6.16 Finance Settings changes
+
+- New `settings` keys, each validated on `POST settings`:
+
+  | Key | Airtable field | Rule |
+  |---|---|---|
+  | `invoiceNumberAuthority` | `Invoice Number Authority` `fld77sqoEv0KFp9DC` (Hub / Xero) | `"hub"`, `"xero"` or null |
+  | `invoiceNumberPrefix` | `Invoice Number Prefix` `fldE38AG59AM077gY` | ≤ 12 chars, starts with a letter or digit, then letters / digits / `-` `_` `/` |
+  | `invoiceNumberNext` | `Next Invoice Number` `fldGRFtNbU4FN6crN` | Whole number 1 – 1,000,000,000 |
+  | `invoiceNumberDigits` | `Invoice Number Digits` `fld2SYoRHPVmjrPmA` | Optional padding, 1 – 9 |
+
+- The settings row is `recQNVHnZiWO8UYN7` in `tblbQDDt3cgQmfCwB`.
+- **Audit:** a Management change is audited as `finance_settings.updated`
+  and bumps the settings `Revision`.
+- **The counter advance at issue is not a settings edit:**
+  - it does not bump `Revision`: 4 settings updates in the proof took
+    Revision 7 → 11 while 4 Hub numbers were issued;
+  - it is recorded on the `finance_invoice.issued` event as
+    `context.numbering {authority, officialNumber, sequence,
+    nextNumberBefore, nextNumberAfter}`.
+
+### FIN6.17 Sequence and concurrency
+
+- **Issue takes two locks:**
+  - the org commercial lock (`commercial:<org>`, as in F6);
+  - the org **settings lock** (`acquire_finance_settings_lock`, the F2
+    lock), so an issue can never interleave with a Finance Settings
+    edit.
+
+  Either one busy → 409 (`finance_commercial_busy` /
+  `finance_settings_busy`), with nothing written. Both locks are
+  released in `finally`.
+- **Counter write order:** inside the issue's all-or-nothing write, the
+  counter patch is written **first**. So it is undone **last**: a failed
+  issue restores the previous `Next Invoice Number`, and no gap or
+  half-written invoice is left (unit tests NB7–NB7c; busy and racing
+  settings edits: NB6–NB6d).
+- **Hub row validation:**
+  - a Hub invoice row must hold a number matching
+    `^[A-Za-z0-9][A-Za-z0-9/_-]{0,11}[0-9]{1,9}$`, a sequence, and a
+    number that ends with that sequence;
+  - a Xero row must hold no Hub number;
+  - anything else fails mapping (strict).
+- **Backfill:** the four F6 invoices were set to
+  `Invoice Number Authority = Xero`. They were issued before the choice
+  existed and invented no number.
+
+### FIN6.18 Replacement terms and PO inheritance
+
+- **Replacement draft sources:**
+  - `startReplacementDraft` copies from the **original invoice**
+    snapshot:
+    - `paymentTermsDays`;
+    - `poRequired`, `poNumber`, `poOverrideReason`;
+  - the payment-terms source is `original_invoice` (label "Original
+    invoice terms"; Airtable choice `Original invoice` on Drafts
+    `fldr4vVxnJ14WAV2K` and Invoices `fldfWibyPd2qfZzR9`).
+- **Stability:** a later client-default change does not reach the
+  replacement draft:
+  - `isInvoiceLevelTerms` keeps `original_invoice` through every draft
+    refresh;
+  - a details reset (`paymentTermsDays: null`) on a replacement restores
+    the **original invoice's** days, not the client or settings default.
+- **Deliberate changes:**
+  - Management may still change terms / PO in F5 review
+    (`POST invoice-drafts/{FID}/details` with a reason);
+  - the change is audited `finance_invoice_draft.payment_terms_changed`,
+    with before `original_invoice` and after `invoice_override`;
+  - the issued replacement snapshots the reviewed value.
+
+### FIN6.19 Tests and regression
+
+- **`finance-issue.test.ts`: 139/139.** Default fixture authority Xero;
+  settings-lock RPC mocked. New sections:
+  - **NB1–NB9d numbering:** Xero / Hub / unset / hub-incomplete,
+    padding, sequence exhausted, taken, rollback, locks, mapping
+    strictness;
+  - **RI10–RI17 replacement inheritance:** terms, PO, override reason,
+    refresh, null reset, deliberate change, issue snapshot.
+- **`finance-settings.test.ts`: 97/97**, including new SN1–SN5.
+- **Mutations:**
+  - correction `mut_f6c.py` **26/26 caught**;
+  - F6 `mut_f6.py` 42/42;
+  - F5 `mut_f5c.py` 45/47 (the same 2 equivalent survivors).
+- **Other suites:**
+  - access 56, kernel 47, commercial 100, billing 105, invoicing 147;
+  - confirmation writer 102/102;
+  - `financebundletest.js` 8/8;
+  - full `tests/run-all.js` **75/75 test files**.
+- **Typecheck:** `tsc` shows no new errors (104 before and after, all
+  existing narrowing patterns).
+
+### FIN6.20 Deploy
+
+- `finance` **v13**, entrypoint `index.js`, `verify_jwt: true`.
+- **Path:** committed source → `node scripts/build-finance-bundle.mjs`
+  (deterministic esbuild bundle) → committed artifact
+  `supabase/deploy-artifacts/finance/index.js` → deployed verbatim.
+- **226,222 bytes, sha256
+  `83a015150eeffbc4041e53fb7e1e808720232ed57029b1c4f1fcacb7ea15460c`:**
+  - the deployed file (read back with `get_edge_function`) has the same
+    sha256 as `manifest.json.artifactSha256`;
+  - source-tree sha256
+    `a9dfd40d84ef8fd77a8a53713bcf609d6139b2e4fae5dc2d1be13e105a481054`;
+  - no GitHub runtime import; the only import is
+    `jsr:@supabase/supabase-js@2`.
+
+### FIN6.21 Live TEST verification (2026-09-30, `finance` v13, real HTTP via `pg_net`)
+
+No uninvoiced eligible work was left in TEST, so every new issue came
+from a whole-line credit note plus a replacement draft on
+`FIV-0747B88A7BF8` (Parkside: 30 days, client source, PO
+`PO-TEST-PARKSIDE-2026-09`).
+
+| # | Check | Result |
+|---|---|---|
+| — | Authority unset | Replacement `FID-C6FEED793C1A` (from `FCN-3F1468A9407E`) → issue 409 `invoice_numbering_not_configured`; nothing written, no audit, locks empty |
+| A | Xero authority | Settings → Xero (rev 8). Issue → 201 **`FIV-6015A9D88999`**: numbering `pending_external`, `officialNumber` null, External fields blank; 30 days `original_invoice`, due 2026-10-30 |
+| — | Hub incomplete / invalid | Authority Hub only (rev 9) → issue 409 `invoice_numbering_not_configured` ("needs an invoice number prefix and the next invoice number"). Prefix `TEST INV!` + next 0 → 400 `invalid_settings` (both fields named) |
+| B | Hub authority | Prefix `TEST-INV-`, next 1001, 6 digits (rev 10). Issue → 201 **`FIV-8849E14D2866` = `TEST-INV-001001`** (sequence 1001, `assigned`) |
+| C | Next Hub number | **`FIV-B5EAFFE9FC25` = `TEST-INV-001002`** |
+| D | Concurrent issue | Two issues sent in the same transaction → one 201 **`FIV-E9189872C36C` = `TEST-INV-001003`**, the other 409 `finance_commercial_busy` (nothing written). Retry → 201 **`FIV-BDF2992D20D3` = `TEST-INV-001004`**. Airtable: 1001–1004 each exactly once, no gap; `Next Invoice Number` 1005 |
+| E | Terms inherited after the client default changed | Parkside default 30 → **14** (client rev 6), then credit `FCN-58160A335E9F` → replacement **`FID-43784B83AADA`**: **30 days, `original_invoice`**. `FID-364A2FC6C232` (from `FCN-2D30340B5505`) also 30 / `original_invoice`, unchanged after a GET refresh; issued as 1002 with due 2026-10-30 (not 14 days) |
+| F | PO inherited | Every replacement draft and invoice carries `PO-TEST-PARKSIDE-2026-09`, `required:true` |
+| G | Deliberate review change | `details {paymentTermsDays:45, reason}` on `FID-43784B83AADA` → audit `finance_invoice_draft.payment_terms_changed` before 30 / `original_invoice`, after 45 / `invoice_override`, reason kept. Issued `TEST-INV-001001` has **45 days, due 2026-11-14** |
+| H | Original unchanged | `FIV-0747B88A7BF8` snapshot md5 (invoice without credit / status / revision, lines without `creditedBy`) **`70e35800…` before = after**. Still 30 days `client`, same PO, 1143.00 total; only credit state moved (credited 741.00, remaining 402.00). Re-issuing an issued draft → 409 `draft_already_issued` |
+| I | Access / module / tenant | View grant: settings + invoice reads 200; settings update, credit, replacement, details, issue → 403 `finance_manage_required`. Module off: read, settings update, issue → 403 `finance_module_disabled`; restored ON → 200. Tenant key in settings body (top level and inside `settings`), issue body and query → 400 `tenant_param_rejected`. Coach / Parent → 403 `management_required`; no token → 401 |
+| J | Needs Attention | Clear, total 0 |
+| — | Audit exact | 76 → 123, exactly **47** events: 4 × `finance_settings.updated`; 2 × `finance_client.updated`; 5 × credit_note.created + 5 × partially_credited; 5 × draft.created + 5 × correction_initiated; 5 × marked_ready; 1 × payment_terms_changed; 5 × invoice.issued + 5 × draft.issued; 5 × replacement_linked. No event for any refused, 400 / 403 / 404 or read request |
+
+- One replacement request used a mistyped credit-note id and returned 404
+  `credit_note_not_found`. It was read-only; the retry with the right id
+  succeeded.
+
+### FIN6.22 Resting TEST data after the correction
+
+- **Finance Settings (rev 11):**
+  - `Invoice Number Authority = Xero`: the TEST resting choice, with no
+    number invented;
+  - Hub configuration kept: prefix `TEST-INV-`, 6 digits, **next 1005**.
+    Switching to Hub continues at 1005, and 1001–1004 are never reused.
+- **Invoices:** 9 in total.
+
+  | Invoice | Authority | Official number | Terms | Source |
+  |---|---|---|---|---|
+  | `FIV-900D5F407D29`, `FIV-0747B88A7BF8`, `FIV-E6600556B017`, `FIV-BA23AA9365B6` | Xero (backfilled) | — | as F6 | F6 fixtures (FIN6.13) |
+  | `FIV-6015A9D88999` | Xero | — (pending external) | 30 original | Replaces `FIV-0747B88A7BF8` via `FCN-3F1468A9407E` |
+  | `FIV-8849E14D2866` | Hub | `TEST-INV-001001` | 45 override | via `FCN-58160A335E9F` |
+  | `FIV-B5EAFFE9FC25` | Hub | `TEST-INV-001002` | 30 original | via `FCN-2D30340B5505` |
+  | `FIV-E9189872C36C` | Hub | `TEST-INV-001003` | 30 original | via `FCN-C6D8D118B3BB` |
+  | `FIV-BDF2992D20D3` | Hub | `TEST-INV-001004` | 30 original | via `FCN-1029B1A7CF40` |
+
+- **`FIV-0747B88A7BF8`:** `partially_credited`, credited 741.00,
+  remaining 402.00. Six of its nine lines are credited.
+- **Parkside** client default restored to **30 days**.
+- **Baseline:**
+  - `module_finance` ON;
+  - exactly one active grant: Manage
+    **`94c83c89-558d-4f8e-a850-709f5d3b49d4`** for the TEST manager
+    (replacing `21f56caa…`, revoked for the View probe);
+  - write and settings lock tables empty;
+  - `f2probe` schema dropped;
+  - no Xero record, no payment, no email, no PDF.
