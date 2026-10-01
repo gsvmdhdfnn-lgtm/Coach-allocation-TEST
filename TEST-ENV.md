@@ -17713,35 +17713,30 @@ SQL calls, and writes were sent one at a time (org write lock).
   - ATT-025 stays Planned;
   - production is untouched.
 
-## Finance Foundation — F11 (parent / family credit + refund DECISION bridge) — CHECKPOINT — TEST only — 2026-10-01
+## Finance Foundation — F11 (parent / family credit + refund DECISION bridge) — TEST only — 2026-10-01
 
-> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
+> **DEPLOYED AS `finance` v18 / LIVE-PROVEN IN TEST (A–W) / TEST BASELINE RESTORED.**
 >
->
-> **REPLACEMENT CHECKPOINT (owner fields + history guards, FIN11.16).** It
-> supersedes the earlier undeployed artifact `18497081…`, which must NOT be
-> deployed.
->
-> - **TEST schema is applied:**
->   - `finance_f11_family_credit_refund_bridge`;
->   - `finance_f11_credit_apply_error_codes`;
->   - `finance_f11_owner_fields_and_history_guards`.
->
->   Its database rules were exercised live in self-rolling-back smoke
->   blocks (FIN11.13). Nothing persisted: all F11 tables are empty and the
->   audit count is still 223.
-> - **The `finance` bundle is 444,884 bytes**, sha256
->   `d64957e28b3048557953b3d122104e764e6808113b7fbfbc9a5d6ed59a984d19`
->   (manifest `36677a86…`).
->   That is too large for this session to deploy. The exact artifact is
->   committed at `supabase/deploy-artifacts/finance/index.js` and needs
->   deployment assistance, exactly as for F7–F10.
-> - **Deploy as `finance` v18:** `verify_jwt` true, one `index.js`, a
->   byte-for-byte copy of the committed artifact.
-> - **Not redeployed:** `needs-attention` v14 (artifact `--check` MATCH)
->   and `stripe-sandbox` v1. The emulator already serves
->   `GET /v1/charges/{id}` and `GET /v1/refunds?charge=`.
-> - The live proof A–W runs after v18 is deployed.
+> - **Deployed:** `finance` v18 (ACTIVE, `verify_jwt` true, one `index.js`) from
+>   commit `d9ca489`. Independently re-verified: the deployed `index.js` is
+>   444,884 bytes, sha256
+>   `d64957e28b3048557953b3d122104e764e6808113b7fbfbc9a5d6ed59a984d19`, byte
+>   for byte the committed `supabase/deploy-artifacts/finance/index.js`
+>   (`--check` MATCH). The superseded artifact `18497081…` was **not**
+>   deployed.
+> - **Not redeployed:** `needs-attention` v14 (artifact MATCH),
+>   `stripe-sandbox` v1, `xero-sandbox` v1.
+> - **TEST schema:** `finance_f11_family_credit_refund_bridge`,
+>   `finance_f11_credit_apply_error_codes`,
+>   `finance_f11_owner_fields_and_history_guards`.
+> - **Live proof A–W on v18:** FIN11.17. Ownership model, DB history guards,
+>   the locked proportional rule (incl. the odd penny) and no Stripe write
+>   all proven live. No product contradiction found.
+> - **Resting state:** FIN11.14.
+> - **Owner type remains `guardian_account` only.** No Household entity, no
+>   guardian → household migration, no goodwill credit, F21 not started, no
+>   Stripe refund execution, no subscription write, Cash Flow not started,
+>   production untouched.
 
 ### FIN11.1 Pre-implementation audit (2026-10-01)
 
@@ -18109,12 +18104,63 @@ original returnable value (credit-funded + card-funded)
   - `financebundletest` B13–B14 added (14/14).
   - Full suite **82/82**.
 
-### FIN11.14 Resting TEST state (checkpoint)
+### FIN11.14 Resting TEST state (after the F11 live proof)
 
-- F11 tables empty; audit **223**.
-- One Manage grant; `module_finance` ON; no locks; no probe schema.
-- Stripe still disconnected (F10 resting state).
-- `finance` v17, `needs-attention` v14, `stripe-sandbox` v1 deployed.
+- **Finance:** `module_finance` ON; exactly one active Finance grant —
+  Manage, manager, `1735d938-1b5a-4fc1-8cf6-89804d03e611` ("restored after
+  F11 proof O/Q"). The previous Manage grant `0caf8333…` and the temporary
+  View grant `829fcc6f…` were ended with notes. 0 write locks, 0 settings
+  locks.
+- **Audit:** **268** = 225 (pre-proof: F10 resting 223 + reconnect + Family B
+  customer link) + 38 (live proof A–W) + 4 (baseline: 2 voids, 1 payment,
+  1 application) + 1 (`finance_stripe.disconnected`).
+- **Stripe:** `finance_stripe_connections` `ORG-TEST-001` **disconnected**
+  (sandbox, test); Vault Stripe secrets 0; emulator account
+  `acct_ZZTESTf10sandbox` key hash `revoked-after-f11-proof`; faults 0.
+  **No Stripe refund or other write was ever made** — the emulator log
+  holds only GETs (110 rows: 57 F10 + 53 F11 — 49 during A–U plus 4
+  from the V regression reads).
+- **No usable family credit is left:** `GET /family-credits` → 0.00 for
+  both families. Unused proof credits were voided (audited); the one
+  partly-used credit (`FFC-872375BC2303`, 19.67 left — used credit is
+  never voided) was consumed against a labelled ZZTEST payable
+  `FFP-FF2C698C80A9` (`ZZTEST-F11-BASELINE`, "not a real charge").
+- **Retained, labelled TEST fixtures (append-only history; DELETE is
+  refused by design):**
+  - payments (5): `FFP-D5198DE8E59B` 12.00 (credit), `FFP-34242CADE616`
+    5.00 (credit), `FFP-793CCB2A2EC6` 100.00 (60 card `ch_ZZTESTf11m60` +
+    40 credit), `FFP-3BDCAD188E54` 10.01 (6.68 card `ch_ZZTESTf11p668` +
+    3.33 credit), `FFP-FF2C698C80A9` 19.67 (baseline consumption);
+  - credits (8): 5 fully used, 2 manual voids + Family B's void, 1 voided
+    by reversal (`FFC-216A5DA603E8`);
+  - decisions (12): **7 `awaiting_refund_action` Refund Due fixtures**
+    totalling 238.34 (`FRD-CBCEF63635E7` 100.00, `FRD-D27DC9419193` 25.00,
+    `FRD-1DA6EDEA084D` 30.00, `FRD-9B917033B203` 30.00, `FRD-1653C1DF9EA7`
+    3.34, `FRD-3A041016358A` 20.00, `FRD-1C301CD93925` 30.00) — all on
+    ZZTEST emulator charges, all reasons "F11 live proof …"; F21 must
+    treat them as TEST data. 1 no-return, 1 reversed, 3 credit-only.
+  - `FFP-3BDCAD188E54` still has 5.01 returnable (1.67 credit + 3.34
+    card) — a source, not usable credit.
+- **Airtable TEST:** Family B `PARENT-ZZTEST-F11B` (`recHKZA4VuWXDZjTk`)
+  kept (ledger history references it) but set **inactive**; its link
+  `PPLINK-ZZTEST-F11B` (`rec7N2AsfznZ9VD59`) to Charlie set **Ended**.
+  Stripe customer link `cus_ZZTESTf11b` → Family B kept (ZZTEST emulator
+  customer only). Priya / Archie / Dylan / Bella links unchanged.
+  Feature Controls `module_finance` Enabled.
+- **Probe harness `f2probe`: NOT dropped (deviation).** Both
+  `drop schema f2probe cascade` attempts waited for an interactive
+  confirmation that does not reach this session (60 s timeout); the
+  confirmation was not bypassed. The schema is **inert**: its stored
+  session tokens were overwritten (`cleared-after-f11-proof`, 0 live
+  tokens) and `anon` / `authenticated` have no USAGE on it. Operator
+  action: run `drop schema f2probe cascade;` once (no data depends on
+  it).
+- **Needs Attention:** `GET cases` → Clear, 0 cases. F11 made no
+  catalogue change.
+- **Deployed functions:** `finance` v18, `needs-attention` v14,
+  `stripe-sandbox` v1, `xero-sandbox` v1. Production
+  `bkkukymqaxawnudoxdjs`: 9 functions, no `finance` / `stripe-*`, last
+  update 2026-09-26.
 
 ### FIN11.15 Open items / future debt
 
@@ -18150,6 +18196,15 @@ original returnable value (credit-funded + card-funded)
   - parents with no Organisation link;
   - real Stripe metadata conventions unknown;
   - subscription → player / service mapping undecided.
+- **After the live proof (2026-10-01):**
+  - operator: `drop schema f2probe cascade;` (inert TEST probe harness, see
+    FIN11.14);
+  - the 7 TEST Refund Due fixtures (238.34, ZZTEST emulator charges) stay
+    `awaiting_refund_action` — F21 TEST work must treat them as fixtures,
+    never execute them against a real Stripe account;
+  - owner type stays `guardian_account`; the explicit Family / Household
+    entity and its one audited transfer remain future platform work
+    (FIN11.16).
 - **Boundaries:** no Stripe refund execution; F21 not started; no
   subscription write; Cash Flow not started; production untouched.
 
@@ -18241,3 +18296,107 @@ pre-deployment; all F11 tables are empty.
 Superseded: the fix is applied, and the replacement artifact (`d64957e2…`)
 is the one to deploy.
 
+### FIN11.17 Live TEST proof on `finance` v18 (2026-10-01)
+
+**Step 1 — deployment verified independently:** `finance` v18 ACTIVE,
+`verify_jwt` true, one `index.js`, sha256 `d64957e2…984d19` / 444,884 bytes
+= the committed artifact. `needs-attention` v14 unchanged (artifact MATCH).
+
+**Fixtures (all TEST, all labelled ZZTEST / "F11 live proof"):**
+
+- Stripe: the F10 emulator reconnected for the proof (sandbox, test mode).
+  Added emulator charges `ch_ZZTESTf11*` (10.00, 15.00, 40.00, 60.00,
+  3.33, 6.68, 100.00, 60.00, 30.00 with a succeeded 10.00 refund
+  `re_ZZTESTf11ext10` and a failed 5.00 refund, 20.00, 25.00, 30.00, a
+  failed 50.00, and Family B's 50.00), all `livemode:false`.
+- Family A = Priya `PARENT-TEST-001` (`recUleTQgqdkpBr8F`; verified
+  children Archie PL-TEST-001, Dylan PL-TEST-004; Bella pending, so not
+  eligible). Family B = `PARENT-ZZTEST-F11B` (`recHKZA4VuWXDZjTk`), with a
+  Verified link to Charlie PL-TEST-003, and its own emulator customer
+  `cus_ZZTESTf11b` linked through F10 (audited).
+- Calls went through the real deployed function with real TEST logins
+  (manager / coach / parent), via a TEST-only `pg_net` harness.
+
+**Results:**
+
+| # | Proof | Result |
+|---|---|---|
+| A | Create family credit | `family_credit` on `ch_ZZTESTf11j10` → 201, `FFC-A142F779E0F2` 10.00 (card-funded 10.00, credit-funded 0.00), owner `guardian_account` / `recUleTQgqdkpBr8F`, child Archie, `credit_created`, refund state `none`, cash moved 0.00. A second, later credit `FFC-CC60B58C82EA` 15.00 |
+| B | Read balance / history | `GET family-credits/PARENT-TEST-001` → owner block (`guardian_account`, "transitional – no Family / Household entity exists yet"), verified children (Dylan, Archie — not Bella), credits with derived status and application history, payments, decisions, `parentSummary` (credit available / refunds awaiting processing) |
+| C | Partial application | Payable `FFP-34242CADE616` 5.00; apply 3.00 → credit `FFC-CC60…` 13.00 → 10.00 left, payment 2.00 still unfunded. Both partial balances kept |
+| D | Oldest first | Payable `FFP-D5198DE8E59B` 12.00 → order 1 `FFC-A142…` 10.00 (→ 0.00), order 2 `FFC-CC60…` 2.00 (→ 13.00). Later applications also drew oldest first (H2: 10.00 + 30.00; L4: 1.67 + 0.33) |
+| E | Cross-family refused | Family B credit 50.00 created on its own charge. Priya deciding Family B's charge → 409 `family_mismatch`. Family B's credit paying Priya's payment → 409 `cross_family_refused`. DB level: G20 below |
+| F | Full card refund = Refund Due only | `refund_to_card` on `ch_ZZTESTf11r100` → `refund_due`, `awaiting_refund_action`, no credit, `cash.movedNow` 0.00, `expectedOutLater` 100.00, fact `refund_due` `cashImpact:none_yet`. Response: "No Stripe call was made" |
+| G | Split | `split` on `ch_ZZTESTf11s60` with `cardRefundAmount` 25.00 → credit 35.00 + Refund Due 25.00, `split_refund_due`, policy `occurrence_financial_outcome` (context ref only) |
+| H | Mixed funding + **locked proportional rule** | `FFP-793CCB2A2EC6` 100.00 = 60.00 card (`ch_ZZTESTf11m60`) + 40.00 credit. Before funding complete → 409 `funding_incomplete`; deciding its charge alone → 409 `charge_belongs_to_family_payment`. **Partial 50.00 → 20.00 family credit (credit-funded) + 30.00 Refund Due** (exactly the locked example). **Remainder (full) → 20.00 + 30.00**, i.e. totals 40.00 credit + 60.00 card = the original split exactly. **Odd penny:** `FFP-3BDCAD188E54` 10.01 = 6.68 card + 3.33 credit; partial 5.00 → **1.66 credit + 3.34 Refund Due** (credit share ⌊500×333/1001⌋ = 166; the odd penny to card) |
+| I | Cancellation alone creates nothing | All 12 decisions were created by explicit `POST /refund-decisions` by the manager (audit route + actor). One DB function inserts decisions (`finance_family_decision_record`); no trigger, cron job or automation does. Policy kinds (`parent_request`, `occurrence_financial_outcome`, `membership_cancellation`) were recorded as context only |
+| J | Existing Stripe refund reduces returnable | `GET refund-sources/ch_ZZTESTf11ext30` (30.00, Stripe refund 10.00 succeeded + 5.00 failed) → returnable **20.00**, `partially_refunded_in_stripe_without_hub_decision`, the failed refund ignored, mismatch 0.00. 20.01 → 409 `over_return`; 20.00 → Refund Due 20.00 (`returnableBefore` 20.00). Fully refunded `ch_ZZTESTfull` → 409 `nothing_returnable`. Failed charge → 409 `stripe_charge_not_succeeded` |
+| K | Over-return refused | 50.01 of 50.00 left → 409 `over_return` (returnable 50.00); a further decision after the full return → 409 `nothing_returnable` (also the duplicate guard) |
+| L | Duplicate / concurrent | Two identical decisions fired simultaneously on `ch_ZZTESTf11cc30` → one 201 (`FRD-1C301CD93925`), one 409 `finance_commercial_busy`. Two simultaneous applications of 2.00 to a 2.00 remainder → one 201, one 409 busy; the payment ends exactly funded. No double count |
+| M | Void unused credit | Family B `FFC-8A6C5AEFCC7A` → 200 `voided` (`manual_void`), balance 0.00; fact `family_credit_voided` −50.00 |
+| N | Used-credit unsafe paths refused | Void used `FFC-A142…` → 409 `credit_used`; void partly used `FFC-E54F…` → 409 `credit_used`; reverse the split whose credit is partly spent → 409 `credit_used` ("no safe compensating path") |
+| — | No-return | `no_return` on `ch_ZZTESTf11nr20` (policy `membership_cancellation`) → `decided_no_return`, retained 20.00, fact `no_return` 0.00. Then credit on it → 409 `source_closed_no_return` |
+| — | Reversal | Credit decision on `ch_ZZTESTf11rev25` (25.00, unused) → reverse → 200, execution `reversed`, `restoredReturnable` 25.00, fact `decision_reversed` −25.00, credit voided (`decision_reversed`). Second reverse → 409 `decision_already_reversed` |
+| O | Finance View reads only | Temporary View grant: 6 reads → 200 `access:"view"`; 5 writes (decision, apply, void, reverse, payment) → 403 `finance_manage_required` |
+| P | Finance Manage writes | Every successful write above used the Manage grant |
+| Q | No grant / Coach / Parent | No grant: 5/5 → 403 `finance_access_denied`. Coach 3/3 and Parent 3/3 (reads and writes) → 403 `management_required` |
+| R | Module off | `module_finance` off → 4/4 (reads + writes) 403 `finance_module_disabled`; restored ON → 200 |
+| S | Tenant rejection | `organisationId` / `org_id` in a body, `organisationId` / `tenant` in a query → 400 `tenant_param_rejected` (4/4) |
+| T | Exact audit | 225 → **263 (+38)**, all `finance_family.*`, all actor = manager, route recorded: 12 `refund_decision_recorded`, 8 `credit_created`, 7 `refund_due_recorded`, 4 `payment_recorded`, 5 `credit_applied`, 1 `credit_voided`, 1 `refund_decision_reversed`. Expected from the 23 successful writes = 38. The 42 refused / denied requests and all reads audited **nothing**. No secret-shaped value in any payload |
+| U | No Stripe write | Emulator log after the proof: 49 new requests, **all GET** (24 × `/v1/charges/{id}`, 24 × `/v1/refunds?charge=`, 1 × `/v1/customers/{id}`). 0 POST ever. `POST refund-decisions/{id}/execute` and `POST stripe/refund` → 404. No `stripe_refund_id` set; no F21 refund state used |
+| V | F10 / F9 / F7 unchanged | `stripe/status` (ready), `stripe/payments`, `stripe/refunds`, `stripe/subscriptions`, `xero/status` (still disconnected), `receivables` (9 invoices, outstanding 273.00, cash received 212.00 — same as F10 resting) → all 200 |
+| W | Production untouched | Production `bkkukymqaxawnudoxdjs`: 9 functions, no `finance` / `stripe-*`, last update 2026-09-26. No production Airtable / Stripe / Xero / Sheets call, no production or live key |
+
+**Ownership model (live rows):**
+
+- Every live row has `owner_type = 'guardian_account'` and `owner_key =
+  family_parent_record_id`: payments 4/4, credits 8/8, applications 8/8,
+  decisions 12/12 (before the baseline rows). Owner keys are only the two
+  guardian accounts.
+- Balances, oldest-first scope, application, decisions and read models all
+  follow the owner (B, D, E); guardian-history fields are shown unchanged
+  (`family.parentId`, `player`).
+
+**Database history guards on the live rows (self-rolling-back `DO` blocks;
+all four ledger tables hashed before and after — identical; audit
+unchanged at 263):**
+
+| # | Attempt | Result |
+|---|---|---|
+| G1 / G2 / G3 | Payment amount / guardian / owner | `history_is_append_only` / `history_is_append_only` / `owner_change_requires_transfer` |
+| G4 / G5 | Application amount / owner + guardian | `history_is_append_only` ×2 |
+| G6 / G7 / G8 | Credit amount / guardian / owner moved to Family B | `history_is_append_only` ×2 / `owner_change_requires_transfer` |
+| G9 | Rewrite a void reason | `history_is_append_only` |
+| G10 / G11 / G12 | Decision amount / guardian / owner | `history_is_append_only` ×2 / `owner_change_requires_transfer` |
+| G13 / G14 | Un-reverse a decision / change execution state | `history_is_append_only` ×2 |
+| G19 | Owner → household without a transfer | `owner_change_requires_transfer` |
+| G20 | `finance_family_credit_apply` with Family B as owner on Priya's payment | `cross_family` |
+| G21 | Insert a `guardian_account` row whose owner ≠ guardian | CHECK violation |
+| D1–D4 | DELETE a payment / credit / application / decision | `history_is_append_only` ×4 |
+| G22 / G23 / G24 | During a `guardian_to_household` transfer: credit amount / guardian / application owner | `history_is_append_only` ×3 |
+| G25 | household → guardian "reverse transfer" | `owner_change_requires_transfer` |
+| A1 (allowed) | F21's `refund_state` change | accepted (rolled back) |
+| A2 (allowed) | Credit owner moved inside the explicit transfer | accepted (rolled back) |
+
+**Revenue / cash semantics (`GET revenue-corrections`, after the proof):**
+totals `family_credit` 176.66, `refund_due` 238.34, `no_return` 0.00,
+`decision_reversed` −25.00, `family_credit_voided` −50.00. Every fact
+`businessCost:false`; `family_credit` `cashImpact:none`; `refund_due`
+`cashImpact:none_yet` with `expectedCashOut`, "cash leaves only when F21
+executes the Stripe refund". Priya's decisions summary: 11 decisions,
+1 reversed, Refund Due 238.34 (7 awaiting refund action), credit created
+101.66. Nothing was written to F7 receipts or payments (F7 cash received
+still 212.00).
+
+**No product contradiction was exposed.** Observations only:
+
+- A credit voided by reversal appears with `voidKind:decision_reversed`.
+  Its offset is reported once, as `decision_reversed` (not also as
+  `family_credit_voided`). This is consistent with FIN11.10.
+- The no-grant / View probes required ending and re-creating the Manage
+  grant (grant rows are immutable). The resting grant id therefore
+  changed to `1735d938…`, as in F9 / F10.
+
+**Tests after the proof:** `tests/support/finance-family.test.ts`
+**67/67**; full suite **82/82** test files; `build-finance-bundle --check`
+and `build-needs-attention-bundle --check` MATCH.
