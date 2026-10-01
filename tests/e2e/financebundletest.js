@@ -47,6 +47,19 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   const f5still = await call('GET', 'invoice-drafts/FID-0123456789AB/refresh');
   ck('B8. F6 routes are live in the artifact: issue POST-only (405 / 401), invoice read 401 without a token, replacement POST-only, no send route (404), F5 draft routes unchanged (405)', issue405.status === 405 && issue401.status === 401 && inv401.status === 401 && cn405.status === 405 && send404.status === 404 && f5still.status === 405, `${issue405.status}/${issue401.status}/${inv401.status}/${cn405.status}/${send404.status}/${f5still.status}`);
 
+  const xs401 = await call('GET', 'xero/status');
+  const xs405 = await call('POST', 'xero/status');
+  const xset405 = await call('GET', 'xero/settings');
+  const xi405 = await call('GET', 'invoices/FIV-0123456789AB/xero-issue');
+  const xi401 = await call('POST', 'invoices/FIV-0123456789AB/xero-issue');
+  const xr401 = await call('POST', 'invoices/FIV-0123456789AB/xero-retry');
+  const xst401 = await call('GET', 'invoices/FIV-0123456789AB/xero');
+  const xbad404 = await call('POST', 'invoices/FIV-0123456789AB/xero-delete');
+  const xc405 = await call('GET', 'clients/FCL-0123456789AB/xero-contact');
+  const f7still = await call('GET', 'invoices/FIV-0123456789AB/payments');
+  ck('B9. F9 routes are live in the artifact: xero/status GET-only (401 / 405), xero/settings POST-only, xero-issue / xero-retry POST-only (401 without a token), invoice Xero state 401, unknown xero-* 404, contact link POST-only; F7 payments unchanged (401)', xs401.status === 401 && xs405.status === 405 && xset405.status === 405 && xi405.status === 405 && xi401.status === 401 && xr401.status === 401 && xst401.status === 401 && xbad404.status === 404 && xc405.status === 405 && f7still.status === 401, `${xs401.status}/${xs405.status}/${xset405.status}/${xi405.status}/${xi401.status}/${xr401.status}/${xst401.status}/${xbad404.status}/${xc405.status}/${f7still.status}`);
+  ck('B10. The TEST deployment guard for Xero is in the artifact (Demo Company required) and the sandbox is reachable only on this project', /requireDemoTenant:\s*(!0|true)/.test(code) && code.replace(/\\\n/g, '').includes('/functions/v1/xero-sandbox') && code.includes('identity.xero.com/connect/token'));
+
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;
   console.log(`\n${results.length - failed}/${results.length} passing`);

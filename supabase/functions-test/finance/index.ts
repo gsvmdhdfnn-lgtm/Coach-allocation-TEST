@@ -72,6 +72,15 @@
  *   GET  /receipts?from=YYYY-MM-DD&to=YYYY-MM-DD            trusted cash receipts (the Actual Revenue fact)
  *   No reminders, Xero / Stripe sync, Cash Flow, Month Report or Needs Attention routes (F8 / F9 / later).
  *
+ * F9 Xero invoice connector (Finance read = GET, Finance manage = POST):
+ *   GET  /xero/status[?check=1]                     connection + mapping readiness; check=1 also runs a live, read-only health check
+ *   POST /xero/settings                             { accountCode?, taxTypes?, reason? }  non-secret mapping (audited)
+ *   GET  /invoices/{FIV-id}/xero                    the invoice's Xero state (stage, official number, send state, last error)
+ *   POST /invoices/{FIV-id}/xero-issue              { reason? }  Send / Issue via Xero: create (draft -> verify -> authorise), record Issued, send
+ *   POST /invoices/{FIV-id}/xero-retry              { reason? }  safe retry: resume create / finish recording / re-send - never a second Xero invoice
+ *   POST /clients/{FCL-id}/xero-contact             { contactId, reason }  link an existing Xero contact explicitly (never by name)
+ *   Reaching Ready (F5) and the F6 freeze never contact Xero: only these explicit Management actions do.
+ *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
  * tenant-looking query parameter or body key is rejected with 400, never
@@ -100,6 +109,8 @@ import { listClientDrafts, markLineNotBillable, readDraft, readEligibleWork, wri
 import { checkInvoiceListQuery, matchIssueRoute, parseCreditNote, parseIssue, parseReplacement } from "./finance-issue.ts";
 import { createCreditNote, issueDraft, listInvoiceCreditNotes, listInvoices, readCreditNote, readInvoice, startReplacementDraft } from "./finance-issue-orchestrator.ts";
 import { checkReceiptsQuery, checkReceivablesQuery, matchReceivablesRoute, parseApplication, parseCreditCreate, parseDueDateChange, parsePayment, parseRequiredReason } from "./finance-receivables.ts";
+import { matchXeroRoute, parseContactLink, parseXeroAction, parseXeroSettings } from "./finance-xero.ts";
+import { type XeroDeps, issueToXero, linkXeroContact, readXeroInvoiceState, readXeroStatus, updateXeroSettings } from "./finance-xero-orchestrator.ts";
 import {
   applyClientCredit,
   changeDueDate,
@@ -185,16 +196,18 @@ async function resolveCaller(authHeader: string | null): Promise<FinanceCaller |
   };
 }
 
-const deps: SettingsDeps & CommercialDeps = {
+const deps: SettingsDeps & CommercialDeps & XeroDeps = {
   airtable: { baseId: AIRTABLE_BASE_ID, token: AIRTABLE_TOKEN },
   grants: { supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY },
+  // TEST DEPLOYMENT GUARD (F9): a live Xero connection must reach a Xero Demo Company - TEST never issues into a real Xero organisation.
+  xero: { requireDemoTenant: true },
 };
 
 const ROUTES: Record<string, string[]> = { access: ["GET"], "write-check": ["POST"], settings: ["GET", "POST"] };
 
-function commercialResponse(res: { status: string; httpStatus: number; body?: unknown; error?: string; code?: string; fields?: Record<string, string> }) {
+function commercialResponse(res: { status: string; httpStatus: number; body?: unknown; error?: string; code?: string; fields?: Record<string, string>; details?: Record<string, unknown> }) {
   if (res.status === "ok") return jsonResponse(res.body, res.httpStatus);
-  return jsonResponse({ error: res.error, code: res.code, ...(res.fields ? { fields: res.fields } : {}) }, res.httpStatus);
+  return jsonResponse({ error: res.error, code: res.code, ...(res.fields ? { fields: res.fields } : {}), ...(res.details ? { details: res.details } : {}) }, res.httpStatus);
 }
 
 /** F3 routes: same order as F1/F2 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
@@ -406,6 +419,41 @@ async function handleReceivables(req: Request, url: URL, match: NonNullable<Retu
   return jsonResponse({ error: "Unknown route" }, 404);
 }
 
+/** F9 routes: same order as F3-F7 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleXero(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchXeroRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  const keys = [...url.searchParams.keys()];
+  if (r.name === "xero.status") {
+    if (keys.some(isTenantKey)) return jsonResponse({ error: "The organisation is taken from your profile and cannot be chosen in the request", code: "tenant_param_rejected" }, 400);
+    if (keys.some((k) => k !== "check") || keys.length > 1) return jsonResponse({ error: `Unexpected query parameter(s): ${keys.filter((k) => k !== "check").join(", ") || "check (repeated)"}`, code: "unexpected_parameter" }, 400);
+    const c = url.searchParams.get("check");
+    if (c !== null && !["1", "true", "0", "false"].includes(c)) return jsonResponse({ error: "check must be 1 / true / 0 / false", code: "invalid_query" }, 400);
+    return commercialResponse(await readXeroStatus(deps, caller, c === "1" || c === "true"));
+  }
+  const q = checkQueryKeys(keys);
+  if (!q.ok) return jsonResponse({ error: q.error, code: q.code }, 400);
+  if (r.name === "invoice.xero_state") return commercialResponse(await readXeroInvoiceState(deps, caller, r.params.invoiceId));
+  const raw = await req.text();
+  if (r.name === "xero.settings") {
+    const p = parseXeroSettings(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await updateXeroSettings(deps, caller, p));
+  }
+  if (r.name === "client.xero_contact") {
+    const p = parseContactLink(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await linkXeroContact(deps, caller, r.params.clientId, p.contactId, p.reason));
+  }
+  const p = parseXeroAction(raw, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  return commercialResponse(await issueToXero(deps, caller, r.params.invoiceId, r.name === "invoice.xero_issue" ? "issue" : "retry", p.reason));
+}
+
 /** Path segments URL-decoded (an Occurrence ID contains ":"); null when a segment is not valid percent-encoding. */
 function decodedPath(route: string): string | null {
   try {
@@ -426,7 +474,11 @@ Deno.serve(async (req: Request) => {
   try {
     const decoded = decodedPath(route);
     if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
-    // F7 first: it owns only its own sub-paths (invoices/{id}/payments, clients/{id}/credits, ...) and returns null for the rest.
+    // F9 first: it owns only xero/..., invoices/{id}/xero[-*] and clients/{id}/xero-contact, and returns null for the rest.
+    const xero = matchXeroRoute(route, req.method);
+    if (xero) return await handleXero(req, url, xero);
+
+    // F7 next: it owns only its own sub-paths (invoices/{id}/payments, clients/{id}/credits, ...) and returns null for the rest.
     const receivables = matchReceivablesRoute(route, req.method);
     if (receivables) return await handleReceivables(req, url, receivables);
 

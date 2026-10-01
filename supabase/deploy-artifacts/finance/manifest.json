@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "0b1477e5dde29630af72a03990baa8fdb02f4ed5bdeb7d059d830f26b250414d",
-  "artifactBytes": 290148,
+  "artifactSha256": "22b169990c809458228d4850cbb89710a88e4681796ebf46b1b0fd445e602501",
+  "artifactBytes": 347507,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "a1f92a4da82fe94b813483b26e86d6c93ed841881b07412f00dc9e4590aae41e",
+  "sourceSha256": "e4b67bdde897edef74d5520d9599d166bf0a7434117a36e49fa63432b885be8d",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -138,8 +138,24 @@
       "sha256": "290719688ba164232dbb66ec7ffbdcf70c165f7a2a01f86a4675b7e9828f8f95"
     },
     {
+      "path": "supabase/functions-test/finance/finance-xero-orchestrator.ts",
+      "sha256": "c9a219d9287a7e103a74d42daaf1b6dba07015c07c44c8095ffe3ff51479b7cc"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-xero-provider.ts",
+      "sha256": "9bb34ef4b06946c7bb30eb57dbcecb9a8c7b8905d0953a86d95604da5c90c5a0"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-xero-repository.ts",
+      "sha256": "236b0b8502115d6bf8a43161ffdeea3f1064cc06457d5cbeaf5faf3fdc80a236"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-xero.ts",
+      "sha256": "f3b05d23caf549e3f59489af82491840350cff04079e00d047a28414f51fa6fa"
+    },
+    {
       "path": "supabase/functions-test/finance/index.ts",
-      "sha256": "8c327f61078939a70685772af1772d5e136f216c1180a387f38d87da71c6822d"
+      "sha256": "ef384f57fba3821799847618bf68470cf43797110876b619c0acf509c6ac0daf"
     },
     {
       "path": "supabase/functions-test/finance/orchestrator.ts",

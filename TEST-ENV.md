@@ -17010,3 +17010,115 @@ were equal at every step, in the same order.
 - **F9 (Xero) not started.** No later Finance work was started.
 - No Finance UI and no reminder emails.
 - Production untouched.
+
+## Finance Foundation — F9 (Xero invoice connector) — CHECKPOINT — TEST only — 2026-10-01
+
+> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
+>
+> - The `finance` bundle is **347,507 bytes**, sha256
+>   `22b169990c809458228d4850cbb89710a88e4681796ebf46b1b0fd445e602501`.
+>   That is too large for this session to deploy. The exact artifact is
+>   committed at `supabase/deploy-artifacts/finance/index.js` (manifest
+>   alongside) and needs deployment assistance, exactly as for F7 and F8.
+> - **Deploy as `finance` v16:** `verify_jwt` true, one `index.js`, a
+>   byte-for-byte copy of the committed artifact.
+> - **Stays as it is:** `needs-attention` v14. Its artifact `--check` is
+>   still MATCH, because no file shared with Needs Attention changed.
+>
+> A full F9 section, the live proof and the report follow once v16 is
+> deployed.
+
+**Built (code + tests):**
+
+- **Two-step flow (locked):**
+  1. Reaching Ready (F5) and the F6 freeze to *Awaiting external issue*
+     never contact Xero.
+  2. Only an explicit Management **Send / Issue via Xero**
+     (`POST /finance/invoices/{FIV}/xero-issue`) or the safe
+     `/xero-retry` does.
+- **Connector flow, under the Finance write lock:**
+  1. preflight (connection, mapping, TEST Demo-Company guard, account
+     and tax-rate checks);
+  2. contact: linked, or matched by `ContactNumber` = Hub client id, or
+     created; **never by name**;
+  3. create a Xero **DRAFT** from the **frozen** lines;
+  4. verify it field for field against the frozen invoice (deleted in
+     Xero if it differs);
+  5. authorise it (Xero assigns the official number);
+  6. **one** Airtable patch: Awaiting → **Issued**, with Xero id, number,
+     dates and status (due date = Xero date + frozen terms), audited;
+  7. Xero emails it. A send failure keeps the invoice Issued, and a retry
+     re-sends the **same** Xero invoice.
+- **Idempotency:**
+  - org lock;
+  - a per-invoice journal (`finance_xero_invoice_links`, one Xero invoice
+    per Hub invoice);
+  - stable `Idempotency-Key`s;
+  - an unknown create outcome is looked up in Xero by its reference
+    before anything is re-created.
+- **New files:**
+  - `finance/finance-xero.ts` (pure)
+  - `finance-xero-provider.ts` (the only HTTP to Xero)
+  - `finance-xero-repository.ts`
+  - `finance-xero-orchestrator.ts`
+  - routes in `index.ts`
+- **Not touched:** the 12 Finance modules shared with Needs Attention.
+- **Routes:**
+  - `GET /xero/status[?check=1]` (View)
+  - `POST /xero/settings` (Manage, audited)
+  - `GET /invoices/{FIV}/xero` (View)
+  - `POST /invoices/{FIV}/xero-issue|xero-retry` (Manage)
+  - `POST /clients/{FCL}/xero-contact` (Manage; explicit link)
+- **Tests:**
+  - `tests/support/finance-xero.test.ts`: **74/74**. Covers brief
+    items 1–35 plus status, settings and guard checks, against the
+    **real** F5/F6/F7 code and the **real** HTTP adapter talking to an
+    in-memory fake Xero.
+  - Mutation **22/23** caught. The one survivor (contact linked to two
+    clients) is equivalent, because the database unique key refuses it
+    independently.
+  - `financebundletest` B9–B10 added.
+  - Full suite **80/80**.
+
+**TEST schema applied (2026-10-01):**
+
+- **Supabase migration `finance_f9_xero_connector`:**
+  - `finance_external_connections` (org + provider; environment, tenant,
+    status, non-secret mapping; secret only as a **Vault** id);
+  - `finance_xero_invoice_links` (journal);
+  - `finance_xero_contact_links`;
+  - RPC `finance_xero_client_secret` (service role only);
+  - operator-only SQL `finance_xero_connect` / `finance_xero_disconnect`
+    (audited; the secret goes straight into Vault).
+  - All tables are RLS on, with no client grants.
+- **Supabase migration `finance_f9_xero_sandbox_test_only`:**
+  `xero_sandbox_*` tables and helpers for the TEST emulator.
+- **Airtable Finance Invoices:** new field `External Status`
+  (`fldZNvH3pHK4pvGou`, single line text).
+- **Function `xero-sandbox` v1:**
+  - **TEST-only** Xero API emulator, deployed with `verify_jwt` false (it
+    has its own client-credentials and bearer auth);
+  - refuses to start on the production project;
+  - never emails anyone; numbers are `SBX-INV-####`;
+  - the connector labels its invoices "Xero (TEST sandbox)".
+  - Smoke check: 401 for missing or unknown tokens. The first call hit a
+    one-off "JWT issued at future" clock skew on the fresh worker, then
+    behaved correctly.
+
+**Connection status:**
+
+- No real Xero TEST / Demo Company connection or credential exists in
+  TEST. There are no OAuth tables, Vault secrets or Xero function
+  secrets.
+- No Xero connection row has been created yet.
+- Real-Xero proof is **blocked by credentials**. The live proof will use
+  the sandbox and be labelled "connector logic live-proven in TEST; real
+  Xero external call not yet proven".
+
+**Unchanged:**
+
+- ATT-025 stays Planned. No payment sync, Stripe, credit-note sync or
+  Finance UI.
+- F6 credit notes on Xero-issued invoices are unchanged. Future debt:
+  Xero credit-note integration.
+- Production was not touched.
