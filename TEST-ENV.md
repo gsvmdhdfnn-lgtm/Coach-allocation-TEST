@@ -17326,27 +17326,27 @@ Sequential calls succeed.
   payroll, two-way reconciliation and later Finance work.
 - **Production untouched.**
 
-## Finance Foundation — F10 (Stripe READ connector) — CHECKPOINT — TEST only — 2026-10-01
+## Finance Foundation — F10 (Stripe READ connector) — TEST only — 2026-10-01
 
-> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
+> **Connector logic live-proven in TEST; real Stripe external call not yet
+> proven.**
 >
-> - The `finance` bundle is **392,420 bytes**, sha256
->   `bf1c428f3dd2249925b4452c6f410638e74e3ed1371ef5df688a6e7177c29ad7`
->   (manifest sha256 `1b8b2305…f1d9309`). That is too large for this
->   session to deploy. The exact artifact is committed at
->   `supabase/deploy-artifacts/finance/index.js` and needs deployment
->   assistance, exactly as for F7–F9.
-> - **Deploy as `finance` v17:** `verify_jwt` true, one `index.js`, a
->   byte-for-byte copy of the committed artifact.
-> - **Stays as it is:** `needs-attention` v14. Its artifact `--check` is
->   still MATCH, because no file shared with Needs Attention changed.
-> - **Already deployed (by this session):** the TEST-only emulator
->   `stripe-sandbox` v1. It is `verify_jwt` false (it has its own key auth)
->   and byte-identical to `supabase/functions-test/stripe-sandbox/index.ts`
->   (13,353 bytes, sha256 `95580892…dd97e7727`).
-> - The live proof (A–V) runs after v17 is deployed. It will be labelled
->   **"connector logic live-proven in TEST; real Stripe external call not
->   yet proven"**.
+> - **Deployed:** `finance` **v17**, ACTIVE, `verify_jwt` true, one
+>   `index.js`. It is byte-identical to the committed artifact
+>   `supabase/deploy-artifacts/finance/index.js` (commit `10a1c98`):
+>   392,420 bytes, sha256
+>   `bf1c428f3dd2249925b4452c6f410638e74e3ed1371ef5df688a6e7177c29ad7`.
+>   This session re-verified it independently after deployment.
+> - **Not redeployed:** `needs-attention` v14. Its artifact `--check` is
+>   still MATCH.
+> - **TEST-only emulator:** `stripe-sandbox` v1, `verify_jwt` false (it
+>   has its own key auth). It is byte-identical to
+>   `supabase/functions-test/stripe-sandbox/index.ts` (13,353 bytes,
+>   sha256 `95580892…dd97e7727`).
+> - **What the live proof A–V shows:** the deployed connector working
+>   against the TEST emulator, which speaks Stripe's API shapes. It does
+>   **not** show a call to `api.stripe.com`. No real Stripe account, test
+>   or live, has been connected (FIN10.9 / FIN10.11).
 
 ### FIN10.1 Pre-implementation audit (2026-10-01)
 
@@ -17547,37 +17547,168 @@ Sequential calls succeed.
   - Full suite **81/81**.
   - F9 suite 75/75.
 
-### FIN10.9 Resting TEST state (checkpoint)
+### FIN10.9 Live TEST proof A–V (2026-10-01, against `finance` v17)
 
-- No Stripe connection; 0 Vault secrets.
-- Emulator tables empty: smoke account and requests removed.
-- No customer links.
-- Audit **218** (unchanged by F10 so far).
-- One Manage grant; `module_finance` ON; no locks; no probe schema.
-- `finance` v16 and `needs-attention` v14 still deployed.
+> **Label: connector logic live-proven in TEST; real Stripe external call
+> not yet proven.** Every Stripe call went to the TEST emulator
+> `stripe-sandbox`. That emulator speaks Stripe's list / expand / error /
+> pagination shapes. Nothing called `api.stripe.com`.
 
-### FIN10.10 Open items / future debt
+**Connecting the emulator (operator procedure, FIN10.3):**
+
+1. A `DO` block generated a random `rk_test_…` key inside the database.
+2. It stored only the key's sha256 on the emulator account
+   `acct_ZZTESTf10sandbox` ("ZZTEST F10 Stripe sandbox (emulator)",
+   livemode false).
+3. It called `finance_stripe_connect('ORG-TEST-001', 'test', 'sandbox',
+   key, manager, note)`.
+4. Result: the key is in Vault only, and the audit row
+   `finance_stripe.connected` records `keyKind: restricted` and
+   `endpoint: sandbox`, with no key material. The key never appeared in
+   SQL output, Git or Airtable.
+
+**Fixtures:** `fixtures.py acct_ZZTESTf10sandbox` loaded:
+
+- 4 customers;
+- 107 subscriptions (6 named + 101 cancelled fillers);
+- 3 invoices, 7 charges, 5 balance transactions and 3 refunds.
+
+**Harness:** a pg_net harness (`f2probe`, now dropped) using the TEST
+manager / coach / parent logins. Reads and writes were checked in separate
+SQL calls, and writes were sent one at a time (org write lock).
+
+| # | Proof | Result |
+|---|---|---|
+| A | Connection health | `GET stripe/status?check=1` → 200, `check.ok` true, 1 call, account `acct_ZZTESTf10sandbox` recorded, `apiVersion 2024-06-20`, label "Stripe (TEST sandbox - emulator, not real Stripe)", `readOnly` true. `last_success_at` was stamped; there is no secret column in the response or the row |
+| B | Active subscription | `sub_ZZTESTactive` → Active / renewing; latest collection 66.00 paid (`ch_ZZTESTok1`). `sub_ZZTESTnotax` → Active |
+| C | Cancelling / cancelled | `sub_ZZTESTcancelling` → Cancelling / `cancels_at_period_end`, `cancelAt` 2026-10-15, next collection none (`none_cancellation_scheduled`, `endsAt` 2026-10-15). `sub_ZZTESTcancelled` → Cancelled, `canceledAt` 2026-09-01 |
+| D | Next payment date | Active: 2026-10-15 (`period_end_renewal`). Trial: 2026-10-08 (`trial_end_first_charge`). Past due: 2026-10-03 (`stripe_retry_of_failed_invoice`, gross 87.00 from the open invoice). All are `kind: expected`, `actualRevenue: false`. Detail route for `sub_ZZTESTactive`: Stripe's upcoming invoice gives 66.00, VAT 11.00, net revenue 55.00 (`grossSource: stripe_upcoming_invoice`) |
+| E | Successful payment | `GET stripe/payments` (default window 2026-09-02..2026-10-01, Europe/London) returned 6 charges: 4 receipts (`receipt: true`, source `stripe`), 1 failed, 1 pending (`receipt: false`). Summary: receipts 4, gross 191.00, fees 3.67, net 187.33, refunded from these receipts 45.00. `ch_ZZTESTold` (2026-07-01) is outside the window and is not shown |
+| F | Actual fee / net | Every receipt has `feeSource: stripe_balance_transaction`: ok1 fee 1.19 / net 64.81, ok2 1.03 / 53.97, part 0.80 / 39.20, full 0.65 / 29.35. With `from=2026-07-01`, `ch_ZZTESTold` (no balance transaction) reads fee null, net null, `feeSource: not_yet_available_in_stripe`, and is counted in `receiptsWithoutFeeYet: 1`. Net total 94.16 sums known nets only, so nothing is guessed |
+| G | Failed payment | `ch_ZZTESTfail1` 87.00: outcome failed, category `insufficient_funds` (code `card_declined`), `feeSource: not_applicable`, `receipt: false`. Its subscription → Payment issue / `payment_failed_stripe_retrying`, `nextRetryAt` 2026-10-03 |
+| H | Refund read | `GET stripe/refunds`: 3 refunds — `re_ZZTESTfull` 30.00 succeeded (cash impact −30.00 from its balance transaction), `re_ZZTESTpart` 15.00 succeeded (no balance transaction yet, so cash impact null, not guessed), `re_ZZTESTpend` 5.00 pending. Summary: refunded succeeded 45.00, pending 1. Every refund has `hubAction: none`, and `readOnly` says the Hub never initiates a refund or turns one into family credit |
+| I | No write / refund / cancel | `POST stripe/subscriptions/{id}/cancel` → 404; `POST stripe/refunds` → 405; `DELETE stripe/subscriptions/{id}` → 405; `POST stripe/subscriptions` → 405; `POST stripe/payments/{ch}/refund` → 404; `POST stripe/subscriptions/{id}` → 405. Emulator log: **every one of 57 Stripe requests was GET**, all carrying `Stripe-Version 2024-06-20` |
+| J | Multiple subscriptions per customer | `?customer=cus_ZZTESTa` → 3 subscriptions (active, trialling, payment issue); `cus_ZZTESTb` → 3 (active, cancelling, cancelled) |
+| K | Multi-child mapping does not guess | `cus_ZZTESTa` was linked to `PARENT-TEST-001` (Priya, 3 non-ended players): 201 `changed: true`, audited `finance_stripe.customer_linked`. A repeat → 200 `changed: false`, no audit. Its subscriptions then read customer `linked` (`linkedPlayerCount` 3), player `unresolved` ("3 linked players … not guessed"), service `unresolved` (price / product ids exposed only). Refusals: (1) same customer to `PARENT-TEST-002` → 409 linked elsewhere; (2) duplicate Parent ID `PARENT-ED3BDF220DC2` → 409 `parent_id_ambiguous`; (3) unknown parent → 404; (4) deleted customer `cus_ZZTESTdel` → 404; (5) missing reason → 400 |
+| L | Unmapped stays explicit | `cus_ZZTESTb` has the Hub parent's exact name and email, but stays `unlinked`: "The Hub never matches by name or email". All its payments read `customerMapping: unlinked`, `parent: null` |
+| M | Pagination | The full list read 107 subscriptions over `pagesRead: 2` (100 + 7). A page-2 fault gives 502 `stripe_pagination_failed` ("nothing partial is returned"). A first-page 429 gives 503 `stripe_rate_limited` |
+| N | View access | With a View grant only, `GET` status / subscriptions / detail / payments / refunds → 200 (`access: view`). The parent link and settings → 403 "This action needs Finance Manage access" |
+| O | Manage access | Manage linked (K) and set, then cleared, a fee estimate. 150 bp + 20p gave an expected fee of 1.03 on 55.00 (`feeState: estimated`, basis `organisation_configured_estimate`), while the historical receipt kept its actual fee 1.19. Both changes audited `finance_stripe.settings_updated`; revision 2, estimate now null |
+| P | No access | With no grant: all routes → 403 `finance_access_denied`. Coach and parent logins → 403 "Management access required" |
+| Q | Module off | `module_finance` false → 403 `finance_module_disabled` on reads and writes. Switched back ON |
+| R | Tenant rejection | `organisationId` in a body, or `organisationId` / `org` in a query → 400 "The organisation is taken from your profile and cannot be chosen in the request" |
+| S | No audit on reads | 15 more reads (3 × subscriptions, payments, refunds, status?check=1, detail): all 200, three health checks `ok`. Audit count 222 → 222. Over the whole proof, only the 4 deliberate writes audited (connect, link, 2 settings), plus the baseline disconnect |
+| T | `finance` v17 / F9 unchanged | `GET access` (finance-access-v1, manage), `settings`, `xero/status` (still disconnected, F9 resting state), `receivables` (9 invoices, outstanding 273.00, cash received 212.00), `receipts` (2 manual receipts, 212.00 — Stripe receipts are **not** merged into F7 receipts), `clients` → all 200 |
+| U | Needs Attention unchanged | `needs-attention` v14 (not redeployed, artifact MATCH). `GET cases` → Clear, 0 cases. ATT-025 still Planned |
+| V | Production untouched | Production `bkkukymqaxawnudoxdjs` Edge Functions are unchanged (no `finance` / `stripe-*`; last update 2026-09-26). No production Airtable, Stripe, Xero or Sheets call was made. No production or live key was used |
+
+**Additional live guards:**
+
+- **Live-mode refusal:** a `livemode: true` object injected into a
+  subscription retrieve → 409 `stripe_live_mode_refused` ("nothing was
+  shown"). The connection's `lastError` recorded it.
+- **Timeout:** an account call held for 20 s → after the 15 s provider
+  timeout, the health check returned `ok: false`, `stripe_unavailable`. A
+  later successful check stamped `last_success_at`. The last error is kept
+  as history, with its own timestamp.
+
+**VAT (step 8):**
+
+- `sub_ZZTESTactive` / `ch_ZZTESTok1` → `recorded_by_stripe` (tax rates):
+  VAT 11.00, net revenue 55.00.
+- `ch_ZZTESTok2` 55.00 and the failed 87.00 → `not_recorded_in_stripe`:
+  VAT null, net revenue null ("gross is not assumed to be revenue").
+- Charges with no invoice → `no_invoice`.
+- No Hub service VAT rule was used, because no subscription → service
+  mapping exists.
+
+**Observation for review (not changed in F10):**
+
+- On the **list** route, an expected next collection's gross is the
+  **price-list amount** (`grossSource: price_list`, with the plan's
+  `taxBehavior` shown). For an exclusive-tax price, that is before Stripe
+  tax: `sub_ZZTESTactive` shows 55.00 there, while Stripe's upcoming
+  invoice (detail route) shows 66.00.
+- A configured fee estimate on the list route is therefore computed on
+  the pre-tax figure.
+- It is labelled expected, `actualRevenue: false`, and VAT reads
+  `see_upcoming_invoice`, so nothing is claimed as revenue. A later UI /
+  Cash Flow slice should either use the detail route figure or label the
+  list amount "price before tax".
+
+### FIN10.10 Resting TEST state (after the live proof)
+
+- **Connection:** `finance_stripe_connections` `ORG-TEST-001` is
+  **disconnected** (endpoint sandbox, mode test).
+  - `finance_stripe_disconnect` deleted the Vault secret and audited
+    `finance_stripe.disconnected`.
+  - Vault secrets: **0**.
+  - Kept: account id / name, health history, and fee estimate **null**
+    (config revision 2).
+- **No production Stripe key and no live key exist anywhere.** No Stripe
+  refund, cancellation or any other write was made; the emulator accepts
+  GET only and logged GET only.
+- **Emulator (`stripe-sandbox` v1, TEST only):**
+  - Account `acct_ZZTESTf10sandbox` is kept with its key hash **revoked**
+    (`key_sha256 = 'revoked-after-f10-proof'`), so no key can call it.
+  - Faults: 0.
+  - Kept as labelled evidence: the ZZTEST fixtures (customer 4,
+    subscription 107, invoice 3, charge 7, refund 3, balance_transaction
+    5; all livemode false, `@test.invalid`) and 57 request-log rows
+    (method / path / status / note, no credentials).
+- **Customer link kept** (audited, labelled ZZTEST): `cus_ZZTESTa` →
+  `PARENT-TEST-001` (`recUleTQgqdkpBr8F`), `linked_by_manager`. It points
+  at a ZZTEST emulator customer only.
+- **To reconnect** (two operator steps):
+  1. Set a new key's sha256 on the emulator account.
+  2. Call `finance_stripe_connect` (FIN10.3).
+- **Baseline checks:**
+  - audit **223**: 218 + connect, link, 2 settings, disconnect;
+  - 0 write locks;
+  - exactly one active Finance grant: Manage, manager,
+    `0caf8333-ccbb-4081-9fa9-7401a511fd6f`, "restored after F10 proof
+    N/P". The F9 grant `c0aab0f0…` and the temporary View grant were
+    revoked with notes;
+  - `module_finance` ON;
+  - `f2probe` dropped;
+  - Needs Attention Clear;
+  - ATT-025 Planned.
+- **Deployed functions:** `finance` v17, `needs-attention` v14,
+  `stripe-sandbox` v1, `xero-sandbox` v1.
+- **Tests after the proof:**
+  - `tests/support/finance-stripe.test.ts` 64/64;
+  - full suite **81/81** test files;
+  - `build-finance-bundle --check` and `build-needs-attention-bundle
+    --check` MATCH.
+
+### FIN10.11 Open items / future debt (documented only — not built)
 
 - **Real Stripe proof** needs a Stripe test-mode restricted key (read
-  only) for a TEST account, connected through the operator SQL.
-- **Josh's real Stripe account:** its customer / subscription metadata
-  conventions must be audited before any mapping beyond explicit links.
-- **Missing stable mappings:**
+  only) for a TEST account, connected through the operator SQL with
+  endpoint `stripe`. This is the one step between "connector logic
+  live-proven in TEST" and "real Stripe external call proven".
+- **Josh's real Stripe metadata conventions are unknown.** They must be
+  audited read-only before any mapping beyond explicit links.
+- **Undecided mappings:**
   - subscription → player (child);
-  - subscription → Finance Service / Session;
-  - a metadata convention, if one exists.
+  - subscription → Finance Service / Session.
 
-  Each needs a product decision. Until then, VAT for Stripe payments
-  without Stripe-recorded tax stays unknown.
-- **Data and API debt:**
-  - the TEST duplicate Parent ID;
-  - Parents & Guardians has no Organisation link (multi-organisation
-    debt);
-  - the pinned API version `2024-06-20` needs a deliberate upgrade later.
-- **Webhooks:** not built. On-demand reads are correct without them.
-  Scheduled / webhook sync is later work.
+  Each needs a product decision. Until then, VAT on Stripe payments
+  without Stripe-recorded tax stays explicitly unknown.
+- **Data debt:**
+  - the TEST duplicate Parent ID `PARENT-ED3BDF220DC2` (two records);
+  - parents currently have no Organisation link (multi-organisation
+    debt).
+- **Stripe API version:** pinned to `2024-06-20`. Upgrading to basil or
+  later is a deliberate later change; the parsers already tolerate basil
+  shapes.
+- **Webhooks / scheduled sync:** later. On-demand live reads are correct
+  without them.
+- **List-route expected amount** before exclusive tax: see the
+  observation in FIN10.9.
 - **Boundaries:**
   - F11 (parent credit / refund bridge), F17 (Cash Flow), F18 and F21
     (Stripe refund execution) are not started;
+  - no subscription write action exists;
   - ATT-025 stays Planned;
   - production is untouched.
