@@ -16718,3 +16718,295 @@ was moved to 30 Sept, making it genuinely 1 day overdue.
   The `finance/invoice-receivable` route is a placeholder for the later
   Finance UI.
 - **ATT-034** waits for the product decision in FIN8a.3.
+
+## Finance Foundation — F8b (Needs Attention: ATT-048 invoice draft blocked) — TEST only — 2026-10-01
+
+F8b adds **ATT-048 `invoice_draft_blocked`**: one Management Needs
+Attention case per **open** Finance invoice draft (F5, status Draft, never
+issued) whose F5 review has one or more **blockers**, meaning anything
+that stops Management marking the draft Ready for issue. It is derived on
+every read from F5's own review. Nothing is stored, nothing is flagged on
+the draft, there are no Finance writes, and F5 behaviour is unchanged.
+
+- **Built:** evaluator `needs-attention/finance-drafts.ts`, registry entry,
+  bundle allowlist for 12 pure Finance modules, tests, and catalogue row
+  ATT-048 → Evaluation Status **Active** (TEST).
+- **Not built / unchanged:** ATT-034 stays **Planned** (FIN8a.3);
+  ATT-024 / 025 / 026 stay Planned. Finance was **not** redeployed and is
+  still v15. No Finance UI. No reminder emails. No Xero work (F9 not
+  started).
+- **Scope:** TEST Airtable `appQktredAuGa1X7e`, TEST Supabase
+  `dkqubldmfyeuudecxmvh`, org `ORG-TEST-001` only. Production (Airtable,
+  Supabase, Finance, Needs Attention settings, Xero, Stripe, Sheets,
+  legacy Financials) was not touched. No email or reminder was sent. No
+  real money was recorded.
+
+### FIN8b.1 Source of truth — F5's own review, not a second model
+
+- **The blocker / warning decision is F5's `reviewDraft()`** itself
+  (`finance/finance-invoicing.ts`). NA imports it and calls it. There is no
+  NA copy of any blocker rule.
+- **Every input is built the way F5's `loadClientWork()` builds it:**
+  - the F3 world (`buildWorld`) plus a lifecycle covering today for every
+    service;
+  - Finance Settings (exactly one valid row);
+  - the client's Sessions, matched by trimmed Finance Service ID, with
+    refs whose Session ID matches `^[A-Za-z0-9_-]{1,64}$`;
+  - occurrences in [from, to];
+  - F4 overrides, then F4's `resolveOccurrenceBilling()` per occurrence;
+  - claims: Included draft lines plus issued invoice lines;
+  - the replacement-draft correction scope (`applyCorrectionScope`), then
+    `classifyWork()`.
+- **How the code is shared:** Finance's pure modules are imported from
+  `../finance/*.ts` at **build time**. `scripts/build-needs-attention-bundle.mjs`
+  bundles them into the single deployed `index.js`, so there is **no
+  runtime import of another Edge Function**.
+  - The build allows exactly 12 files: finance-billing-mapping,
+    finance-billing, finance-commercial-mapping, finance-commercial,
+    finance-effective-dating, finance-invoicing-mapping, finance-invoicing,
+    finance-issue-mapping, finance-issue, finance-lifecycle,
+    finance-money, finance-settings.
+  - It records their hashes in the manifest. No orchestrator, repository
+    or `index.ts` file may be included (bundle test B5).
+- **Two helpers are copied verbatim with drift tests**, because they live
+  in Finance orchestrator files that also hold fetch code:
+  `serviceFinder` (from finance-billing-orchestrator) and
+  `lifecycleHistory` (from finance-commercial-orchestrator).
+- **Row checks match F5:** Finance repositories re-check every row in code
+  (their formulas only narrow), and the evaluator applies the same in-code
+  checks. A malformed Finance row of this organisation **fails the whole
+  pass** (`complete:false` + `evaluator_error`), as in F8a.
+- **Consequence:** a change to any of the 12 shared Finance modules now
+  needs a `needs-attention` rebuild and redeploy. `--check` and bundle
+  test B1 fail until the committed artifact matches.
+
+### FIN8b.2 Blocker matrix (F5 `reviewDraft`, unchanged)
+
+| Code | Blocks Ready? | NA label | Live-proven here |
+|---|---|---|---|
+| `no_included_lines` | Blocker | Nothing to invoice on this draft | unit (BL) |
+| `client_not_found` | Blocker | Client record is missing | unit (BL) |
+| `manual_billing_client` | Blocker (F5 GR7) | Client is now billed manually | unit (BL) |
+| `billing_email_missing` | Blocker | Missing billing information | **live D2** |
+| `po_missing` | Blocker | PO required | **live B–E** |
+| `payment_terms_missing` | Blocker | Payment terms missing | unit (BL) |
+| `source_changed` | Blocker | Source work has changed | **live I, K** |
+| `duplicate_claim` | Blocker | Work is already on another invoice | unit (BL) |
+| `unresolved_configuration` | Blocker | Billing setup needs fixing | unit (ED4) |
+| `totals_do_not_reconcile` | Blocker | Invoice totals need review | unit (BL) |
+| `missing_commercial_terms` | Blocker (F5c) | Commercial terms need attention | **live B–G** |
+| client_inactive, po_requirement_changed, po_override_recorded, payment_terms_overridden, excluded_work, billing_overrides, zero_value_lines, missing_terms_exception_approved, unconfirmed_work, new_eligible_work | **Warnings — never a case** | — | live H/J (`missing_terms_exception_approved` only → no case) |
+
+An unknown future blocker code is still a blocker, labelled "Needs
+review", so a new F5 blocker can never be silently dropped.
+
+### FIN8b.3 Which drafts are evaluated
+
+| Draft | Case? |
+|---|---|
+| Status **Draft**, never issued, ≥1 blocker | **Yes — one case** |
+| Status Draft, warnings only / clean | No |
+| **Ready for issue** (even if F5 now reports a blocker) | No (live K) |
+| Issued / Awaiting external issue (Ready + issued invoice id) | No (the 11 TEST issued drafts never surfaced) |
+| Replacement draft (open) | Yes, reviewed inside its correction scope (unit ED7/ED7b) |
+
+### FIN8b.4 Case identity, payload and destination
+
+- **Case Key:** `invoice_draft_blocked|draft:<FID>`, so there is exactly
+  one case per draft however many blockers it has (live D, D2).
+- **Severity and rule:** Normal, base reason only, no escalation. ATT-048,
+  module `module_finance`, category Finance & Billing.
+- **Title:** "Invoice draft for <client> has N issue(s) to resolve".
+- **Detail:** "<from> to <to>: <labels>", in F5 blocker order.
+- **Action:** "Review Invoice Draft".
+- **Destination:** area Finance, route `finance/invoice-draft`, params
+  `{draftId}`.
+- **targetIds:** `{draftId, clientId}`.
+- **Context:** draftId, clientId, clientName, periodFrom, periodTo,
+  blockerCount, blockerSummary, blockerCodes (comma-separated, F5 order),
+  warningCount, includedLines, gross, replacement, revision, sourceApi
+  `GET /finance/invoice-drafts/{id}`.
+
+### FIN8b.5 Access, Settings, snooze, auto-resolution
+
+- **Access:** the F8a capability filter applies unchanged.
+  - **No Finance access:** nothing is shown (no case, count or suppressed
+    case), no Finance table is read, the lookup returns `exists:false`,
+    and snooze returns 404.
+  - **View:** sees the case with `exceptionAllowed:false`; create returns
+    403 `finance_manage_required`.
+  - **Manage:** can snooze.
+- **Settings:** Default Enabled = No. An organisation enables the rule
+  with a Settings row; with no row it is skipped as `disabled` and no
+  Finance table is read.
+- **Snooze:** an exact-case exception that changes nothing in Finance. A
+  duplicate returns 409 `exception_exists`. Revoke returns
+  `visibleAgain:true` / `problem_still_present` while the blocker remains.
+- **Auto-resolution:** the case disappears on the next read once F5
+  reports 0 blockers or the draft leaves Draft status (Ready / issued).
+  The case returns if a blocker comes back while the draft is still open.
+
+### FIN8b.6 Reads and performance
+
+- One bounded pass reads **11 tables**: Finance Clients, Client Services,
+  Commercial Terms, Service Lifecycle, Settings, Invoice Drafts, Invoice
+  Draft Lines, Invoice Lines, Occurrence Billing Overrides, plus Sessions
+  and Session Occurrences (shared with the staffing rules).
+- **Each table is listed once per request**, memoised per sources object.
+  There is no per-draft read, no Finance API call and no write.
+- **Live table counts:**
+  - ATT-048 on: 28 tables;
+  - ATT-047 + ATT-048 on: 34 tables;
+  - rule off or no access: 19 tables.
+
+  `max list = 1` throughout.
+
+### FIN8b.7 Code, tests, deploy
+
+- **Code:**
+  - `needs-attention/finance-drafts.ts` (new);
+  - `registry.ts` (+ `INVOICE_DRAFT_BLOCKED_EVALUATOR`);
+  - `scripts/build-needs-attention-bundle.mjs` (`SHARED_FINANCE_FILES`
+    allowlist + manifest + `--check`).
+- **Mirror:** `tests/support/needs-attention-finance-drafts.ts`, with
+  `../finance/` → `./` (the Finance test mirrors).
+- **Tests:**
+  - `needs-attention-finance-drafts.test.ts`: **99/99**. Covers blocker
+    matrix, state filter, live-like flows, identity, access/Settings/snooze,
+    performance, data quality and edge cases. After each step it checks
+    **parity against Finance's real `readDraft`**, through the real Finance
+    orchestrators.
+  - Updated suites:
+    - catalogue snapshot (16 Active / 24 Planned);
+    - needs-attention 111/111;
+    - foundation 78/78;
+    - bundle test B5 (26 sources, 12 Finance) and B8.
+  - Mutation: 15/18 killed. The 3 survivors are equivalent (documented in
+    the checkpoint).
+- **Artifact and deploy:** `supabase/deploy-artifacts/needs-attention/index.js`
+  is 166,807 bytes, sha256 `0d5df081…9939`. That was too large for the
+  MCP deploy, so it was checkpointed at commit `bfa16fa` and deployed by
+  David as **v14** (ACTIVE, `verify_jwt` true, single `index.js`). It was
+  independently re-verified byte-for-byte against the committed artifact
+  before the proof. `finance` is still **v15**, not redeployed.
+
+### FIN8b.8 Live TEST proof (2026-10-01, `needs-attention` v14, real HTTP via `pg_net`)
+
+**Harness:** real password logins for the TEST manager and TEST coach,
+through a temporary `f2probe` schema that was dropped afterwards. The
+organisation day was 2026-10-01 (Europe/London).
+
+**ATT-048 enablement:** switched Planned → **Active** in the TEST
+catalogue (`recqJL02MwyCcMogr`). It was enabled for the proof by a
+temporary Settings row, `NAS-F8B-PROBE-ATT-048` (`recJxYqXJyegDYWpI`).
+ATT-047 was enabled for Q only, by `NAS-F8B-PROBE-ATT-047`
+(`recyg8KC6EHjLHxoS`).
+
+**Fixtures (ZZTEST F8B).** Finance records were created only through
+Finance's own audited API. Schedule records were created in TEST
+Airtable as **Inactive** sessions, following the F5 `TEST-F5-STANNES`
+precedent.
+
+- **Clients:**
+  - `FCL-BA826CFF17FB` "ZZTEST F8B Client A": PO required, 30-day terms;
+  - `FCL-F182F1034BCC` "ZZTEST F8B Client B": 14-day terms.
+- **Services:**
+  - `FSV-54BF47E7E4D7` A PPA: £50 + VAT from 2026-09-01;
+  - `FSV-FD34CFE2FD23` A BRK: terms only from **2026-09-20**;
+  - `FSV-5E3C992B1A51` B PPA: £40 + VAT from 2026-09-01.
+- **Sessions:**
+  - `ZZTEST-F8B-APPA` (`reca5rDG411Wqv7tY`);
+  - `ZZTEST-F8B-ABRK` (`reczw1HOLQHdb9sal`);
+  - `ZZTEST-F8B-BPPA` (`recBz3dA50XS5P78H`).
+- **Occurrences:** A PPA 09-08 and 09-15; A BRK 09-10; B PPA 09-09. Each
+  was confirmed `went_as_planned` through `session-occurrences`.
+- **Drafts (Sept 2026):**
+  - **DA `FID-27F09611643D`**: F5 blockers `po_missing` +
+    `missing_commercial_terms` (09-10 has no terms on its date);
+  - **DB `FID-A40A17B5134F`**: clean.
+
+**Parity:** after every step NA's `context.blockerCodes` was compared with
+Finance's own `GET /finance/invoice-drafts/{id}` → `review.blockers`. They
+were equal at every step, in the same order.
+
+| # | Check | Result |
+|---|---|---|
+| A | OFF → no case | ATT-048 Active, no Settings row: skipped `disabled`, Clear, **no Finance table read**, access `not_checked` |
+| B | Enable → case | Settings row on: one case `invoice_draft_blocked\|draft:FID-27F09611643D`; DB (clean) not surfaced |
+| C | Payload | Normal, ATT-048, "Invoice draft for ZZTEST F8B Client A has 2 issues to resolve", detail "2026-09-01 to 2026-09-30: PO required; Commercial terms need attention", action "Review Invoice Draft", destination Finance `finance/invoice-draft` {draftId}, targetIds {draftId, clientId}, context gross 120.00, includedLines 2, revision 1, sourceApi `GET /finance/invoice-drafts/FID-27F09611643D` |
+| D | Multiple blockers → one case | 2 blockers → 1 case (blockerCount 2). D2: Client B billing email removed → a **second** case `…FID-A40A17B5134F` (`billing_email_missing`, Finance agrees); email restored |
+| E | Fix one → case stays | PO added (Finance rev 2): case stays, 1 issue, `missing_commercial_terms` |
+| G | Missing historical terms | The remaining blocker is F5c's missing terms for 2026-09-10 (`reczw1HOLQHdb9sal:2026-09-10`) |
+| H / F | Approved omission → final fix → gone | Finance missing-terms exception approved (rev 3): F5 0 blockers, warning `missing_terms_exception_approved` → **Clear** (warnings never raise a case) |
+| I | Source changed | F4 not-billable override `FOB-45A255A89B24` on included 09-08: case returns with `source_changed` |
+| J | Finance refresh clears | Refresh (rev 4, 1 line, £60.00): 0 blockers → **Clear** |
+| K | Ready / issued not surfaced | DA marked Ready (rev 5); F4 override `FOB-9E079B22A2C7` on its remaining line → Finance review shows `source_changed` on the **Ready** draft, NA shows **no case**; override removed → Finance clean again. The 11 issued / awaiting TEST drafts never surfaced |
+| L | View sees, cannot snooze | Probe View grant: case visible, `exceptionAllowed:false`; create → 403 `finance_manage_required` |
+| M | No access | Grant revoked: Clear, total 0, suppressed 0, skipped `finance_access_required`, **19 tables, none Finance**, no FID / FCL / client name / amount anywhere in the payload; caseKey lookup `exists:false`; create → 404 `case_not_found` |
+| N | Manage snooze | Create → 201 `NAEX-20261001071047-E8389CE0` (1 write): Clear, suppressed 1. Duplicate → 409 `exception_exists`. Revoke → 200, `visibleAgain:true`, `problem_still_present` |
+| O | Snooze leaves Finance alone | Under snooze, Finance draft unchanged (rev 2, same blocker, same totals); audit unchanged |
+| P | Read counts | Every table listed exactly once in every read: 28 tables (ATT-048 on), 34 (ATT-047 + 048), 19 (off / no access); `complete:true`, 0 config issues |
+| Q | ATT-047 unchanged | ATT-047 enabled alongside: evaluated, 0 candidates (no TEST invoice is overdue — the F8a resting state); its 6 Finance tables listed once; F8a suites pass unchanged |
+| R | Non-Finance unchanged | The 14 non-Finance rules evaluated for every caller; 0 non-Finance cases throughout (as before); `view=summary` Clear; coach → 403 |
+| S | Catalogue | 40 rules: **16 Active, 24 Planned, 0 Retired**; ATT-048 Active (Default Enabled No, module_finance); ATT-034 and ATT-024/025/026 Planned |
+| T | No Finance audit from evaluation | Audit 165 → **184**: exactly the 19 audited fixture / proof writes (2 client.created, 2 client.updated, 3 client_service.created, 3 commercial_terms.created, 2 invoice_draft.created, po_updated, missing_terms_exception_approved, refreshed, marked_ready, 2 billing_override.created, 1 billing_override.removed). All ~16 Needs Attention reads, 6 exception calls, 2 Settings rows and 3 grant changes added **0** |
+| U | Deployment | `needs-attention` v14 = committed artifact (sha `0d5df081…9939`); `finance` v15 unchanged |
+| V | Production | Not touched |
+
+**Harness notes:**
+- Finance's org-level write lock correctly refused one deliberately
+  concurrent service create with 409. It was retried sequentially.
+- One early probe request returned a gateway 401 and was retried.
+- Neither is a product finding.
+
+### FIN8b.9 Resting TEST state
+
+- **Needs Attention:**
+  - Settings: **0 rows** (both probe rows deleted).
+  - Exceptions: **0 rows** (the revoked probe exception was deleted by
+    exact id, as in F8a).
+  - ATT-048: **Active, Default Enabled No**, so `/cases` is Clear and
+    ATT-048 is skipped `disabled`.
+- **Finance access:**
+  - One active grant: **Manage `c932ee9f-d35e-46a6-ae81-71969248616e`**
+    for the TEST manager.
+  - The F8a resting grant `ca3d8365…` and the View probe `3ba82004…` are
+    revoked, following the established restore pattern.
+- **Locks:** finance write / settings, NA exception and occurrence
+  outcome locks are all **0**. `f2probe` was dropped.
+- **Retained ZZTEST F8B fixtures (deliberate):** Finance has no delete
+  route, and deleting would orphan audit history.
+  - **DA `FID-27F09611643D`:** Ready for issue, rev 5, PO
+    `ZZTEST-F8B-PO-1`, approved missing-terms exception for 09-10, 1 line
+    £60.00, review clean. A Ready draft, so never surfaced.
+  - **DB `FID-A40A17B5134F`:** Draft, rev 1, clean, so not surfaced.
+  - Override `FOB-45A255A89B24`: not-billable on
+    `reca5rDG411Wqv7tY:2026-09-08`, active, keeping DA consistent.
+  - Override `FOB-9E079B22A2C7`: removed.
+  - The 2 clients, 3 services and 3 terms above.
+  - The 3 **Inactive** sessions and their 4 confirmed occurrences. No
+    coaches or staffing attached, so they cannot raise staffing cases.
+- **Audit:** 184 Finance audit events.
+- **Unchanged:** the F1–F8a fixtures. The F8a overdue-proof invoice
+  `FIV-BDF2992D20D3` is still due 2026-11-20.
+
+### FIN8b.10 Future debt / notes
+
+- **No draft discard route.** A draft whose client switches to Manual
+  billing stays blocked (`manual_billing_client`, F5 GR7) until the
+  client is switched back. ATT-048 will keep showing it, which is
+  correct, because F5 also refuses Ready.
+- **Ready drafts with a fresh blocker.** F5 can report a blocker on a
+  Ready draft (live K, e.g. `source_changed`). ATT-048 deliberately
+  ignores Ready drafts, as the brief specifies (open drafts only).
+  F6 issue refuses a draft with blockers. Surfacing this state would be a
+  separate, later rule decision.
+- **Rebuild coupling.** Any change to the 12 shared Finance modules needs
+  a `needs-attention` rebuild and redeploy (FIN8b.1).
+
+### FIN8b.11 Boundaries (not started)
+
+- ATT-034 is still **Planned**.
+- **F9 (Xero) not started.** No later Finance work was started.
+- No Finance UI and no reminder emails.
+- Production untouched.
