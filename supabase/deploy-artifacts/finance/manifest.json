@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "f0c069de8d601b652c948c6a5f86e90d51ed78af0ed8e0219dd18f1fbc61f6dc",
-  "artifactBytes": 544522,
+  "artifactSha256": "8ae50aa66647f4044300d139e46901cd75ee641822567bcfbf4d4b72f1aec059",
+  "artifactBytes": 544861,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "d8c1ed54305cb2b196fbb3fb3748b8669892b529c7e1d76babc6ee8b438ff562",
+  "sourceSha256": "7f153c6da33519b2054113099192ba1a760fb009a25446c96d45455e2eca1b41",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -179,7 +179,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-suppliers-orchestrator.ts",
-      "sha256": "34b4b30631efaa43506f0136af767d2fc4772ab36fb06c6ee5d8eb767f3783e7"
+      "sha256": "61bf5bd2a01be45b6a0cc16ec794621692dee947dc1e1c82ad382b81b3720233"
     },
     {
       "path": "supabase/functions-test/finance/finance-suppliers-repository.ts",

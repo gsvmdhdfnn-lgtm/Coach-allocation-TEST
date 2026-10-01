@@ -539,10 +539,10 @@ async function main() {
     const v1Alloc = JSON.stringify(T_("finance_supplier_allocations").filter((x) => x.agreement_id === V1));
     const i1Row = JSON.stringify(dbInst(I1));
     const before = snapshot();
-    const past = await agreementVersion(V1, { name: "x", costType: "one_off", classification: "general", effectiveFrom: "2026-10-10", amount: "1.00", firstDueDate: "2026-10-20", reason: "x" });
+    const past = await agreementVersion(V1, { name: "x", costType: "one_off", classification: "general", effectiveFrom: "2026-10-05", amount: "1.00", firstDueDate: "2026-10-20", reason: "x" });
     const early = await agreementVersion(V1, { name: "x", costType: "one_off", classification: "general", effectiveFrom: "2026-09-01", amount: "1.00", firstDueDate: "2026-10-20", reason: "x" });
     const noReason = await agreementVersion(V1, { name: "x", costType: "one_off", classification: "general", effectiveFrom: "2026-11-19", amount: "1.00", firstDueDate: "2026-11-20" });
-    ck("VP8a. A change is explicit: a version needs a reason (400), must start after the old one (409 version_must_start_later) and today or later (409 version_cannot_start_in_past)", noReason.httpStatus === 400 && early.code === "version_must_start_later" && past.code === "version_cannot_start_in_past" && snapshot() === before);
+    ck("VP8a. A change is explicit: a version needs a reason (400), must start after the old one (409 version_must_start_later), and may not re-attribute a session that already happened (from 5 Oct would supersede V1's 8 Oct share -> 409 profitability_history_conflict, dates listed)", noReason.httpStatus === 400 && early.code === "version_must_start_later" && past.code === "profitability_history_conflict" && past.details.occurrenceDates.join() === "2026-10-08" && snapshot() === before);
     const a4 = world.audit.length;
     const v2 = await agreementVersion(V1, { name: "ZZTEST Hall hire from 19 Nov (new rate)", costType: "custom_dates", classification: "direct", effectiveFrom: "2026-11-19", effectiveUntil: "2026-12-31", instalments: [{ dueDate: "2026-11-25", amount: "600.00" }], sessionIds: ["ZZ-VENUE-A"], reason: "Venue changed the rate from 19 Nov", sourceDocumentRef: "ZZTEST hall contract v2.pdf" });
     const V2 = v2.body?.agreement?.agreementId as string;
@@ -792,6 +792,30 @@ async function main() {
     const pays = T_("finance_supplier_payments").length;
     const payEvents = f13.filter((e) => e.event_type === EVENTS.paid || e.event_type === EVENTS.partiallyPaid).length;
     ck("AU35c. Exact: one instalment.created per stored instalment (incl. split children) and one paid / partially_paid per stored payment", created === inst && payEvents === pays, `${created}/${inst} ${payEvents}/${pays}`);
+  }
+
+  // ===== BD. Backdated agreements / versions (decision 5: historical effective dates allowed, history never rewritten) =====
+  {
+    const hs = await supplierNew({ name: "ZZTEST Historic Landlord", type: "other" });
+    const HS = hs.body.supplier.supplierId as string;
+    const h1 = await agreementNew({ supplierId: HS, name: "ZZTEST office rent (entered at onboarding)", costType: "fixed", frequency: "monthly", classification: "general", effectiveFrom: "2026-04-01", amount: "400.00", firstDueDate: "2026-04-30", instalmentCount: 6, sourceDocumentRef: "ZZTEST lease 2026.pdf" });
+    const H = h1.body.schedule.map((i: any) => i.instalmentId) as string[];
+    ck("BD1. An existing real agreement can be entered with a historical effective-from (1 Apr): 6 x 400.00 on the 30th from 30 Apr, already-past dues shown overdue, status active", h1.httpStatus === 201 && h1.body.agreement.status === "active" && h1.body.schedule.map((i: any) => i.dueDate).join() === "2026-04-30,2026-05-30,2026-06-30,2026-07-30,2026-08-30,2026-09-30" && h1.body.schedule.every((i: any) => i.overdue === true), JSON.stringify(h1.body?.schedule?.map((i: any) => [i.dueDate, i.overdue]) ?? h1));
+    const p1 = await pay(H[0], "400.00", "2026-05-01", { reference: "SO April" });
+    const p2 = await pay(H[3], "400.00", "2026-08-01", { reference: "SO July" });
+    ck("BD1b. Past payments can be recorded with their real (past) paid dates", p1.httpStatus === 201 && p2.httpStatus === 201 && p1.body.payment.paidDate === "2026-05-01" && p1.body.instalment.state === "paid");
+    const rowsBefore = JSON.stringify([dbInst(H[0]), dbInst(H[3])]);
+    const b0 = snapshot();
+    const paidConflict = await agreementVersion(h1.body.agreement.agreementId, { name: "ZZTEST office rent (new rate)", costType: "fixed", frequency: "monthly", classification: "general", effectiveFrom: "2026-07-01", amount: "450.00", firstDueDate: "2026-07-31", instalmentCount: 3, reason: "Rent review backdated to 1 Jul" });
+    ck("BD2. A backdated version that would cover a PAID instalment (30 Jul, paid) is refused explicitly (409 paid_instalment_after_change, id listed) - nothing written", paidConflict.code === "paid_instalment_after_change" && paidConflict.details.instalmentIds.join() === H[3] && snapshot() === b0);
+    const a8 = world.audit.length;
+    const bv = await agreementVersion(h1.body.agreement.agreementId, { name: "ZZTEST office rent (new rate)", costType: "fixed", frequency: "monthly", classification: "general", effectiveFrom: "2026-08-01", amount: "450.00", firstDueDate: "2026-08-31", instalmentCount: 3, reason: "Rent review backdated to 1 Aug" });
+    ck("BD3. A backdated version from 1 Aug (after the paid history) is allowed: the unpaid 30 Aug / 30 Sep instalments are cancelled with the version as reason (audited); the new 450.00 schedule starts 31 Aug", bv.httpStatus === 201 && bv.body.cancelledPredecessorInstalments.join() === `${H[4]},${H[5]}` && bv.body.schedule.map((i: any) => `${i.dueDate}:${i.amountDue}`).join() === "2026-08-31:450.00,2026-09-30:450.00,2026-10-31:450.00" && evTypes(a8).join() === [EVENTS.agreementVersioned, EVENTS.instalmentCreated, EVENTS.instalmentCreated, EVENTS.instalmentCreated, EVENTS.cancelled, EVENTS.cancelled].join());
+    const r = await agreement(h1.body.agreement.agreementId);
+    ck("BD3b. Paid history untouched (rows byte-identical, 2 payments kept); the old version reads as superseded, ending 31 Jul", JSON.stringify([dbInst(H[0]), dbInst(H[3])]) === rowsBefore && T_("finance_supplier_payments").filter((x) => H.includes(x.instalment_id)).length === 2 && r.body.agreement.status === "superseded" && r.body.agreement.effectiveEnd === "2026-07-31");
+    const d1 = await agreementNew({ supplierId: HS, name: "ZZTEST camp hall (onboarding, first term)", costType: "one_off", classification: "direct", effectiveFrom: "2026-10-01", effectiveUntil: "2026-10-08", amount: "90.00", firstDueDate: "2026-10-01", sessionIds: ["ZZ-NOSVC"] });
+    const d2 = await agreementVersion(d1.body.agreement.agreementId, { name: "ZZTEST camp hall (onboarding, new rate)", costType: "one_off", classification: "direct", effectiveFrom: "2026-10-09", effectiveUntil: "2026-10-31", amount: "120.00", firstDueDate: "2026-10-09", sessionIds: ["ZZ-NOSVC"], reason: "Rate changed 9 Oct" });
+    ck("BD4. Onboarding a direct agreement's real history: V1 (1-8 Oct) freezes the past 5 Oct session at 90.00; a backdated V2 from 9 Oct does not touch it and freezes the past 12 Oct session at 120.00", d1.body.profitability.items.map((x: any) => `${x.date}:${x.allocated}`).join() === "2026-10-05:90.00" && d2.httpStatus === 201 && d2.body.profitability.items.map((x: any) => `${x.date}:${x.allocated}`).join() === "2026-10-12:120.00" && JSON.stringify(T_("finance_supplier_allocations").filter((x) => x.agreement_id === d1.body.agreement.agreementId).map((x) => x.allocated_minor)) === "[9000]");
   }
 
   // ===== Pure helpers =====

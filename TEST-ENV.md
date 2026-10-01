@@ -18848,20 +18848,24 @@ and `build-needs-attention-bundle --check` MATCH.
     removes the helpers).
 - **Deployed:** `finance` v19, `needs-attention` v14. Production untouched.
 
-## Finance Foundation — F13 (suppliers / venues / outgoing agreements + payment schedules) — CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN — TEST only — 2026-10-01
+## Finance Foundation — F13 (suppliers / venues / outgoing agreements + payment schedules) — REPLACEMENT DEPLOY NEEDED (v21) — NOT LIVE-PROVEN — TEST only — 2026-10-01
 
-> **CHECKPOINT: code complete, tests pass, NOT deployed, NOT live-proven.**
+> **CHECKPOINT: decision 5 change made; replacement deploy needed; NOT
+> live-proven.**
 >
-> - The committed `finance` artifact
->   (`supabase/deploy-artifacts/finance/index.js`, 544,522 bytes, sha256
->   `f0c069de8d601b652c948c6a5f86e90d51ed78af0ed8e0219dd18f1fbc61f6dc`) is
->   too large for this session to deploy. It needs an operator deploy as
->   **`finance` v20**: the exact committed artifact, `verify_jwt` true,
->   one `index.js`.
-> - **TEST schema is applied** (FIN13.6). The F13 tables are empty and the
->   audit count is unchanged at **274**.
-> - `finance` v19 stays deployed. It has no F13 routes, so nothing calls the
->   new tables yet.
+> - **History:** `finance` v20 (commit `f8c17b3`, 544,522 bytes, sha256
+>   `f0c069de…f6dc`) was deployed by the operator and verified
+>   byte-identical. It was **not** live-proven, because the locked product
+>   decisions (FIN13.13) required a code change first: decision 5 allows
+>   historical effective dates for versions.
+> - **Replacement artifact:** `supabase/deploy-artifacts/finance/index.js`,
+>   544,861 bytes, sha256
+>   `8ae50aa66647f4044300d139e46901cd75ee641822567bcfbf4d4b72f1aec059`. It
+>   needs an operator deploy as **`finance` v21**: the exact committed
+>   artifact, `verify_jwt` true, one `index.js`. The live proof A–Z must run
+>   against v21, not v20.
+> - **TEST schema is applied** (FIN13.6) and unchanged by decision 5. The
+>   F13 tables are empty and the audit count is unchanged at **274**.
 > - **Not built:** supplier credits (F14), Overheads / Salaries (F15), Cash
 >   Flow, Month Report, Needs Attention changes. F14 has not been started.
 > - **Production untouched.**
@@ -19008,8 +19012,12 @@ Every action is explicit, under the write lock, and audited.
 - **A paid or cancelled instalment never changes again.** Corrections come
   later.
 - **Version** (`POST /supplier-agreements/{FSA}/version`) — needs a reason:
-  - must start after the old version (409 `version_must_start_later`) and
-    today or later (409 `version_cannot_start_in_past`);
+  - must start after the old version (409 `version_must_start_later`);
+  - **may start in the past** (decision 5, FIN13.13), but is refused with
+    409 `profitability_history_conflict` (dates listed) if it would
+    supersede any of the old version's frozen shares for sessions that have
+    already happened (dated from the new start up to yesterday). A start of
+    today or later never conflicts.
   - an agreement versions once (409 `agreement_already_versioned`; change
     the latest version instead);
   - it cancels the predecessor's unpaid open instalments due on/after its
@@ -19137,7 +19145,8 @@ The order is the same as F3–F12: 404 / 405 → 401 → 403
   - `index.ts` (F13 routes matched first).
 - **Mirrors:** `tests/support/` (only import paths swapped; drift-checked).
 - **Focused suite:** `tests/support/finance-suppliers.test.ts` (shim
-  `tests/e2e/financesupplierstest.js`) — **92/92**.
+  `tests/e2e/financesupplierstest.js`) — **98/98** after decision 5
+  (92/92 at `f8c17b3`).
   - It runs the real orchestrator + repository against fake Airtable and
     fake PostgREST + RPCs with the same rules, CHECKs and guards as the
     SQL.
@@ -19145,8 +19154,8 @@ The order is the same as F3–F12: 404 / 405 → 401 → 403
     Manage + lock, RPC-only writes, routing order, nothing in the 12 NA
     shared modules, mirrors, no credit / Cash Flow / overhead / Month
     Report code or routes, remaining computed in one place.
-- **Mutation:** 36/36 killed (`mut_f13.py` mutates canonical + mirror
-  together).
+- **Mutation:** 37/37 killed (`mut_f13.py` mutates canonical + mirror
+  together; it includes two boundary mutants of the decision 5 rule).
 - **Strict `tsc`:** clean for the F13 files. The pre-existing errors in
   `finance-commercial-orchestrator.ts` are unchanged.
 - **Regression:**
@@ -19168,20 +19177,19 @@ The order is the same as F3–F12: 404 / 405 → 401 → 403
 - **Operator:** deploy the committed artifact as `finance` v20. Then run
   the live proof A–Z with ZZTEST suppliers / venues (a venue linked to
   `ZZTEST-F12-A` / `FSV-B2A5C5275835` sessions).
-- **Design choices to confirm** (taken from the brief's intent):
-  - a version may start today or later only;
-  - an estimate must be confirmed (actual or Use Estimate) before it can
-    be paid;
-  - direct agreements need an end date;
-  - the originally agreed set excludes occurrences already Cancelled /
-    Postponed when the agreement is made;
-  - a version cancels the predecessor's unpaid instalments from its start;
-    a balance owed for the earlier period is kept by splitting first.
+- **Design choices:** LOCKED by David on 2026-10-01 (FIN13.13).
+- A version cancels the predecessor's unpaid instalments from its start; a
+  balance owed for the earlier period is kept by splitting first.
 - **Not validated against F3:** `financeServiceId` is not checked against
   F3's service list. It is used as the Sessions link key; an unknown one
   simply resolves to no sessions (unresolved).
-- **Paid-instalment corrections** ("use correction logic later") are not
-  built; a paid instalment is frozen.
+- **Paid-instalment corrections** (decision 6) are NOT built in F13. A
+  paid instalment stays frozen; explicit paid-history correction is future
+  debt.
+- The `profitability_history_conflict` rule is enforced in the
+  orchestrator, under the Finance write lock. The database function does
+  not repeat it, because it needs the organisation's "today". The
+  allocation rows themselves stay physically append-only either way.
 - **F14:**
   - supplier / venue credits created, left unapplied, applied to an unpaid
     instalment, unapplied before Paid — subtract them in `remainingOf()`
@@ -19525,3 +19533,45 @@ revoke all on function public.finance_supplier_insert_audit(jsonb), public.finan
 grant execute on function public.finance_supplier_write(jsonb, integer, jsonb), public.finance_supplier_agreement_record(jsonb, jsonb, jsonb, jsonb, jsonb),
   public.finance_supplier_instalment_change(text, text, text, jsonb, jsonb, jsonb, jsonb, jsonb) to service_role;
 ```
+
+### FIN13.13 Locked product decisions (David, 2026-10-01) and the decision 5 change
+
+1. **Estimates:** an estimated instalment must be confirmed before it can
+   be paid. Use Estimate = estimate → confirmed amount due, never Paid.
+   *Kept as built.*
+2. **Direct agreements** that freeze profitability need an end date.
+   *Kept as built.*
+3. **Original session set:** sessions already Cancelled / Postponed when
+   the agreement is created are excluded. A later cancellation /
+   postponement never redistributes. *Kept as built.*
+4. **Finance Service IDs:** never guessed or auto-corrected. An unknown one
+   stays unresolved and visible. *Kept as built.*
+5. **Historical effective dates — CHANGED.**
+   - **Before:** new agreements could already start in the past, but a
+     **version** had to start today or later
+     (`version_cannot_start_in_past`).
+   - **Now** (smallest change, orchestrator only): a version may start in
+     the past.
+   - **History is never rewritten.** A backdated version is refused
+     explicitly when it would:
+     - cover money already paid: 409 `paid_instalment_after_change`
+       (unchanged);
+     - re-attribute a session that has already happened under the old
+       version's frozen allocation: 409 `profitability_history_conflict`,
+       with the dates listed.
+   - **Otherwise, as before:**
+     - the old version's unpaid instalments from the new start are
+       cancelled (explicit, audited), including already-past due ones;
+     - historical agreement, allocation and payment rows are never
+       touched;
+     - past payments can be recorded with their real past paid dates.
+   - **Onboarding pattern** (tested BD4): enter V1 with its real end date,
+     then version V2 from the change date. V1's past shares stay frozen
+     and V2 freezes its own.
+   - **No legacy-import system was built.**
+   - **Tests BD1–BD4** cover: a historical agreement with overdue past
+     dues; past payments; a backdated version refused over paid history; a
+     backdated version allowed after it; the onboarding of a direct
+     agreement. VP8a is now the `profitability_history_conflict` case.
+6. **Paid-instalment corrections:** NOT built. Paid instalments stay
+   frozen; future debt (FIN13.11).

@@ -99,6 +99,7 @@ const REFUSALS: Record<string, string> = {
   agreement_changed: "This agreement's schedule changed just now - reload and try again",
   agreement_already_versioned: "This agreement already has a newer version - change the latest version instead",
   version_must_start_later: "A new version must start after the version it replaces",
+  profitability_history_conflict: "The version it replaces already attributes sessions that have taken place on or after this start date - that profitability history is never rewritten (start the new version after them)",
   paid_instalment_after_change: "Money has already been paid against an instalment due on or after the new version's start - that history is never rewritten",
   instalment_changed: "This instalment was changed by someone else just now - reload and try again",
   instalment_cancelled: "This instalment was cancelled - it can no longer change",
@@ -391,7 +392,10 @@ async function recordNewAgreement(deps: SupplierDeps, caller: FinanceCaller, ctx
   if (predecessor) {
     if (successorOf(ctx, predecessor)) return fail(409, "agreement_already_versioned", REFUSALS.agreement_already_versioned);
     if (spec.effectiveFrom <= predecessor.effectiveFrom) return fail(409, "version_must_start_later", REFUSALS.version_must_start_later);
-    if (spec.effectiveFrom < ctx.today) return fail(409, "version_cannot_start_in_past", "A new version can start today or later - earlier history is never rewritten");
+    // A version may start in the past (e.g. entering an existing real agreement), but never re-attributes
+    // a session that has already happened: the predecessor's frozen share for it stays the fact.
+    const pastShares = ctx.ledger.allocations.filter((x) => x.agreementId === predecessor.agreementId && x.occurrenceDate >= spec.effectiveFrom && x.occurrenceDate < ctx.today);
+    if (pastShares.length) return fail(409, "profitability_history_conflict", REFUSALS.profitability_history_conflict, { occurrenceDates: pastShares.map((x) => x.occurrenceDate) });
   }
   const schedule = generateSchedule(spec, ctx.today);
   if (!schedule.ok) return fail(schedule.httpStatus, schedule.code, schedule.error);
