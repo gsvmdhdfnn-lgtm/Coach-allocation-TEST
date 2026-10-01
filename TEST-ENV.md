@@ -17792,6 +17792,25 @@ SQL calls, and writes were sent one at a time (org write lock).
   `stripe_customer_not_linked`.
 - **An unverified guardian** cannot hold or use credit. A card refund of
   card-funded value is still possible.
+- **TRANSITIONAL LIMITATION — not the final commercial model (locked by
+  David, 2026-10-01).**
+  - The product rule is that family credit is FAMILY / HOUSEHOLD-level,
+    not tied to one login.
+  - Players & Parents has no explicit Family / Household entity, and
+    inferring one (from a shared child, surname, address, email or Stripe
+    customer) is unsafe.
+  - So, for the current foundation only:
+    - the verified guardian account is the temporary credit-owner key;
+    - its verified children may use its credit;
+    - two guardian accounts are never merged and never spend each other's
+      credit.
+  - True shared co-guardian family credit must not be claimed until
+    parent / platform work introduces an explicit Family / Household
+    entity.
+  - The credit owner must then migrate from guardian account →
+    Family / Household ID without rewriting financial history.
+    **FIN11.16** records why the checkpoint schema cannot yet do that
+    cleanly.
 
 ### FIN11.3 Ledger (Supabase, RLS on, no client grants, history tables refuse DELETE)
 
@@ -17869,14 +17888,17 @@ SQL calls, and writes were sent one at a time (org write lock).
   `no_card_funded_value`).
 - **A payment's own Stripe charge cannot be decided on its own** (409
   `charge_belongs_to_family_payment`). That would ignore its credit part.
-- **Partial return rule (for David to confirm):** the return is split in
-  proportion to what remains of each part.
-  - This follows the brief's preferred principle ("back to its original
-    funding source proportion").
-  - The credit share is rounded down, so the odd penny stays with the card
-    share.
-  - Example: £50 of £40 credit / £60 card → **£20 credit + £30 Refund
-    Due**; the rest → £20 + £30.
+- **Partial return rule — LOCKED (approved by David, 2026-10-01):**
+  - A partial return of a mixed-funded source is split in proportion to
+    the source's remaining original funding (credit-funded vs card-funded
+    still unreturned).
+  - The credit share is rounded down. Any unavoidable odd penny is
+    therefore always allocated to the card (Refund Due) portion.
+  - **A full return restores the original funding amounts exactly:** all
+    remaining credit-funded value → family credit, and all remaining
+    card-funded value → card.
+  - Example: £40 family credit + £60 card, £50 partial return → **£20
+    family credit + £30 Refund Due**; returning the rest → £20 + £30.
 - **Insufficient history fails safely:**
   - a family payment with an unfunded remainder → 409 `funding_incomplete`;
   - Stripe no longer matching the recorded charge (amount or customer) →
@@ -18044,13 +18066,17 @@ original returnable value (credit-funded + card-funded)
 
 ### FIN11.15 Open items / future debt
 
-- **Product confirmations for David:**
+- **Locked by David (2026-10-01):**
   - the proportional partial-return rule (FIN11.6);
-  - family = one guardian account. Co-guardian household sharing would be
-    a new product decision.
-  - Manual / goodwill family credit without a source payment is **not
-    built**: it would create value no revenue backs, so it needs a product
-    decision.
+  - the guardian account as the TRANSITIONAL credit-owner key (FIN11.2);
+  - no goodwill credit in F11.
+- **Goodwill credit — future debt.** Manual family credit with no source
+  payment is NOT built. If it is ever wanted, it needs an explicit
+  Management reason / audit flow, and a decision on how such value is
+  reported (it corrects no revenue).
+- **Explicit Family / Household entity** (parent / platform work) is a
+  prerequisite for true shared co-guardian credit. See FIN11.16 for
+  migration readiness.
 - **Dependencies:**
   - a structured cancellation / camp refund policy (48 h default) is not
     stored — booking-policy work;
@@ -18074,3 +18100,66 @@ original returnable value (credit-funded + card-funded)
   - subscription → player / service mapping undecided.
 - **Boundaries:** no Stripe refund execution; F21 not started; no
   subscription write; Cash Flow not started; production untouched.
+
+### FIN11.16 Owner-migration readiness (guardian account → Family / Household) — NOT CLEAN at this checkpoint
+
+Assessed before deployment, at David's request. **The checkpoint schema
+cannot migrate the credit owner cleanly**, for three reasons:
+
+1. **The owner key and the guardian provenance are the same column.**
+   `family_parent_record_id` is both "the guardian account this
+   payment / credit / decision belongs to" and the ledger's ownership key.
+   It also carries `CHECK (~ '^rec[A-Za-z0-9]{14}$')` on all four tables.
+   A Household ID could only go into it by either:
+   - breaking that CHECK and losing which guardian account was involved
+     (rewriting history); or
+   - adding owner columns later and back-filling them into rows that
+     already carry money history.
+2. **Ownership logic is keyed on that column, in SQL and in TypeScript.**
+   This covers:
+   - `finance_family_credit_apply` (oldest-first scope, cross-family
+     refusal, its `p_family_record_id` parameter);
+   - the credits index;
+   - the derived balance;
+   - `planApplication`;
+   - the family read models;
+   - the cross-family check.
+
+   A migration would have to change the rule engine at the same time as
+   the data.
+3. **Financial rows are not yet UPDATE-protected.** DELETE is refused, but
+   nothing at database level stops an UPDATE that rewrites amounts,
+   provenance or ownership. A future migration therefore could not *prove*
+   history was untouched.
+
+**Proposed fix (NOT applied — awaiting approval).** It is small and
+pre-deployment; all F11 tables are empty.
+
+- **Owner columns:** add `owner_type` (`guardian_account` | `household`)
+  + `owner_key` to payments, credits, applications and decisions.
+  - `CHECK`: `owner_type = 'guardian_account'` ⇒
+    `owner_key = family_parent_record_id`.
+  - The `family_parent_*` columns become immutable provenance ("which
+    guardian account").
+- **Ownership logic** (oldest-first scope, balance, cross-family refusal,
+  family views) keyed on (`owner_type`, `owner_key`) in the SQL functions
+  and the TypeScript. Behaviour is identical today.
+- **UPDATE guards (triggers):**
+  - payments and applications: fully immutable;
+  - credits: only the void fields may change, and only once;
+  - decisions: only the reversal fields, plus F21's `refund_state` /
+    `stripe_refund_id`.
+- **The future migration is then ONE dedicated, audited
+  ownership-transfer function.** It moves `owner_type` / `owner_key` of a
+  guardian account's rows to a Household ID (one audit event per
+  transfer). Amounts, applications, decisions and guardian provenance are
+  untouched, and only the owner columns are released for that function.
+- **Cost:**
+  - one TEST migration;
+  - small repository / orchestrator / test-fake changes;
+  - a rebuilt `finance` artifact (new sha256 — the checkpoint artifact
+    `18497081…` would be superseded);
+  - the focused suite + full regression re-run.
+
+**Deployment of the checkpoint artifact is on hold** until David decides.
+
