@@ -124,6 +124,7 @@ const RULES = [
   rule("work_summary_blocked", "ATT-046", { warn: [3, "Days Overdue"], sort: 46, override: false, area: "Coaches", action: "Resolve Pending Items" }),
   // Finance F8a rule (real TEST values, live row recC80hmlglLibk7I): module_finance, Default Enabled off - it never runs here.
   { id: id("RuleATT047"), fields: { "Rule Name": "Invoice overdue", "Rule ID": "ATT-047", "Rule Key": "invoice_overdue", Category: "Finance & Billing", "Default Base Severity": "Warning", "Client Customisable": true, "Required Module": "module_finance", "Evaluation Status": "Active", "Sort Order": 47, Active: true, "Action Label": "Review Receivable", "Destination Area": "Finance", "Supports Override": true } },
+{ id: id("RuleATT048"), fields: { "Rule Name": "Invoice draft blocked", "Rule ID": "ATT-048", "Rule Key": "invoice_draft_blocked", Category: "Finance & Billing", "Default Base Severity": "Normal", "Client Customisable": true, "Required Module": "module_finance", "Evaluation Status": "Active", "Sort Order": 48, Active: true, "Action Label": "Review Invoice Draft", "Destination Area": "Finance", "Supports Override": true } },
 ];
 const ruleRec = (k: string) => RULES.find((r) => r.fields["Rule Key"] === k)!;
 

@@ -30,7 +30,10 @@
  * status recomputed from the domain's own copied rules, never stored Status).
  * Finance F8a adds invoice_overdue (finance.ts): one shared receivable pass
  * over the six F6 / F7 Finance tables, run only for callers holding Finance
- * View or Manage (restrictFinanceRules). Later slices append their own
+ * View or Manage (restrictFinanceRules). Finance F8b adds
+ * invoice_draft_blocked (finance-drafts.ts): one bulk F5 review pass over
+ * every open invoice draft, using Finance's own review code (bundled at
+ * build time from ../finance). Later slices append their own
  * registrations; gated-off rules never cause any domain read.
  *
  * Drift protection: validateRegistry() (needs-attention.ts) reports
@@ -45,5 +48,6 @@ import { COMPLIANCE_EVALUATORS } from "./needs-attention-compliance.ts";
 import { COACH_SCHEDULE_EVALUATORS } from "./needs-attention-coach-schedule.ts";
 import { WORK_SUMMARY_EVALUATORS } from "./needs-attention-work-summaries.ts";
 import { FINANCE_EVALUATORS } from "./needs-attention-finance.ts";
+import { INVOICE_DRAFT_BLOCKED_EVALUATOR } from "./needs-attention-finance-drafts.ts";
 
-export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS, COVER_EVALUATOR, ...COMPLIANCE_EVALUATORS, ...COACH_SCHEDULE_EVALUATORS, ...WORK_SUMMARY_EVALUATORS, ...FINANCE_EVALUATORS];
+export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS, COVER_EVALUATOR, ...COMPLIANCE_EVALUATORS, ...COACH_SCHEDULE_EVALUATORS, ...WORK_SUMMARY_EVALUATORS, ...FINANCE_EVALUATORS, INVOICE_DRAFT_BLOCKED_EVALUATOR];

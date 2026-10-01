@@ -316,7 +316,7 @@
   {
    "ruleId": "ATT-048",
    "ruleKey": "invoice_draft_blocked",
-   "evaluationStatus": "Planned",
+   "evaluationStatus": "Active",
    "requiredModule": "module_finance",
    "defaultEnabled": false,
    "active": true

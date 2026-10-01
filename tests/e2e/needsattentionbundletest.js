@@ -24,7 +24,7 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   ck('B2. No GitHub / raw.githubusercontent import anywhere in the artifact', !/github/i.test(code));
   ck('B3. The only external import is the jsr supabase-js import the source declares', JSON.stringify(manifest.externalImports) === JSON.stringify(['jsr:@supabase/supabase-js@2']) && (code.match(/from"jsr:[^"]+"/g) || []).length === 1);
   ck('B4. The manifest records the artifact hash and the pinned esbuild version', manifest.artifactSha256 === require('crypto').createHash('sha256').update(code).digest('hex') && manifest.esbuild === require(path.join(ROOT, 'package.json')).devDependencies.esbuild);
-  ck('B5. Every needs-attention source file is bundled (none unused)', Array.isArray(manifest.unusedSources) && manifest.unusedSources.length === 0 && manifest.sources.length === 13);
+  ck('B5. Every needs-attention source file + the 12 allowlisted pure Finance modules (F8b) is bundled, none unused, nothing else from finance/', Array.isArray(manifest.unusedSources) && manifest.unusedSources.length === 0 && manifest.sources.length === 26 && manifest.sources.filter((s) => s.path.startsWith('supabase/functions-test/finance/')).length === 12 && manifest.sources.every((s) => !/finance\/(index|orchestrator|repository|.*-orchestrator|.*-repository)\.ts$/.test(s.path)));
 
   // Boot the artifact with a stub Deno + supabase-js (no network) and route a few requests.
   let handler = null;
@@ -44,7 +44,7 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   const rv401 = await call('POST', 'exceptions/revoke');
   const unknown = await call('GET', 'nope');
   ck('B7. Routing works: CORS preflight 200, cases GET-only (401 / 405), exceptions POST-only (405 / 401), revoke 401 without a token, unknown 404', opt.status === 200 && cases401.status === 401 && cases405.status === 405 && ex405.status === 405 && ex401.status === 401 && rv401.status === 401 && unknown.status === 404, `${opt.status}/${cases401.status}/${cases405.status}/${ex405.status}/${ex401.status}/${rv401.status}/${unknown.status}`);
-  ck('B8. The F8a Finance code is in the artifact (invoice_overdue / ATT-047, finance_access_required, finance_manage_required, grant lookup)', ['invoice_overdue', 'ATT-047', 'finance_access_required', 'finance_manage_required', 'finance_access_grants'].every((s) => code.includes(s)));
+  ck('B8. The F8a / F8b Finance code is in the artifact (invoice_overdue / ATT-047, invoice_draft_blocked / ATT-048, finance_access_required, finance_manage_required, grant lookup)', ['invoice_overdue', 'ATT-047', 'invoice_draft_blocked', 'ATT-048', 'finance_access_required', 'finance_manage_required', 'finance_access_grants'].every((s) => code.includes(s)));
 
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;

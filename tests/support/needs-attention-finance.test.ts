@@ -572,7 +572,7 @@ async function main() {
     ck("DR4. Table names = ISSUE_TABLES / RECEIVABLE_TABLES", FINANCE_TABLES.invoices === ISSUE_TABLES.invoices && FINANCE_TABLES.creditNotes === ISSUE_TABLES.creditNotes && FINANCE_TABLES.payments === RECEIVABLE_TABLES.payments && FINANCE_TABLES.credits === RECEIVABLE_TABLES.credits && FINANCE_TABLES.applications === RECEIVABLE_TABLES.applications && FINANCE_TABLES.dueChanges === RECEIVABLE_TABLES.dueChanges);
     const code = na.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     ck("DR5. finance.ts is read-only: no fetch, no write method, no Finance route call, no Deno / Supabase", !/fetch\(|method:\s*["'`](POST|PATCH|PUT|DELETE)|Deno\.|createClient|\/rest\/v1/.test(code) && !/\bmethod:\s*["'`]/.test(code));
-    ck("DR6. Only invoice_overdue is implemented (ATT-024/025/026/034/048 and any due-today rule stay unregistered)", IMPLEMENTED_EVALUATORS.filter((e) => /^ATT-0(2[456]|34|47|48)$/.test(e.ruleId)).map((e) => e.ruleKey).join(",") === "invoice_overdue");
+    ck("DR6. Finance rules implemented: invoice_overdue (F8a) + invoice_draft_blocked (F8b) only (ATT-024/025/026/034 and any due-today rule stay unregistered)", IMPLEMENTED_EVALUATORS.filter((e) => /^ATT-0(2[456]|34|47|48)$/.test(e.ruleId)).map((e) => e.ruleKey).sort().join(",") === "invoice_draft_blocked,invoice_overdue");
   }
 
   for (const [s, n, e] of R) console.log(`${s}  ${n}${e && s === "FAIL" ? "  " + e : ""}`);
