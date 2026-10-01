@@ -18401,29 +18401,27 @@ still 212.00).
 **67/67**; full suite **82/82** test files; `build-finance-bundle --check`
 and `build-needs-attention-bundle --check` MATCH.
 
-## Finance Foundation — F12 (coach cost READ + Finance Coach Month finalisation) — CHECKPOINT — TEST only — 2026-10-01
+## Finance Foundation — F12 (coach cost READ + Finance Coach Month finalisation) — LIVE-PROVEN — TEST only — 2026-10-01
 
-> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
+> **DEPLOYED + LIVE-PROVEN in TEST** (`finance` v19, 2026-10-01; live proof
+> A–AA in FIN12.12, resting state in FIN12.13).
 >
-> - **TEST schema is applied:**
+> - **Deployed artifact:** `finance` v19 is ACTIVE with `verify_jwt` true and
+>   one `index.js`. It was deployed from commit `0b679b8` by the operator.
+>   - Independently re-verified: the deployed file is 487,768 bytes, sha256
+>     `5a0d8992d9b26238da9cc361763f83aeb0fdc2ac67466918d0a5fc7512d01545`,
+>     byte-identical to `supabase/deploy-artifacts/finance/index.js`.
+>   - `needs-attention` v14 was not redeployed; its deployed file is
+>     byte-identical to its artifact.
+> - **TEST schema:**
 >   - Supabase `finance_f12_worker_cost_months` (FIN12.6);
 >   - Airtable Coach Allocations field **`Cost Basis`** (`fldsbucAv8XMLV4RT`).
->
->   The database rules were exercised live in a self-rolling-back smoke
->   block (FIN12.9). Nothing persisted: all F12 tables are empty and the
->   audit count is still **268**.
-> - **The `finance` bundle is 487,768 bytes**, sha256
->   `5a0d8992d9b26238da9cc361763f83aeb0fdc2ac67466918d0a5fc7512d01545`
->   (manifest `6aa725c8…`). That is too large for this session to deploy.
->   The exact artifact is committed at
->   `supabase/deploy-artifacts/finance/index.js` and needs deployment
->   assistance, as for F7–F11.
-> - **Deploy as `finance` v19:** `verify_jwt` true, one `index.js`, a
->   byte-for-byte copy of the committed artifact.
-> - **Not redeployed:** `needs-attention` v14 (artifact `--check` MATCH),
->   `coach-work-summaries`, `coach-allocations`,
->   `occurrence-financial-outcomes` (none changed).
-> - The live proof A–AA runs after v19 is deployed.
+> - **Not redeployed:** `coach-work-summaries`, `coach-allocations`,
+>   `occurrence-financial-outcomes` (none changed; the live proof used them
+>   as they are).
+> - *Checkpoint history:* the code was committed first as CODE COMPLETE /
+>   NOT DEPLOYED (`0b679b8`), because the bundle was too large for this
+>   session to deploy.
 
 ### FIN12.1 Pre-implementation audit (2026-10-01) and the decisions it needed
 
@@ -18677,19 +18675,15 @@ and `build-needs-attention-bundle --check` MATCH.
   - both bundle `--check` MATCH;
   - strict `tsc` clean for the F12 modules.
 
-### FIN12.10 Resting TEST state (checkpoint)
+### FIN12.10 Resting TEST state (checkpoint, superseded by FIN12.13)
 
-- F12 tables empty; audit **268**.
-- One Manage grant (`1735d938…`); `module_finance` ON; no locks.
-- Stripe disconnected (F11 resting state).
-- `Cost Basis` field exists; no allocation data in TEST.
-- `finance` v18, `needs-attention` v14 deployed.
-- The inert F11 `f2probe` schema remains (operator cleanup).
+- F12 tables empty; audit **268**; one Manage grant (`1735d938…`, since
+  ended in proof T); `finance` v18 deployed. See FIN12.13 for the state
+  after the live proof.
 
 ### FIN12.11 Open items / future debt
 
-- **Deploy v19, then run live proof A–AA** with ZZTEST coaches, sessions,
-  allocations and Work Summaries.
+- **Done:** v19 deployed and live proof A–AA run (FIN12.12).
 - **Coach self-service** of Finance figures: later. The Work Summary
   remains the coach view.
 - **Payment execution / paid state, Cash Flow events, Month Report:** not
@@ -18710,3 +18704,146 @@ and `build-needs-attention-bundle --check` MATCH.
   - ATT-045 / ATT-046 unchanged;
   - Coaches Slice 10 unchanged;
   - production untouched.
+- **Observations from the live proof (no product contradiction):**
+  - The `payment.configuredDay` field shows the **effective** day after the
+    shorter-month fallback (31 is shown as 28 / 30 in short months). The
+    date is right; only the label could be clearer ("effectiveDay").
+  - F12 shows the session's Finance Service ID as given. It does not
+    check that the ID exists in F3 services. The proof used two real F4
+    service ids.
+  - Salaried / Volunteer allocations were recorded directly in Airtable
+    (`/allocate` needs a rate; see above).
+
+### FIN12.12 Live TEST proof on `finance` v19 (2026-10-01)
+
+**Method:**
+- Calls went through the real deployed functions (`finance`,
+  `coach-allocations`, `occurrence-financial-outcomes`,
+  `coach-work-summaries`, `needs-attention`), using real TEST logins
+  (manager / coach A / parent A).
+- They used the existing TEST-only `pg_net` harness (`f2probe`; two
+  generic call helpers, `cpost` / `cget`, were added for the Coaches
+  functions; no client grants).
+- Tokens were cleared afterwards.
+
+**Fixtures (TEST Airtable, all labelled ZZTEST F12):**
+
+- **Sessions (Inactive):**
+  - `ZZTEST-F12-A` (`recIKT0iHL1uvGtCG`): Programme "Academy",
+    `FSV-B2A5C5275835`;
+  - `ZZTEST-F12-A2` (`rec6CJQysGnygHRwW`): Programme "After School",
+    **same** `FSV-B2A5C5275835`;
+  - `ZZTEST-F12-B` (`rec5vo2Z0OWDGpFPP`): Programme "Academy",
+    `FSV-681F9A8704C8`;
+  - `ZZTEST-F12-C` (`recT7vscLo9sSAGXZ`): Programme "Holiday Camp", **no**
+    Finance Service ID.
+- **Coaches (Active = false, so no staffing / compliance cases):**
+  - `COACH-ZZTEST-F12P` Paid (`recdbaG9ro7R8SGjE`);
+  - `COACH-ZZTEST-F12S` Salaried (`rec5UOXMCJIjufD5s`);
+  - `COACH-ZZTEST-F12V` Volunteer (`recuTZrFclY7YPcTE`).
+  - Coach A (`COACH-TEST-A`, the only coach with a login) was used only
+    for the query flow; those fixtures were deleted afterwards.
+- **Rate Profiles (P):**
+  - Evening / Per Hour £20.00 from 2026-01-01, ended 2026-08-31
+    (`recrr3PzdF9aZjFYc`);
+  - Day / Per Session £45.00 (`recamYM8z0Ky1fOIg`);
+  - Evening / Per Hour £26.50 from 2026-09-01 (`recr03NaJxP8yYlIV`, the
+    rate change).
+- **August 2026 allocations:**
+
+  | Coach | Date | Session | How | Cost |
+  |---|---|---|---|---|
+  | P | 08-03 | A1 | `/allocate` Evening 2.5 h × 20.00, blank basis | 50.00 |
+  | P | 08-05 | B | `/allocate` Day 1 × 45.00, basis **Paid** | 45.00 |
+  | P | 08-10 | A2 | `/allocate` Evening 2 h, override 35.00 + reason (standard 40.00); later 38.00 | 35.00 → 38.00 |
+  | P | 08-12 | B, Cancelled | `/allocate` Day 45.00, then Slice 6 **Partial 20.00** | 20.00 |
+  | P | 08-14 | C, Cancelled | `/allocate` Evening 1.5 h (30.00), then Slice 6 **Unpaid** | 0.00 |
+  | P | 08-17 | C | `/allocate` Evening 1 h, blank basis | 20.00 |
+  | S | 08-04, 08-11 | A1, C | direct, **Salaried**, 0.00, Confirmed | 0.00 |
+  | V | 08-06 | B | direct, **Volunteer**, cost initially missing, then 0.00 | 0.00 |
+
+**Results:**
+
+| # | Proof | Result |
+|---|---|---|
+| A | Deployed artifact | `finance` v19 ACTIVE, `verify_jwt` true, 1 file, byte-identical (sha256 `5a0d8992…`); `needs-attention` v14 byte-identical |
+| B | Open month, blockers, nothing silently 0 | P 2026-08 right after `/allocate` (Draft): open, live 225.00, blockers `cost_not_confirmed` / `outcome_undecided` (both cancellations) / `work_summary_missing`; finalise → 409 `finalisation_blocked` with those codes. V: the item amount is **null** + `missing_final_cost` (never 0.00). P 2026-06 → 409 `nothing_to_finalise` (no allocation = no month, not a 0.00 month). 2026-10 → `month_not_ended` + `nothing_to_finalise` |
+| C | Blank Cost Basis = Paid, and all Paid rules apply | Shown as "Paid", `costBasisRecorded:false`. On the blank-basis 08-17 item: cost cleared → amount null + `missing_final_cost` (live total 205.00, item not counted as 0); cost 25.00 → `cost_mismatch` (standard 20.00); rate snapshot cleared → `missing_historical_rate` (**no fallback to the coach's current £20 rate**). Salaried item with 10.00 → `no_cost_basis_with_cost`. Facts showed `costResolved:false` / `historicalCost:null` |
+| D | Slice 6 outcome read, not recalculated | Outcomes recorded through `occurrence-financial-outcomes /coach-outcome` (Partial 20.00 / Unpaid). Finance shows `workOutcome` Partial / Unpaid, override 20.00 / 0.00, standard 45.00 / 30.00, decided by Morgan Manager + time, `approverRecorded:true`. The `/allocate` override shows `approverRecorded:false` (no approver stored) |
+| E | Work Summary coverage precondition | Prepare: P **Not ready** (one Draft pending), S / V / A **Needs review**; NA showed ATT-046 `work_summary_blocked` (P) and ATT-045 `work_summary_ready_to_finalise` (S, V, A) — unchanged behaviour. Before the summary is finalised the lines do not exist → `work_summary_missing`. Coach A queried their own summary (Queried), it was finalised, then queried again → Finance `work_summary_queried` on A 2026-07 and finalise → 409 `finalisation_blocked` [`work_summary_queried`]. Manager re-finalised → `readyToFinalise:true`. The response says coverage "does not mean the coach viewed it" |
+| F | Finance finalisation | P 2026-08 → 201 `FCM-626821C7ABFA`, **170.00**, 6 frozen items (programme, basis, outcome, Work Summary ref), expected payment **2026-09-07**, `paymentState:not_tracked`, snapshot sha256 stored. S → `FCM-D1C38B8BEEBE` **0.00** (2 Salaried). V → `FCM-272451A2DC63` **0.00** (Volunteer). Read back: `integrityVerified:true` |
+| G | Duplicate finalise | Second P finalise → 409 `already_finalised` (`monthId` given) |
+| H | Concurrent finalise | Two simultaneous S finalises → one 201, one 409 `finance_commercial_busy`; one month row |
+| I | Programme by Finance Service ID | August: `FSV-681F9A8704C8` 65.00 (Academy), `FSV-B2A5C5275835` 85.00 with labels **Academy + After School** (two sessions, one id), **unresolved** (no id) 20.00. Total 170.00 (173.00 after the correction, which stays with the coach month) |
+| J | Historical rate unchanged by a normal-rate change | £20 profile ended 08-31, £26.50 from 09-01; a new 2026-09-02 allocation snapshots 26.50 × 2 = 53.00 (open). August stays Finalised 170.00, no drift, rates 20.00 / 45.00 — **also after the old profile's Amount was edited in place to £99** (restored to £20) |
+| K | One-off override is allocation-specific | Only the 08-10 allocation carries the override; no other item or rate profile changed; Finance shows standard 40.00 vs override 35.00 + reason for that item only |
+| L | Drift → Correction Required, never a rewrite | Work Summary reopened → Finance still Finalised (review state alone never triggers; item note `work_summary_not_finalised`). The 08-10 cost corrected to 38.00 → **Correction Required**, live 173.00, drift `changed 35.00 → 38.00`; the stored month stays 170.00. Work Summary refreshed + re-finalised (173.00) |
+| M | Correction rules | 0.00 → 400 `invalid_input`; −200.00 → 409 `corrected_total_negative`; another coach's allocation → 409 `allocation_not_in_month` |
+| N | Explicit correction + concurrency | Two simultaneous +3.00 corrections → one 201 `FCX-1A0212953011` (resulting 173.00), one 409 `finance_commercial_busy`. State **Corrected**: finalised **170.00** + corrections 3.00 = 173.00; the original total stays visible |
+| O | Stored months / facts | `coach-summaries?month=2026-08&state=corrected` → exactly `FCM-626821C7ABFA`. Facts 2026-07..09: finalised months from the snapshot (08-10 still 35.00), the correction as its own fact, open months from live allocations; `businessCost:true`, "nothing here is a cash event" |
+| P | Payment date | Day 7: work 2026-08 → 2026-09-07, 2026-06 → 07-07. Temporarily 31 (audited, restored to 7): Jan → **02-28**, Mar → 04-30, Aug → **09-30**, Dec → **2027-01-31**; the finalised August month keeps its stored 2026-09-07 |
+| Q | Coach / Parent | Coach 5/5 and Parent 3/3 (reads + writes) → 403 `management_required`. The coach's own Work Summary view still works and shows only their own summary |
+| R | Tenant | `organisationId` / `tenant` query, `organisationId` / `org_id` body → 400 `tenant_param_rejected` (4/4) |
+| S | No payment / invoice / reopen route | `POST coach-summaries/{id}/reopen`, `…/payment`, `coach-costs/{c}/{m}/pay`, `coach-invoices` → 404; `GET …/finalise` → 405; `POST coach-summaries/{id}` → 405; unknown coach → 404 `coach_not_found` |
+| T | Finance View | Temporary View grant: 6 reads → 200 `access:view`; finalise + correction → 403 `finance_manage_required` |
+| U | No grant | Reads 3/3 + writes 2/2 → 403 `finance_access_denied` |
+| V | Module off | `module_finance` off → 4/4 403 `finance_module_disabled`; restored ON → 200 |
+| W | Database immutability on the live rows | Self-rolling-back block: UPDATE month total / frozen item cost / correction, DELETE correction / items / month → `f12:history_is_append_only` (6/6); a second month for the same coach + month → unique violation. Table hashes identical before and after. Client roles have no table access. TRUNCATE was not re-run live (the MCP confirmation gate waits); it was proven in the checkpoint smoke (FIN12.9) |
+| X | Exact audit | 268 → **274 (+6)**: 3 `finance_work_cost.month_finalised`, 1 `finance_work_cost.correction_created` (before 170.00 / after 173.00), 2 `finance_settings.updated` (proof P). Equals exactly the 6 successful writes. All actor = manager, route + reason recorded, no secret-shaped value. Every refused / denied / busy request and every read audited **nothing** |
+| Y | Work Summary unchanged | Statuses Not ready / Needs review / Finalised / Queried; history `Needs Review → Finalised → Reopened → Re-finalised` (P) and `Needs Review → Queried → Finalised → Queried → Re-finalised` (A); ATT-045 / ATT-046 fired as before and cleared once finalised |
+| Z | No "viewed" claim | Work Summaries carry no viewed / acknowledged field. F12 states coverage only, never that the coach viewed it |
+| AA | Production untouched | Production `bkkukymqaxawnudoxdjs`: 9 functions, no `finance`, last update 2026-09-26. No production Airtable / Stripe / Xero / Sheets call |
+
+**No genuine product contradiction was found.** Observations only: see FIN12.11.
+
+**Tests after the proof:**
+- F12 focused **83/83**;
+- F11 67/67, F10 64/64, commercial 100/100, access 56/56, settings 97/97,
+  kernel 47/47, billing 105/105, invoicing 147/147, issue 155/155,
+  receivables 80/80, Xero 75/75;
+- Work Summaries 62/62, NA work summaries 80/80, finance bundle 16/16,
+  NA bundle 8/8;
+- full suite **83/83** files;
+- `build-finance-bundle --check` and `build-needs-attention-bundle --check`
+  MATCH.
+
+### FIN12.13 Resting TEST state (after the F12 live proof)
+
+- **Finance:**
+  - `module_finance` ON;
+  - exactly one active grant: Manage, manager,
+    `fc8b0f47-b540-4ece-ae64-18f477e3e97e` ("restored after the View /
+    no-grant probes"). `1735d938…` and the temporary View grant
+    `5e082ff1…` were ended with notes;
+  - 0 write locks, 0 settings locks;
+  - Coach Payment Day **7** (Settings revision 15);
+  - Stripe disconnected, 0 Stripe secrets.
+- **Audit:** **274**.
+- **F12 ledger (immutable TEST fixtures, labelled ZZTEST F12):**
+  - `FCM-626821C7ABFA` P 2026-08: finalised 170.00, 1 correction
+    `FCX-1A0212953011` +3.00 → **Corrected** 173.00;
+  - `FCM-D1C38B8BEEBE` S 2026-08: 0.00 Salaried;
+  - `FCM-272451A2DC63` V 2026-08: 0.00 Volunteer.
+
+  Totals: 3 months, 9 items, 1 correction.
+- **Airtable TEST, kept** (the Finance months reference them):
+  - the 4 ZZTEST F12 sessions (Inactive);
+  - 3 inactive ZZTEST coaches;
+  - 3 P rate profiles (including the 2026-09 rate change);
+  - 8 August occurrences and 9 August allocations;
+  - 3 Finalised Work Summaries (P re-finalised at 173.00) with their lines
+    and history.
+- **Airtable TEST, removed after the proof:**
+  - Coach A's July query-flow fixtures (rate profile, occurrence,
+    allocation, Work Summary, line, 5 history rows);
+  - P's open September allocation + occurrence.
+
+  Coach A has no allocations or Work Summaries again.
+- **Needs Attention:** `GET cases` → 0 cases.
+- **Harness:** the `f2probe` tokens were cleared
+  (`cleared-after-f12-proof`); `anon` / `authenticated` have no USAGE.
+  - The two new helper functions (`cpost`, `cget`) are inside the same
+    inert schema.
+  - **Operator item unchanged:** `drop schema f2probe cascade;` (it also
+    removes the helpers).
+- **Deployed:** `finance` v19, `needs-attention` v14. Production untouched.
