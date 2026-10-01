@@ -89,7 +89,9 @@ interface XeroWorld {
   orgClass: string;
   contacts: Record<string, any>[];
   invoices: Record<string, any>[];
-  idem: Map<string, { status: number; body: any }>;
+  idem: Map<string, { status: number; body: any; at: number }>;
+  /** Fake Xero clock in minutes - Xero keeps an Idempotency-Key's response for 6 minutes from the first call. */
+  minute: number;
   faults: XFault[];
   calls: { method: string; path: string; key: string | null; status: number }[];
   seq: number;
@@ -183,7 +185,7 @@ function reset() {
     lockHeld: null,
     lockMode: "ok",
     settingsLockHeld: null,
-    x: { clientId: "cid-test", secret: SECRET, tenantId: TENANT, tenantName: "Demo Company (UK)", orgClass: "DEMO", contacts: [], invoices: [], idem: new Map(), faults: [], calls: [], seq: 0, tokens: new Set(), tokenRequests: [], emails: [] },
+    x: { clientId: "cid-test", secret: SECRET, tenantId: TENANT, tenantName: "Demo Company (UK)", orgClass: "DEMO", contacts: [], invoices: [], idem: new Map(), minute: 0, faults: [], calls: [], seq: 0, tokens: new Set(), tokenRequests: [], emails: [] },
   };
   calls = [];
   NOW = new Date("2026-09-29T12:00:00.000Z");
@@ -376,6 +378,7 @@ async function xeroFetch(url: string, init: any): Promise<Response> {
     return json(out.body, out.status);
   }
   const op = seg[0] === "Contacts" ? (seg[1] ? "update_contact" : "create_contact") : seg[2] === "Email" ? "email" : seg[1] ? "set_status" : "create_invoice";
+  if (key && X.idem.has(key) && X.minute - X.idem.get(key)!.at >= 6) X.idem.delete(key);
   if (key && X.idem.has(key)) {
     const prev = X.idem.get(key)!;
     log(prev.status);
@@ -385,9 +388,13 @@ async function xeroFetch(url: string, init: any): Promise<Response> {
   const faultOp = op === "set_status" ? "authorise" : op;
   const f = op === "update_contact" ? null : takeFault(faultOp);
   if (f === "fail_500") return (log(500), json({ Title: "Server error" }, 500));
-  if (f === "fail_400") return (log(400), json(xv(["Rejected (fault)"]), 400));
+  if (f === "fail_400") {
+    // A definite rejection is a result: Xero replays it for the same key until the key expires.
+    if (key) X.idem.set(key, { status: 400, body: xv(["Rejected (fault)"]), at: X.minute });
+    return (log(400), json(xv(["Rejected (fault)"]), 400));
+  }
   const out = xeroOp(op, seg, body, u.searchParams, f);
-  if (key) X.idem.set(key, out);
+  if (key) X.idem.set(key, { ...out, at: X.minute });
   if (f === "drop_response") return (log(502), json({ Title: "Bad Gateway" }, 502));
   if (f === "timeout") {
     log(-1);
@@ -690,7 +697,10 @@ async function main() {
     const f1 = await xi(a.invoiceId);
     ck("FL19. Xero refuses the create: 409 xero_rejected with Xero's message; Hub stays awaiting; journal records the error; retry is safe", f1.httpStatus === 409 && f1.code === "xero_rejected" && invRow(a.invoiceId).fields.Status === "Awaiting external issue" && link(a.invoiceId)?.last_error_code === "xero_rejected" && liveXero().length === 0 && types().join(",") === [XERO_EVENTS.contactLinked, XERO_EVENTS.createRequested, XERO_EVENTS.createFailed].join(","), types().join(","));
     const f2 = await xr(a.invoiceId);
-    ck("FL19b. ... the retry looks first (nothing there), then creates once: 201", f2.httpStatus === 201 && liveXero().length === 1);
+    ck("FL19b. ... a retry inside Xero's 6-minute key window gets the same rejection replayed (same key): 409 xero_rejected, still nothing in Xero, Hub still awaiting", f2.httpStatus === 409 && f2.code === "xero_rejected" && liveXero().length === 0 && invRow(a.invoiceId).fields.Status === "Awaiting external issue");
+    world.x.minute += 6;
+    const f3 = await xr(a.invoiceId);
+    ck("FL19c. ... after the key expires the retry looks first (nothing there), then creates once: 201", f3.httpStatus === 201 && liveXero().length === 1);
     // FL20 / FL21: send failure
     const b = (await freeze(ids.parkside, [[S.ppa, "2026-09-12"]])).invoice;
     world.x.faults.push({ op: "email", mode: "email_fail", n: 1 });
