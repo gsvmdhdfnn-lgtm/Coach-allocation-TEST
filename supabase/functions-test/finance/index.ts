@@ -122,6 +122,22 @@
  *   GET  /coach-cost-facts[?from&to]                 reporting facts (work items + corrections) for later reports
  *   No route pays a coach, builds a coach invoice, reopens a Finance month or writes a Cash Flow event.
  *
+ * F13 suppliers / venues / outgoing agreements + payment schedules (Finance read = GET, Finance manage = POST);
+ * Airtable (sessions, occurrences, venues) is read only; payments are Management-confirmed, never bank truth:
+ *   GET  /suppliers[?type&active]                    suppliers: what we get, what we pay, when, who
+ *   POST /suppliers                                  { name, type, contact*, vatTreatment?, notes?, venueRecordId?, reason? }
+ *   GET  /suppliers/{FSU-..}                         agreement -> schedule -> contact -> payment history
+ *   POST /suppliers/{FSU-..}                         { changed fields..., reason? }  revisioned, audited
+ *   GET  /supplier-agreements[?supplierId]           agreements (every version)
+ *   POST /supplier-agreements                        { supplierId, name, costType, classification, effectiveFrom, ... }  schedule + direct-cost split
+ *   GET  /supplier-agreements/{FSA-..}               schedule, versions, profitability (frozen original-session split)
+ *   POST /supplier-agreements/{FSA-..}/version       a NEW effective-dated version (never a rewrite)
+ *   GET  /supplier-instalments[?supplierId&state&from&to]
+ *   GET  /supplier-instalments/{FSI-..}              one instalment + payments + history
+ *   POST /supplier-instalments/{FSI-..}/confirm-estimate | move | split | payment | cancel
+ *   GET  /supplier-cost-facts[?from&to]              profitability facts + cash-timing facts, kept separate
+ *   No route creates a supplier credit (F14), an overhead / salary (F15), a bank payment or a Cash Flow event.
+ *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
  * tenant-looking query parameter or body key is rejected with 400, never
@@ -155,6 +171,8 @@ import { type XeroDeps, issueToXero, linkXeroContact, readXeroInvoiceState, read
 import { matchStripeRoute, parseParentLink, parseStripeQuery, parseStripeSettings } from "./finance-stripe.ts";
 import { matchCoachCostRoute, parseCorrection, parseCostQuery, parseFinalise } from "./finance-coach-costs.ts";
 import { type CostDeps, correctFinanceMonth, finaliseWorkerMonth, listCostFacts, listFinanceMonths, readCostMonth, readFinanceMonth, readWorkerMonth, readWorkerMonths } from "./finance-coach-costs-orchestrator.ts";
+import { matchSupplierRoute, parseAction, parseAgreement, parseSupplierCreate, parseSupplierQuery, parseSupplierUpdate } from "./finance-suppliers.ts";
+import { type SupplierDeps, changeInstalmentAction, createAgreement, createSupplier, listAgreements, listCostFacts as listSupplierCostFacts, listInstalments, listSuppliers, readAgreement, readInstalment, readSupplier, updateSupplier, versionAgreement } from "./finance-suppliers-orchestrator.ts";
 import { matchFamilyRoute, parseApply, parseDecision, parseFamilyPayment, parseFamilyQuery, parseReason } from "./finance-family.ts";
 import { applyFamilyCredit, listFamilyCredits, listRefundDecisions, listRevenueCorrections, readFamily, readRefundDecision, readRefundSource, recordFamilyPayment, recordRefundDecision, reverseRefundDecision, voidFamilyCredit } from "./finance-family-orchestrator.ts";
 import { type StripeDeps, linkStripeCustomer, listStripePayments, listStripeRefunds, listStripeSubscriptions, readStripeStatus, readStripeSubscription, updateStripeSettings } from "./finance-stripe-orchestrator.ts";
@@ -243,7 +261,7 @@ async function resolveCaller(authHeader: string | null): Promise<FinanceCaller |
   };
 }
 
-const deps: SettingsDeps & CommercialDeps & XeroDeps & StripeDeps & CostDeps = {
+const deps: SettingsDeps & CommercialDeps & XeroDeps & StripeDeps & CostDeps & SupplierDeps = {
   airtable: { baseId: AIRTABLE_BASE_ID, token: AIRTABLE_TOKEN },
   grants: { supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY },
   // TEST DEPLOYMENT GUARD (F9): a live Xero connection must reach a Xero Demo Company - TEST never issues into a real Xero organisation.
@@ -557,6 +575,42 @@ async function handleCoachCosts(req: Request, url: URL, match: NonNullable<Retur
   return commercialResponse(await correctFinanceMonth(deps, caller, r.params.monthId, p));
 }
 
+/** F13 routes: same order as F3-F12 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleSuppliers(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchSupplierRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  // Writes take no query parameters at all (parsed as a route with none allowed).
+  const q = parseSupplierQuery(req.method === "GET" ? r.name : "suppliers.create", url.searchParams, isTenantKey);
+  if (!q.ok) return commercialResponse({ status: "error", ...q });
+  if (r.name === "suppliers.list") return commercialResponse(await listSuppliers(deps, caller, { type: q.type, active: q.active }));
+  if (r.name === "suppliers.one") return commercialResponse(await readSupplier(deps, caller, r.params.supplierId));
+  if (r.name === "agreements.list") return commercialResponse(await listAgreements(deps, caller, { supplierId: q.supplierId }));
+  if (r.name === "agreements.one") return commercialResponse(await readAgreement(deps, caller, r.params.agreementId));
+  if (r.name === "instalments.list") return commercialResponse(await listInstalments(deps, caller, { supplierId: q.supplierId, state: q.state, from: q.from, to: q.to }));
+  if (r.name === "instalments.one") return commercialResponse(await readInstalment(deps, caller, r.params.instalmentId));
+  if (r.name === "facts") return commercialResponse(await listSupplierCostFacts(deps, caller, q));
+  const raw = await req.text();
+  if (r.name === "suppliers.create" || r.name === "suppliers.update") {
+    const p = r.name === "suppliers.create" ? parseSupplierCreate(raw, isTenantKey) : parseSupplierUpdate(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    if (r.name === "suppliers.create") return commercialResponse(await createSupplier(deps, caller, p));
+    return commercialResponse(await updateSupplier(deps, caller, r.params.supplierId, p));
+  }
+  if (r.name === "agreements.create" || r.name === "agreements.version") {
+    const p = parseAgreement(raw, isTenantKey, r.name === "agreements.version");
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    if (r.name === "agreements.create") return commercialResponse(await createAgreement(deps, caller, p.supplierId as string, p.spec));
+    return commercialResponse(await versionAgreement(deps, caller, r.params.agreementId, p.spec));
+  }
+  const p = parseAction(r.params.action, raw, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  return commercialResponse(await changeInstalmentAction(deps, caller, r.params.instalmentId, r.params.action, p.input));
+}
+
 /** F11 routes: same order as F3-F10 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
 async function handleFamily(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchFamilyRoute>>): Promise<Response> {
   if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
@@ -618,7 +672,11 @@ Deno.serve(async (req: Request) => {
   try {
     const decoded = decodedPath(route);
     if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
-    // F12 first: it owns only coach-costs/..., coach-summaries/... and coach-cost-facts.
+    // F13 first: it owns only suppliers/..., supplier-agreements/..., supplier-instalments/... and supplier-cost-facts.
+    const suppliers = matchSupplierRoute(route, req.method);
+    if (suppliers) return await handleSuppliers(req, url, suppliers);
+
+    // F12 next: it owns only coach-costs/..., coach-summaries/... and coach-cost-facts.
     const coachCosts = matchCoachCostRoute(route, req.method);
     if (coachCosts) return await handleCoachCosts(req, url, coachCosts);
 

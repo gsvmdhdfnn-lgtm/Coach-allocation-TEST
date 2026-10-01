@@ -99,6 +99,21 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   ck('B15. F12 coach cost routes are live in the artifact: reads GET-only (401 without a token), writes POST-only (405), no reopen / payment route (404)', cc401.status === 401 && cw401.status === 401 && cm401.status === 401 && cf405.status === 405 && cs401.status === 401 && cr405.status === 405 && cx401.status === 401 && creo404.status === 404 && cpay404.status === 404, `${cc401.status}/${cw401.status}/${cm401.status}/${cf405.status}/${cs401.status}/${cr405.status}/${cx401.status}/${creo404.status}/${cpay404.status}`);
   ck('B16. F12 writes go through its atomic database functions only (finance_worker_month_* RPCs in the artifact)', ['finance_worker_month_finalise', 'finance_worker_month_correct'].every((f) => flat.includes(f)));
 
+  const su401 = await call('GET', 'suppliers');
+  const su1 = await call('GET', 'suppliers/FSU-0123456789AB');
+  const sa401 = await call('GET', 'supplier-agreements');
+  const sv405 = await call('GET', 'supplier-agreements/FSA-0123456789AB/version');
+  const sa405 = await call('POST', 'supplier-agreements/FSA-0123456789AB');
+  const si401 = await call('GET', 'supplier-instalments/FSI-0123456789AB');
+  const sp405 = await call('GET', 'supplier-instalments/FSI-0123456789AB/payment');
+  const sl405 = await call('POST', 'supplier-instalments');
+  const sx401 = await call('GET', 'supplier-cost-facts');
+  const scr404 = await call('POST', 'supplier-instalments/FSI-0123456789AB/apply-credit');
+  const scc404 = await call('POST', 'supplier-credits');
+  const scf404 = await call('GET', 'cash-flow');
+  ck('B17. F13 supplier routes are live in the artifact: reads GET-only (401 without a token), writes POST-only (405), an agreement is never POSTed in place (405), no supplier-credit / Cash Flow route (404)', su401.status === 401 && su1.status === 401 && sa401.status === 401 && sv405.status === 405 && sa405.status === 405 && si401.status === 401 && sp405.status === 405 && sl405.status === 405 && sx401.status === 401 && scr404.status === 404 && scc404.status === 404 && scf404.status === 404, `${su401.status}/${su1.status}/${sa401.status}/${sv405.status}/${sa405.status}/${si401.status}/${sp405.status}/${sl405.status}/${sx401.status}/${scr404.status}/${scc404.status}/${scf404.status}`);
+  ck('B18. F13 writes go through its atomic database functions only (finance_supplier_* RPCs in the artifact)', ['finance_supplier_write', 'finance_supplier_agreement_record', 'finance_supplier_instalment_change'].every((f) => flat.includes(f)));
+
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;
   console.log(`\n${results.length - failed}/${results.length} passing`);

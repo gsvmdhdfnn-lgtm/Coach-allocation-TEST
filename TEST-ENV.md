@@ -18847,3 +18847,681 @@ and `build-needs-attention-bundle --check` MATCH.
   - **Operator item unchanged:** `drop schema f2probe cascade;` (it also
     removes the helpers).
 - **Deployed:** `finance` v19, `needs-attention` v14. Production untouched.
+
+## Finance Foundation — F13 (suppliers / venues / outgoing agreements + payment schedules) — CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN — TEST only — 2026-10-01
+
+> **CHECKPOINT: code complete, tests pass, NOT deployed, NOT live-proven.**
+>
+> - The committed `finance` artifact
+>   (`supabase/deploy-artifacts/finance/index.js`, 544,522 bytes, sha256
+>   `f0c069de8d601b652c948c6a5f86e90d51ed78af0ed8e0219dd18f1fbc61f6dc`) is
+>   too large for this session to deploy. It needs an operator deploy as
+>   **`finance` v20**: the exact committed artifact, `verify_jwt` true,
+>   one `index.js`.
+> - **TEST schema is applied** (FIN13.6). The F13 tables are empty and the
+>   audit count is unchanged at **274**.
+> - `finance` v19 stays deployed. It has no F13 routes, so nothing calls the
+>   new tables yet.
+> - **Not built:** supplier credits (F14), Overheads / Salaries (F15), Cash
+>   Flow, Month Report, Needs Attention changes. F14 has not been started.
+> - **Production untouched.**
+
+### FIN13.1 Pre-implementation audit (2026-10-01) — no ownership conflict
+
+- **Airtable Venues** (`tbl3o9WbWOdLvaPQF`) is operational only: name,
+  address, access notes. It holds no agreement, cost or payment fields. The
+  Design Pack places the venue agreement and cost in Finance.
+- **No supplier, cost or outgoing-payment table** exists in TEST Airtable
+  or Supabase.
+- **Sessions to venue / service:**
+  - Sessions carry `Venue` (`fldZXp0JReQiZAOsI`), `Session ID`
+    (`fldNtoKiWVgNkzTgm`) and `Finance Service ID` (`fldciYOlVZ9yVDf59`, F3);
+  - occurrences carry `Date`, `Status` (Scheduled / Completed / Cancelled /
+    Postponed) and `Session`.
+- **Needs Attention:** no active outgoing-payment or estimate rule. Only
+  ATT-047 and ATT-048 are Finance-active. Nothing in NA changes.
+- **F2:** there is no estimate-reminder setting.
+- **Legacy production `app.js`:** has an encrypted static `venue_cost` per
+  session on the password-locked Financials page. That is reporting only,
+  not a data source, and it is production, so it was not touched.
+- **Slice 6 Occurrence Financial Outcomes "Venue Outcome"**
+  (Paid / Credit / None) stays Coaches-owned. F13 does not read it to
+  redistribute anything; venue credits are F14.
+- **F12** owns Coach cost only. Non-Coach contractors belong in F13, as
+  the brief says.
+
+### FIN13.2 Model
+
+- **Supplier** (`FSU-…`):
+  - **one structure for all types:** `venue` / `contractor` (Contractor /
+    Consultant) / `software_service` / `other`;
+  - **fields:** name, active, contact name / email / phone, VAT treatment
+    (`plus_vat` / `vat_included` / `no_vat`, reusing F2's vocabulary),
+    notes, and an optional Venues record link (venue type only, checked to
+    exist);
+  - **revisioned and never deleted.** Duplicate name + type is refused
+    (409 `supplier_exists`). An inactive supplier keeps its history but
+    takes no new agreement (409 `supplier_inactive`).
+- **Agreement** (`FSA-…`, append-only):
+  - **fields:** supplier, name, description, cost type, frequency,
+    direct / general classification, effective from / until, amount /
+    basis, link, optional source-document reference;
+  - **a change is a NEW version** (`supersedes_agreement_id`; one successor
+    only, enforced by a unique index). Nothing is ever edited in place.
+  - Status (upcoming / active / ended / superseded) and the effective end
+    (the successor's start minus 1 day) are derived, not stored.
+- **Cost types:**
+  - `fixed`: amount per period; monthly / quarterly / annually;
+  - `hourly`: rate × expected monthly hours; monthly; always Estimated
+    until confirmed;
+  - `one_off`;
+  - `scheduled`: one future payment; must be due after today;
+  - `custom_dates`: a list of { dueDate, amount, estimated?, note? }, so
+    different amounts on different dates are allowed.
+- **Schedule:**
+  - recurring dates keep the anchor day (31 Jan → 28 Feb → 31 Mar);
+  - the schedule ends at `instalmentCount` or `effectiveUntil`;
+  - at most 120 instalments.
+- **Instalment** (`FSI-…`):
+  - fields: due date, original due date, planned amount (immutable),
+    amount due, amount state (estimated / confirmed), paid, split-from,
+    note, cancel (at / by / reason);
+  - **states are derived:** Estimated / Confirmed / Partially Paid / Paid /
+    Cancelled;
+  - **remaining** = amount due − paid, computed in ONE place
+    (`remainingOf`). F14 will subtract applied credits there.
+  - There are no credit fields.
+- **Payment** (`FSP-…`, append-only, Management-confirmed):
+  - fields: amount, paid date (today or earlier), method (bank_transfer /
+    card / direct_debit / cash / other), reference, note, remaining after,
+    recorded at / by;
+  - this is not bank truth, and there is no reconciliation.
+- **Money:** integer pence throughout. Money input is a string with 2
+  decimal places; a number such as 12.5, or "12.345", is refused.
+
+### FIN13.3 Venue profitability vs cash timing (two separate calculations)
+
+- **Profitability (direct agreements only):**
+  - the agreement total is spread EQUALLY (exact pence; leftover pennies go
+    to the earliest dates) across the **originally agreed relevant
+    occurrences**;
+  - those are the occurrences of the linked sessions, dated inside the
+    agreement period, that were not already Cancelled / Postponed when the
+    agreement was made;
+  - the split is frozen in `finance_supplier_allocations` with each
+    occurrence's status, session, Finance Service ID and programme label at
+    that moment.
+- **A later cancellation does NOT redistribute.** The read model shows the
+  occurrence's current status (`cancelledSinceAgreement`), but its share
+  still counts.
+- **A genuine change is an explicit new version** (409 rules in FIN13.4):
+  - the predecessor's allocations dated on/after the successor's start are
+    marked superseded (still stored, no longer counted);
+  - the successor freezes its own allocation over its own period.
+- **Cash timing** is the instalments' own dates and amounts. It is never
+  allocated to sessions.
+  - Example (tested): £1,000 over 10 sessions paid as 2 × £500 → £100 per
+    session; cash is £500 on each date.
+- **Links use stable ids only:** `sessionIds` (Session ID) OR
+  `financeServiceId` (FSV-…), never both.
+  - **Unresolved** (`link_state` unresolved, nothing allocated, listed
+    separately in facts) when:
+    - any Session ID is unknown or ambiguous;
+    - the Finance Service has no sessions;
+    - there are no relevant occurrences.
+  - Nothing is ever guessed from venue name, programme label, amount or
+    coach.
+  - A linked session without a Finance Service ID shows as an unresolved
+    programme bucket.
+  - General agreements are `not_applicable` and cannot be linked.
+- **Direct agreements require `effectiveUntil`** (it bounds the agreed
+  sessions).
+
+### FIN13.4 Instalment actions + version rules
+
+Every action is explicit, under the write lock, and audited.
+
+- **confirm-estimate** — `{ amount }` (actual) or `{ useEstimate: true }`:
+  - the amount due becomes Confirmed; Paid is untouched (the response says
+    so);
+  - confirming twice is 409 `already_confirmed`;
+  - **an Estimated instalment cannot be paid** (409
+    `amount_still_estimated`).
+- **payment** — partial or full:
+  - refused if more than the remaining balance (409 `overpayment`);
+  - the original obligation is preserved (planned and amount due
+    unchanged);
+  - the audit event is `partially_paid` or `paid`.
+- **move** — a new due date, with a reason:
+  - `original_due_date` is kept;
+  - after a partial payment this is how the remaining balance gets a new
+    date; it never duplicates the payment.
+- **split** — the parts must add up to the REMAINING amount (409
+  `split_mismatch`):
+  - the first part stays on the instalment (amount due = paid + part 1,
+    due = part 1's date);
+  - the other parts become child instalments (`split_from_instalment_id`).
+- **cancel** — needs a reason, and only when nothing is paid:
+  - partly paid: 409 `instalment_partially_paid`;
+  - fully paid: 409 `instalment_paid`;
+  - already cancelled: 409 `instalment_cancelled`.
+- **A paid or cancelled instalment never changes again.** Corrections come
+  later.
+- **Version** (`POST /supplier-agreements/{FSA}/version`) — needs a reason:
+  - must start after the old version (409 `version_must_start_later`) and
+    today or later (409 `version_cannot_start_in_past`);
+  - an agreement versions once (409 `agreement_already_versioned`; change
+    the latest version instead);
+  - it cancels the predecessor's unpaid open instalments due on/after its
+    start, with the reason "Superseded by FSA-… from date", each audited;
+  - it is refused if any of them already has money paid (409
+    `paid_instalment_after_change`, ids listed). Paid history is never
+    rewritten.
+  - If the old version still owes a balance for the period it covered,
+    split that instalment first, so the part for the earlier sessions stays
+    due before the change. This is tested (700.00 counted = 500.00 paid +
+    200.00 still due).
+
+### FIN13.5 Contractors (non-Coach)
+
+- A `contractor` supplier with an `hourly` agreement: rate × expected
+  monthly hours is the forecast, e.g. 25.00 × 12.50 h = 312.50 Estimated
+  per month (half-away rounding in pence).
+- Each month, ONE actual amount is confirmed (e.g. 287.50). The forecast
+  stays visible as the planned amount.
+- No timesheets.
+
+### FIN13.6 Supabase (TEST) — applied 2026-10-01
+
+- **Tables** (RLS on, all rights revoked from public / anon /
+  authenticated):
+  - `finance_suppliers`;
+  - `finance_supplier_agreements` (CHECKs: link vs classification,
+    linked ⇒ allocations, custom_dates ⇔ frequency, hourly shape; unique
+    index `finance_supplier_agreements_one_successor`);
+  - `finance_supplier_allocations`;
+  - `finance_supplier_instalments` (CHECKs: paid ≤ amount due, estimated ⇒
+    unpaid, cancel fields all-or-none, cancelled ⇒ unpaid);
+  - `finance_supplier_payments`.
+- **Guards:**
+  - agreements, allocations and payments refuse UPDATE / DELETE;
+  - suppliers and instalments refuse DELETE;
+  - all five refuse TRUNCATE (`f13:history_is_append_only`);
+  - supplier updates must keep identity and step the revision by +1;
+  - the instalment guard keeps identity, original due date, planned
+    amount and split-from; freezes a cancelled or fully paid row; paid only
+    grows; no confirmed → estimated; amount due grows only on estimate
+    confirmation; amount due and paid never change together.
+- **Functions** (EXECUTE: service_role only). Each writes its
+  `finance_audit_events` rows in the same transaction via
+  `finance_supplier_insert_audit`, which refuses an empty event list.
+  - `finance_supplier_write`: create, or update with an expected revision
+    → `supplier_changed`;
+  - `finance_supplier_agreement_record`: agreement + allocations +
+    instalments + supersede-cancels. It re-checks the version rules, the
+    exact cancel list (`agreement_changed`), totals / counts / allocation
+    sum (`snapshot_mismatch`), and that new instalments are unpaid;
+  - `finance_supplier_instalment_change`: locks the row (`FOR UPDATE`)
+    and compares it to the state the API planned on
+    (`instalment_changed`), then re-checks every rule in FIN13.4.
+- **Apply note:**
+  - applied with `execute_sql` in 4 steps (no DROP; the `before truncate`
+    trigger definitions as their own step);
+  - recorded as migration `20261001160000 finance_f13_suppliers`;
+  - the full SQL is in FIN13.12.
+- **DB smoke test** (one DO block that raised at the end, so everything
+  rolled back; verified after: audit 274, F13 tables empty). All 30
+  outcomes were as designed:
+  - S1 create ok; S2 `supplier_changed`; S3 update ok; S4 duplicate key;
+  - A1 / A2 `snapshot_mismatch`; A3 agreement ok;
+  - P1 `overpayment`; P2 partial ok; P3 `instalment_changed`;
+    P4 `amount_still_estimated`;
+  - C1 `instalment_partially_paid`; M1 move ok;
+  - X1 `split_mismatch`; X2 split ok;
+  - E1 use-estimate ok; C2 cancel ok; C3 `instalment_cancelled`;
+  - V1 `paid_instalment_after_change`; V2 `agreement_changed`;
+    V3 version ok; V4 `agreement_already_versioned`;
+  - G1–G7 direct UPDATE / DELETE on payments / instalments / agreements /
+    allocations / suppliers → `f13:history_is_append_only`;
+  - **AUDIT +9** for 9 successful calls;
+  - **privileges:** anon / authenticated cannot execute; service_role can.
+
+### FIN13.7 API (all under `finance`, F1 rules) + access
+
+The order is the same as F3–F12: 404 / 405 → 401 → 403
+`management_required` → 400 query / body (tenant keys → 400
+`tenant_param_rejected`; writes take no query parameters) → F1
+`authorizeFinance` (View reads; Manage writes; no grant 403
+`finance_access_denied`; module off 403 `finance_module_disabled`).
+
+| Method | Path | Access |
+|---|---|---|
+| GET | `suppliers[?type&active]` | View — suppliers + what we get + money summary (outstanding confirmed / estimated, paid to date, overdue, next due) |
+| POST | `suppliers` / `suppliers/{FSU}` | Manage — create / update (revision +1) |
+| GET | `suppliers/{FSU}` | View — what we are getting → paying → when → who → payment history → schedule |
+| GET | `supplier-agreements[?supplierId]` / `supplier-agreements/{FSA}` | View — all versions; one agreement with version chain, schedule + payments, profitability (frozen split + current occurrence status) |
+| POST | `supplier-agreements` / `supplier-agreements/{FSA}/version` | Manage |
+| GET | `supplier-instalments[?supplierId&state&from&to]` / `supplier-instalments/{FSI}` | View — one instalment with payments, split children and its audit history |
+| POST | `supplier-instalments/{FSI}/confirm-estimate \| move \| split \| payment \| cancel` | Manage (payment / split 201, others 200) |
+| GET | `supplier-cost-facts[?from&to]` (months, ≤ 12, default the 3 months to now) | View — profitability facts, by Finance Service, unresolved direct agreements, and cash timing (due / paid), kept separate; not Cash Flow events |
+
+- **Not provided:** supplier-credit, Cash Flow, delete or edit-in-place
+  routes. An agreement is never POSTed in place (405).
+- The brief's suggested `…/replace-or-version` is named `…/version`.
+- **Concurrency:**
+  - every write takes the shared Finance write lock `commercial:{org}`
+    (409 `finance_commercial_busy`);
+  - the database function independently locks the instalment row and
+    refuses a stale plan.
+  - Two simultaneous payments can therefore never overpay or duplicate the
+    remaining balance (tested at both layers).
+
+### FIN13.8 Audit
+
+- **Events** (contract `finance-suppliers-v1`; record id `ORG:FS?-…`):
+  - `finance_supplier.created` / `.updated`;
+  - `finance_supplier_agreement.created` / `.versioned`;
+  - `finance_supplier_instalment.created` (one per instalment, including
+    split children);
+  - `finance_supplier_instalment.estimate_confirmed` / `.moved` / `.split`
+    / `.partially_paid` / `.paid` / `.cancelled` (supersede-cancels
+    included).
+- Reads and refusals write nothing. No secrets appear in any payload.
+
+### FIN13.9 Code, tests
+
+- **Code:** `supabase/functions-test/finance/`
+  - `finance-suppliers.ts` (pure);
+  - `-repository.ts` (Airtable read only + the three RPCs);
+  - `-orchestrator.ts`;
+  - `index.ts` (F13 routes matched first).
+- **Mirrors:** `tests/support/` (only import paths swapped; drift-checked).
+- **Focused suite:** `tests/support/finance-suppliers.test.ts` (shim
+  `tests/e2e/financesupplierstest.js`) — **92/92**.
+  - It runs the real orchestrator + repository against fake Airtable and
+    fake PostgREST + RPCs with the same rules, CHECKs and guards as the
+    SQL.
+  - It covers brief tests 1–36 and drift checks Z1–Z9: pure module, View /
+    Manage + lock, RPC-only writes, routing order, nothing in the 12 NA
+    shared modules, mirrors, no credit / Cash Flow / overhead / Month
+    Report code or routes, remaining computed in one place.
+- **Mutation:** 36/36 killed (`mut_f13.py` mutates canonical + mirror
+  together).
+- **Strict `tsc`:** clean for the F13 files. The pre-existing errors in
+  `finance-commercial-orchestrator.ts` are unchanged.
+- **Regression:**
+  - every Finance suite is green, including F12 83/83;
+  - bundle test 18/18 (B17 F13 routes live in the artifact + no credit /
+    Cash Flow route; B18 F13 RPCs);
+  - `needs-attention --check` MATCH;
+  - **full `node tests/run-all.js` 84/84 files.**
+
+### FIN13.10 Resting TEST state (checkpoint)
+
+- F13 tables empty; audit **274**; `finance` v19 deployed (no F13 routes).
+- F12 resting fixtures unchanged (FIN12.13).
+- No ZZTEST supplier data exists yet. The live proof A–Z will create it
+  after the v20 deploy.
+
+### FIN13.11 Open items / future debt
+
+- **Operator:** deploy the committed artifact as `finance` v20. Then run
+  the live proof A–Z with ZZTEST suppliers / venues (a venue linked to
+  `ZZTEST-F12-A` / `FSV-B2A5C5275835` sessions).
+- **Design choices to confirm** (taken from the brief's intent):
+  - a version may start today or later only;
+  - an estimate must be confirmed (actual or Use Estimate) before it can
+    be paid;
+  - direct agreements need an end date;
+  - the originally agreed set excludes occurrences already Cancelled /
+    Postponed when the agreement is made;
+  - a version cancels the predecessor's unpaid instalments from its start;
+    a balance owed for the earlier period is kept by splitting first.
+- **Not validated against F3:** `financeServiceId` is not checked against
+  F3's service list. It is used as the Sessions link key; an unknown one
+  simply resolves to no sessions (unresolved).
+- **Paid-instalment corrections** ("use correction logic later") are not
+  built; a paid instalment is frozen.
+- **F14:**
+  - supplier / venue credits created, left unapplied, applied to an unpaid
+    instalment, unapplied before Paid — subtract them in `remainingOf()`
+    and in the instalment function's remaining check;
+  - Slice 6 Venue Outcome "Credit" can feed F14.
+- **Not built:** Needs Attention outgoing-payment / estimate rules (no
+  active rule expects them); Cash Flow consumption of
+  `supplier-cost-facts`; Month Report.
+- `finance_supplier_insert_audit` is executable by service_role (default
+  privilege), as with the earlier slices' audit helpers; it can only add
+  audit rows.
+
+### FIN13.12 Applied SQL (`finance_f13_suppliers`, TEST `dkqubldmfyeuudecxmvh`)
+
+```sql
+-- finance_f13_suppliers (TEST only). Suppliers / agreements / instalments / payments.
+-- Every write is ONE database function call that also writes its finance_audit_events rows.
+
+create table public.finance_suppliers (
+  organisation_id text not null check (organisation_id ~ '^[A-Za-z0-9_-]{1,64}$'),
+  supplier_id text not null check (supplier_id ~ '^FSU-[0-9A-F]{12}$'),
+  name text not null check (length(btrim(name)) between 1 and 200),
+  supplier_type text not null check (supplier_type in ('venue','contractor','software_service','other')),
+  active boolean not null default true,
+  contact_name text check (contact_name is null or length(contact_name) <= 200),
+  contact_email text check (contact_email is null or length(contact_email) <= 320),
+  contact_phone text check (contact_phone is null or length(contact_phone) <= 50),
+  vat_treatment text check (vat_treatment is null or vat_treatment in ('plus_vat','vat_included','no_vat')),
+  notes text check (notes is null or length(notes) <= 2000),
+  venue_record_id text check (venue_record_id is null or venue_record_id ~ '^rec[A-Za-z0-9]{14}$'),
+  revision integer not null check (revision >= 1),
+  created_at timestamptz not null,
+  created_by uuid not null,
+  updated_at timestamptz not null,
+  updated_by uuid not null,
+  primary key (organisation_id, supplier_id),
+  check (venue_record_id is null or supplier_type = 'venue')
+);
+
+create table public.finance_supplier_agreements (
+  organisation_id text not null,
+  agreement_id text not null check (agreement_id ~ '^FSA-[0-9A-F]{12}$'),
+  supplier_id text not null,
+  supersedes_agreement_id text check (supersedes_agreement_id is null or supersedes_agreement_id ~ '^FSA-[0-9A-F]{12}$'),
+  name text not null check (length(btrim(name)) between 1 and 200),
+  description text check (description is null or length(description) <= 2000),
+  cost_type text not null check (cost_type in ('fixed','hourly','one_off','scheduled','custom_dates')),
+  frequency text check (frequency is null or frequency in ('monthly','quarterly','annually','custom_dates')),
+  classification text not null check (classification in ('direct','general')),
+  effective_from date not null,
+  effective_until date check (effective_until is null or effective_until >= effective_from),
+  amount_minor bigint check (amount_minor is null or amount_minor > 0),
+  hourly_rate_minor bigint check (hourly_rate_minor is null or hourly_rate_minor > 0),
+  expected_monthly_hours_hundredths bigint check (expected_monthly_hours_hundredths is null or expected_monthly_hours_hundredths > 0),
+  amount_is_estimate boolean not null,
+  instalment_count integer not null check (instalment_count between 1 and 120),
+  total_planned_minor bigint not null check (total_planned_minor > 0),
+  link_session_ids jsonb not null default '[]'::jsonb check (jsonb_typeof(link_session_ids) = 'array'),
+  link_finance_service_id text check (link_finance_service_id is null or link_finance_service_id ~ '^FSV-[0-9A-F]{12}$'),
+  link_state text not null check (link_state in ('linked','unresolved','not_applicable')),
+  allocation_count integer not null check (allocation_count >= 0),
+  source_document_ref text check (source_document_ref is null or length(source_document_ref) <= 500),
+  reason text check (reason is null or length(reason) <= 500),
+  created_at timestamptz not null,
+  created_by uuid not null,
+  primary key (organisation_id, agreement_id),
+  foreign key (organisation_id, supplier_id) references public.finance_suppliers (organisation_id, supplier_id),
+  check (classification = 'direct' or link_state = 'not_applicable'),
+  check (link_state <> 'linked' or allocation_count > 0),
+  check ((cost_type = 'custom_dates') = (frequency = 'custom_dates')),
+  check (cost_type <> 'hourly' or (hourly_rate_minor is not null and expected_monthly_hours_hundredths is not null and frequency = 'monthly'))
+);
+-- One successor per agreement: a version chain never forks.
+create unique index finance_supplier_agreements_one_successor on public.finance_supplier_agreements (organisation_id, supersedes_agreement_id) where supersedes_agreement_id is not null;
+
+create table public.finance_supplier_allocations (
+  organisation_id text not null,
+  agreement_id text not null,
+  occurrence_record_id text not null check (occurrence_record_id ~ '^rec[A-Za-z0-9]{14}$'),
+  occurrence_ref text,
+  occurrence_date date not null,
+  status_at_agreement text,
+  session_record_id text,
+  session_id text,
+  session_name text,
+  finance_service_id text,
+  programme_label text,
+  allocated_minor bigint not null check (allocated_minor >= 0),
+  primary key (organisation_id, agreement_id, occurrence_record_id),
+  foreign key (organisation_id, agreement_id) references public.finance_supplier_agreements (organisation_id, agreement_id)
+);
+
+create table public.finance_supplier_instalments (
+  organisation_id text not null,
+  instalment_id text not null check (instalment_id ~ '^FSI-[0-9A-F]{12}$'),
+  agreement_id text not null,
+  supplier_id text not null,
+  sequence integer not null check (sequence >= 1),
+  original_due_date date not null,
+  due_date date not null,
+  planned_minor bigint not null check (planned_minor > 0),
+  amount_due_minor bigint not null check (amount_due_minor > 0),
+  amount_state text not null check (amount_state in ('estimated','confirmed')),
+  paid_minor bigint not null default 0 check (paid_minor >= 0),
+  split_from_instalment_id text check (split_from_instalment_id is null or split_from_instalment_id ~ '^FSI-[0-9A-F]{12}$'),
+  note text check (note is null or length(note) <= 500),
+  cancelled_at timestamptz,
+  cancelled_by uuid,
+  cancel_reason text,
+  created_at timestamptz not null,
+  created_by uuid not null,
+  primary key (organisation_id, instalment_id),
+  foreign key (organisation_id, agreement_id) references public.finance_supplier_agreements (organisation_id, agreement_id),
+  check (paid_minor <= amount_due_minor),
+  check (amount_state = 'confirmed' or paid_minor = 0),
+  check ((cancelled_at is null) = (cancel_reason is null) and (cancelled_at is null) = (cancelled_by is null)),
+  check (cancelled_at is null or paid_minor = 0)
+);
+create index finance_supplier_instalments_due on public.finance_supplier_instalments (organisation_id, due_date);
+
+create table public.finance_supplier_payments (
+  organisation_id text not null,
+  payment_id text not null check (payment_id ~ '^FSP-[0-9A-F]{12}$'),
+  instalment_id text not null,
+  agreement_id text not null,
+  supplier_id text not null,
+  amount_minor bigint not null check (amount_minor > 0),
+  paid_date date not null,
+  method text check (method is null or method in ('bank_transfer','card','direct_debit','cash','other')),
+  reference text check (reference is null or length(reference) <= 200),
+  note text check (note is null or length(note) <= 500),
+  remaining_after_minor bigint not null check (remaining_after_minor >= 0),
+  recorded_at timestamptz not null,
+  recorded_by uuid not null,
+  primary key (organisation_id, payment_id),
+  foreign key (organisation_id, instalment_id) references public.finance_supplier_instalments (organisation_id, instalment_id)
+);
+
+alter table public.finance_suppliers enable row level security;
+alter table public.finance_supplier_agreements enable row level security;
+alter table public.finance_supplier_allocations enable row level security;
+alter table public.finance_supplier_instalments enable row level security;
+alter table public.finance_supplier_payments enable row level security;
+revoke all on public.finance_suppliers, public.finance_supplier_agreements, public.finance_supplier_allocations, public.finance_supplier_instalments, public.finance_supplier_payments from public, anon, authenticated;
+-- Guards: agreements, allocations and payments are append-only; suppliers and
+-- instalments change only in the narrow ways the write functions use.
+create or replace function public.finance_supplier_append_only() returns trigger language plpgsql set search_path = '' as $$
+begin
+  raise exception 'f13:history_is_append_only';
+end $$;
+create trigger finance_supplier_agreements_immutable before update or delete on public.finance_supplier_agreements for each row execute function public.finance_supplier_append_only();
+create trigger finance_supplier_allocations_immutable before update or delete on public.finance_supplier_allocations for each row execute function public.finance_supplier_append_only();
+create trigger finance_supplier_payments_immutable before update or delete on public.finance_supplier_payments for each row execute function public.finance_supplier_append_only();
+create trigger finance_suppliers_no_delete before delete on public.finance_suppliers for each row execute function public.finance_supplier_append_only();
+create trigger finance_supplier_instalments_no_delete before delete on public.finance_supplier_instalments for each row execute function public.finance_supplier_append_only();
+create trigger finance_suppliers_no_truncate before truncate on public.finance_suppliers for each statement execute function public.finance_supplier_append_only();
+create trigger finance_supplier_agreements_no_truncate before truncate on public.finance_supplier_agreements for each statement execute function public.finance_supplier_append_only();
+create trigger finance_supplier_allocations_no_truncate before truncate on public.finance_supplier_allocations for each statement execute function public.finance_supplier_append_only();
+create trigger finance_supplier_instalments_no_truncate before truncate on public.finance_supplier_instalments for each statement execute function public.finance_supplier_append_only();
+create trigger finance_supplier_payments_no_truncate before truncate on public.finance_supplier_payments for each statement execute function public.finance_supplier_append_only();
+
+create or replace function public.finance_supplier_update_guard() returns trigger language plpgsql set search_path = '' as $$
+begin
+  if new.organisation_id <> old.organisation_id or new.supplier_id <> old.supplier_id or new.created_at <> old.created_at or new.created_by <> old.created_by
+     or new.revision <> old.revision + 1 then
+    raise exception 'f13:history_is_append_only';
+  end if;
+  return new;
+end $$;
+create trigger finance_suppliers_update_guard before update on public.finance_suppliers for each row execute function public.finance_supplier_update_guard();
+
+-- An instalment keeps its identity, original obligation and original due date forever.
+-- Paid only grows; a cancelled or fully paid instalment never changes again.
+create or replace function public.finance_supplier_instalment_guard() returns trigger language plpgsql set search_path = '' as $$
+begin
+  if new.organisation_id <> old.organisation_id or new.instalment_id <> old.instalment_id or new.agreement_id <> old.agreement_id
+     or new.supplier_id <> old.supplier_id or new.sequence <> old.sequence or new.original_due_date <> old.original_due_date
+     or new.planned_minor <> old.planned_minor or new.created_at <> old.created_at or new.created_by <> old.created_by
+     or new.split_from_instalment_id is distinct from old.split_from_instalment_id then
+    raise exception 'f13:history_is_append_only';
+  end if;
+  if old.cancelled_at is not null or (old.amount_state = 'confirmed' and old.paid_minor = old.amount_due_minor) then
+    raise exception 'f13:history_is_append_only';
+  end if;
+  if new.paid_minor < old.paid_minor or (old.amount_state = 'confirmed' and new.amount_state = 'estimated') then
+    raise exception 'f13:history_is_append_only';
+  end if;
+  if new.amount_due_minor > old.amount_due_minor and not (old.amount_state = 'estimated' and new.amount_state = 'confirmed') then
+    raise exception 'f13:history_is_append_only';
+  end if;
+  if new.amount_due_minor <> old.amount_due_minor and new.paid_minor <> old.paid_minor then
+    raise exception 'f13:history_is_append_only';
+  end if;
+  return new;
+end $$;
+create trigger finance_supplier_instalments_update_guard before update on public.finance_supplier_instalments for each row execute function public.finance_supplier_instalment_guard();
+
+create or replace function public.finance_supplier_insert_audit(p_events jsonb) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if p_events is null or jsonb_typeof(p_events) <> 'array' or jsonb_array_length(p_events) = 0 then
+    raise exception 'f13:audit_missing';
+  end if;
+  insert into finance_audit_events (organisation_id, actor_user_id, event_type, entity_type, record_id, before, after, reason, context)
+  select e->>'organisation_id', (e->>'actor_user_id')::uuid, e->>'event_type', e->>'entity_type', e->>'record_id',
+         case when e->'before' = 'null'::jsonb then null else e->'before' end,
+         case when e->'after' = 'null'::jsonb then null else e->'after' end,
+         e->>'reason', coalesce(e->'context', '{}'::jsonb)
+    from jsonb_array_elements(p_events) e;
+end $$;
+
+-- Create (p_expected_revision null) or update (expected revision must match) one supplier.
+create or replace function public.finance_supplier_write(p_supplier jsonb, p_expected_revision integer, p_events jsonb) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_org text := p_supplier->>'organisation_id'; v_id text := p_supplier->>'supplier_id'; v_rev integer;
+begin
+  if p_expected_revision is null then
+    insert into finance_suppliers select * from jsonb_populate_record(null::finance_suppliers, p_supplier);
+  else
+    select revision into v_rev from finance_suppliers where organisation_id = v_org and supplier_id = v_id for update;
+    if not found then raise exception 'f13:supplier_not_found'; end if;
+    if v_rev <> p_expected_revision then raise exception 'f13:supplier_changed'; end if;
+    update finance_suppliers s set name = r.name, supplier_type = r.supplier_type, active = r.active, contact_name = r.contact_name,
+           contact_email = r.contact_email, contact_phone = r.contact_phone, vat_treatment = r.vat_treatment, notes = r.notes,
+           venue_record_id = r.venue_record_id, revision = r.revision, updated_at = r.updated_at, updated_by = r.updated_by
+      from jsonb_populate_record(null::finance_suppliers, p_supplier) r
+     where s.organisation_id = v_org and s.supplier_id = v_id;
+  end if;
+  perform finance_supplier_insert_audit(p_events);
+  return jsonb_build_object('supplier_id', v_id);
+end $$;
+
+-- Create an agreement (or a new version of one) with its frozen allocation and its schedule.
+-- A version cancels the predecessor's UNPAID instalments due on/after its start; it is refused
+-- if any predecessor instalment due on/after that date already has money paid against it.
+create or replace function public.finance_supplier_agreement_record(p_agreement jsonb, p_allocations jsonb, p_instalments jsonb, p_cancel jsonb, p_events jsonb) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_org text := p_agreement->>'organisation_id'; v_id text := p_agreement->>'agreement_id'; v_prev text := p_agreement->>'supersedes_agreement_id';
+        v_from date := (p_agreement->>'effective_from')::date; v_total bigint; v_count int; v_alloc bigint; v_n int; v_c jsonb;
+begin
+  if not exists (select 1 from finance_suppliers where organisation_id = v_org and supplier_id = p_agreement->>'supplier_id') then
+    raise exception 'f13:supplier_not_found';
+  end if;
+  if v_prev is not null then
+    if not exists (select 1 from finance_supplier_agreements where organisation_id = v_org and agreement_id = v_prev and supplier_id = p_agreement->>'supplier_id') then
+      raise exception 'f13:agreement_not_found';
+    end if;
+    if exists (select 1 from finance_supplier_agreements where organisation_id = v_org and supersedes_agreement_id = v_prev) then
+      raise exception 'f13:agreement_already_versioned';
+    end if;
+    if v_from <= (select effective_from from finance_supplier_agreements where organisation_id = v_org and agreement_id = v_prev) then
+      raise exception 'f13:version_must_start_later';
+    end if;
+    perform 1 from finance_supplier_instalments where organisation_id = v_org and agreement_id = v_prev for update;
+    if exists (select 1 from finance_supplier_instalments where organisation_id = v_org and agreement_id = v_prev and due_date >= v_from and paid_minor > 0) then
+      raise exception 'f13:paid_instalment_after_change';
+    end if;
+    -- The caller must list exactly the predecessor's open, unpaid instalments due on/after the start.
+    if (select count(*) from finance_supplier_instalments where organisation_id = v_org and agreement_id = v_prev and due_date >= v_from and cancelled_at is null)
+       <> jsonb_array_length(p_cancel)
+       or exists (select 1 from jsonb_array_elements(p_cancel) c where not exists (
+            select 1 from finance_supplier_instalments i where i.organisation_id = v_org and i.agreement_id = v_prev and i.instalment_id = c->>'instalment_id'
+              and i.due_date >= v_from and i.cancelled_at is null and i.paid_minor = 0)) then
+      raise exception 'f13:agreement_changed';
+    end if;
+  elsif jsonb_array_length(p_cancel) <> 0 then
+    raise exception 'f13:snapshot_mismatch';
+  end if;
+  insert into finance_supplier_agreements select * from jsonb_populate_record(null::finance_supplier_agreements, p_agreement);
+  insert into finance_supplier_allocations select * from jsonb_populate_recordset(null::finance_supplier_allocations, p_allocations);
+  insert into finance_supplier_instalments select * from jsonb_populate_recordset(null::finance_supplier_instalments, p_instalments);
+  for v_c in select * from jsonb_array_elements(p_cancel) loop
+    update finance_supplier_instalments set cancelled_at = (v_c->>'cancelled_at')::timestamptz, cancelled_by = (v_c->>'cancelled_by')::uuid, cancel_reason = v_c->>'cancel_reason'
+     where organisation_id = v_org and agreement_id = v_prev and instalment_id = v_c->>'instalment_id';
+  end loop;
+  select coalesce(sum(planned_minor), 0), count(*) into v_total, v_count from finance_supplier_instalments where organisation_id = v_org and agreement_id = v_id;
+  select coalesce(sum(allocated_minor), 0), count(*) into v_alloc, v_n from finance_supplier_allocations where organisation_id = v_org and agreement_id = v_id;
+  if v_total <> (p_agreement->>'total_planned_minor')::bigint or v_count <> (p_agreement->>'instalment_count')::int
+     or v_n <> (p_agreement->>'allocation_count')::int or (v_n > 0 and v_alloc <> v_total)
+     or exists (select 1 from finance_supplier_instalments where organisation_id = v_org and agreement_id = v_id and (supplier_id <> p_agreement->>'supplier_id' or paid_minor <> 0 or cancelled_at is not null)) then
+    raise exception 'f13:snapshot_mismatch';
+  end if;
+  perform finance_supplier_insert_audit(p_events);
+  return jsonb_build_object('agreement_id', v_id, 'total_planned_minor', v_total, 'instalment_count', v_count, 'cancelled', jsonb_array_length(p_cancel));
+end $$;
+
+-- One explicit change to one instalment: confirm_estimate / move / split / payment / cancel.
+-- p_expected is the state the API decided on (paid, amount due, due date, amount state, cancelled);
+-- anything else means someone changed it in between.
+create or replace function public.finance_supplier_instalment_change(p_org text, p_instalment_id text, p_kind text, p_expected jsonb, p_change jsonb, p_new_instalments jsonb, p_payment jsonb, p_events jsonb) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v finance_supplier_instalments%rowtype; v_remaining bigint; v_amount bigint; v_children bigint;
+begin
+  select * into v from finance_supplier_instalments where organisation_id = p_org and instalment_id = p_instalment_id for update;
+  if not found then raise exception 'f13:instalment_not_found'; end if;
+  if v.paid_minor <> (p_expected->>'paid_minor')::bigint or v.amount_due_minor <> (p_expected->>'amount_due_minor')::bigint
+     or v.due_date <> (p_expected->>'due_date')::date or v.amount_state <> p_expected->>'amount_state' or (v.cancelled_at is not null) <> (p_expected->>'cancelled')::boolean then
+    raise exception 'f13:instalment_changed';
+  end if;
+  if v.cancelled_at is not null then raise exception 'f13:instalment_cancelled'; end if;
+  v_remaining := v.amount_due_minor - v.paid_minor;
+  if v_remaining = 0 then raise exception 'f13:instalment_paid'; end if;
+  if p_kind = 'confirm_estimate' then
+    if v.amount_state <> 'estimated' then raise exception 'f13:already_confirmed'; end if;
+    update finance_supplier_instalments set amount_state = 'confirmed', amount_due_minor = (p_change->>'amount_due_minor')::bigint
+     where organisation_id = p_org and instalment_id = p_instalment_id;
+  elsif p_kind = 'move' then
+    update finance_supplier_instalments set due_date = (p_change->>'due_date')::date where organisation_id = p_org and instalment_id = p_instalment_id;
+  elsif p_kind = 'split' then
+    select coalesce(sum(amount_due_minor), 0) into v_children from jsonb_populate_recordset(null::finance_supplier_instalments, p_new_instalments);
+    if jsonb_array_length(p_new_instalments) = 0 or (p_change->>'amount_due_minor')::bigint - v.paid_minor <= 0
+       or (p_change->>'amount_due_minor')::bigint + v_children <> v.amount_due_minor then
+      raise exception 'f13:split_mismatch';
+    end if;
+    update finance_supplier_instalments set amount_due_minor = (p_change->>'amount_due_minor')::bigint, due_date = (p_change->>'due_date')::date
+     where organisation_id = p_org and instalment_id = p_instalment_id;
+    insert into finance_supplier_instalments select * from jsonb_populate_recordset(null::finance_supplier_instalments, p_new_instalments);
+    if exists (select 1 from jsonb_array_elements(p_new_instalments) n where n->>'split_from_instalment_id' <> p_instalment_id or n->>'agreement_id' <> v.agreement_id
+               or n->>'amount_state' <> v.amount_state or (n->>'paid_minor')::bigint <> 0) then
+      raise exception 'f13:split_mismatch';
+    end if;
+  elsif p_kind = 'payment' then
+    if v.amount_state <> 'confirmed' then raise exception 'f13:amount_still_estimated'; end if;
+    v_amount := (p_payment->>'amount_minor')::bigint;
+    if v_amount <= 0 or v_amount > v_remaining then raise exception 'f13:overpayment'; end if;
+    if (p_payment->>'remaining_after_minor')::bigint <> v_remaining - v_amount or p_payment->>'instalment_id' <> p_instalment_id then
+      raise exception 'f13:snapshot_mismatch';
+    end if;
+    update finance_supplier_instalments set paid_minor = paid_minor + v_amount where organisation_id = p_org and instalment_id = p_instalment_id;
+    insert into finance_supplier_payments select * from jsonb_populate_record(null::finance_supplier_payments, p_payment);
+  elsif p_kind = 'cancel' then
+    if v.paid_minor <> 0 then raise exception 'f13:instalment_partially_paid'; end if;
+    update finance_supplier_instalments set cancelled_at = (p_change->>'cancelled_at')::timestamptz, cancelled_by = (p_change->>'cancelled_by')::uuid, cancel_reason = p_change->>'cancel_reason'
+     where organisation_id = p_org and instalment_id = p_instalment_id;
+  else
+    raise exception 'f13:unknown_change';
+  end if;
+  perform finance_supplier_insert_audit(p_events);
+  return jsonb_build_object('instalment_id', p_instalment_id, 'kind', p_kind);
+end $$;
+
+revoke all on function public.finance_supplier_insert_audit(jsonb), public.finance_supplier_write(jsonb, integer, jsonb),
+  public.finance_supplier_agreement_record(jsonb, jsonb, jsonb, jsonb, jsonb),
+  public.finance_supplier_instalment_change(text, text, text, jsonb, jsonb, jsonb, jsonb, jsonb) from public, anon, authenticated;
+grant execute on function public.finance_supplier_write(jsonb, integer, jsonb), public.finance_supplier_agreement_record(jsonb, jsonb, jsonb, jsonb, jsonb),
+  public.finance_supplier_instalment_change(text, text, text, jsonb, jsonb, jsonb, jsonb, jsonb) to service_role;
+```
