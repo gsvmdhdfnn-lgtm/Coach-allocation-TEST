@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "22b169990c809458228d4850cbb89710a88e4681796ebf46b1b0fd445e602501",
-  "artifactBytes": 347507,
+  "artifactSha256": "bf1c428f3dd2249925b4452c6f410638e74e3ed1371ef5df688a6e7177c29ad7",
+  "artifactBytes": 392420,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "e4b67bdde897edef74d5520d9599d166bf0a7434117a36e49fa63432b885be8d",
+  "sourceSha256": "38a586961fe1a43f69bb1e6ef6451333ae99972d7ff5156e5950c77262090c1f",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -138,6 +138,22 @@
       "sha256": "290719688ba164232dbb66ec7ffbdcf70c165f7a2a01f86a4675b7e9828f8f95"
     },
     {
+      "path": "supabase/functions-test/finance/finance-stripe-orchestrator.ts",
+      "sha256": "cf298400a8ba9b07fa977455143ed32f56086166ca88a2bfc1fda7ec4e4a1a17"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-stripe-provider.ts",
+      "sha256": "663ba58937e28b06c4838c168bf8d7d2f03fc4df0900952fe42937e18d74a2fc"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-stripe-repository.ts",
+      "sha256": "e92409318264193d35ba038f08e60fed3afcf17e9a606e169d1d28bed1d3afbc"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-stripe.ts",
+      "sha256": "f1c0249e0e0cb92791e058db16333b87f5adce83c4dff17f380aea967d5fd303"
+    },
+    {
       "path": "supabase/functions-test/finance/finance-xero-orchestrator.ts",
       "sha256": "c9a219d9287a7e103a74d42daaf1b6dba07015c07c44c8095ffe3ff51479b7cc"
     },
@@ -155,7 +171,7 @@
     },
     {
       "path": "supabase/functions-test/finance/index.ts",
-      "sha256": "ef384f57fba3821799847618bf68470cf43797110876b619c0acf509c6ac0daf"
+      "sha256": "7e13e1db0c2a99c7bfe23df4811565da8f5d9fc84091d32f1fb508c5f30adf3d"
     },
     {
       "path": "supabase/functions-test/finance/orchestrator.ts",

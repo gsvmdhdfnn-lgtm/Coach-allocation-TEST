@@ -17325,3 +17325,259 @@ Sequential calls succeed.
   Sheets, Cash Flow, Month Report, Finance UI, PDF, supplier bills,
   payroll, two-way reconciliation and later Finance work.
 - **Production untouched.**
+
+## Finance Foundation — F10 (Stripe READ connector) — CHECKPOINT — TEST only — 2026-10-01
+
+> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
+>
+> - The `finance` bundle is **392,420 bytes**, sha256
+>   `bf1c428f3dd2249925b4452c6f410638e74e3ed1371ef5df688a6e7177c29ad7`
+>   (manifest sha256 `1b8b2305…f1d9309`). That is too large for this
+>   session to deploy. The exact artifact is committed at
+>   `supabase/deploy-artifacts/finance/index.js` and needs deployment
+>   assistance, exactly as for F7–F9.
+> - **Deploy as `finance` v17:** `verify_jwt` true, one `index.js`, a
+>   byte-for-byte copy of the committed artifact.
+> - **Stays as it is:** `needs-attention` v14. Its artifact `--check` is
+>   still MATCH, because no file shared with Needs Attention changed.
+> - **Already deployed (by this session):** the TEST-only emulator
+>   `stripe-sandbox` v1. It is `verify_jwt` false (it has its own key auth)
+>   and byte-identical to `supabase/functions-test/stripe-sandbox/index.ts`
+>   (13,353 bytes, sha256 `95580892…dd97e7727`).
+> - The live proof (A–V) runs after v17 is deployed. It will be labelled
+>   **"connector logic live-proven in TEST; real Stripe external call not
+>   yet proven"**.
+
+### FIN10.1 Pre-implementation audit (2026-10-01)
+
+- **Repos:** no Stripe code, SDK, webhook, key or config in
+  `coach-allocation-test` (HEAD `65c478e` = origin, clean) or in
+  `Coach-allocation-`. The only "stripe" hits are comments saying "no
+  Stripe".
+- **TEST Airtable:** no Stripe id anywhere.
+  - Not on Parents & Guardians, Parent–Player Links or Player Session
+    Links (memberships: Price / Billing Model snapshots, all empty in
+    TEST).
+  - Not on any Finance table. Finance Payments `Source` is Manual / Xero.
+  - Finance Commercial Terms already has Payer = Parent / family and
+    Charge Type = Subscription, but no Stripe price / product link.
+- **TEST Supabase:** no Stripe secret in Vault (0 secrets), no Stripe
+  table or function before this slice.
+- **Josh Evans' real Stripe setup could not be audited.** No credentials,
+  and production is out of bounds. An earlier decision records that Josh
+  uses Stripe for parent subscriptions, but its customer / subscription
+  metadata conventions are **unknown**. They must be audited, read-only,
+  before any real Stripe account is connected.
+- **Mapping verdict:** there is no existing Hub↔Stripe data, so there is
+  nothing ambiguous to reconcile. The brief's own rule order applies:
+  1. a stored link;
+  2. a known metadata convention (none known);
+  3. email only by product decision (none);
+  4. otherwise unmapped.
+
+  So F10 maps customers by stored link only. Player and service stay
+  unresolved.
+- **TEST data finding:** two Parents & Guardians records share Parent ID
+  `PARENT-ED3BDF220DC2` (same email). The parent link therefore refuses
+  an ambiguous Parent ID (409 `parent_id_ambiguous`).
+- **Parent records carry no Organisation link.** That is fine while there
+  is one organisation per base; it is multi-organisation debt (FIN10.10).
+- **Stripe API facts used** (docs.stripe.com is egress-blocked; read via
+  search):
+  - Subscription statuses: `incomplete`, `incomplete_expired`,
+    `trialing`, `active`, `past_due`, `canceled`, `unpaid`, `paused`.
+  - The `2025-03-31.basil` version moved `current_period_*` onto
+    subscription items, removed `invoice` from Charge, and removed the
+    upcoming-invoice retrieve. **F10 therefore pins `Stripe-Version:
+    2024-06-20`** and parses both shapes defensively.
+  - The balance transaction holds the actual `fee` and `net`.
+  - Lists page with `limit` + `starting_after` + `has_more`.
+
+### FIN10.2 Ownership boundary
+
+- **Stripe is the authority** for parent subscriptions, payment methods,
+  charges, payment success / failure, refunds and fees.
+- **The Hub reads and interprets only.** No Stripe state is copied into
+  Airtable.
+- **Local storage holds only:**
+  - the organisation's connection (key in Vault);
+  - explicit customer → parent links;
+  - health stamps.
+- **There is no code path that:**
+  - creates, changes, cancels, retries or refunds anything in Stripe;
+  - writes Stripe metadata;
+  - creates family credit;
+  - records a Stripe payment as an F7 Finance Payment.
+
+### FIN10.3 Connection model (organisation-scoped)
+
+- **`finance_stripe_connections`** — one row per organisation:
+  - `mode`: test / live;
+  - `endpoint`: stripe / sandbox (sandbox ⇒ test);
+  - `status`;
+  - `secret_id`: Vault; `key_kind`: secret / restricted;
+  - `account_id` / `account_name`: recorded by the first health check;
+  - `last_success_at` / `last_error_*`;
+  - `fee_estimate` + `config_revision`.
+- **Recommended credential:** a restricted key with read permissions only.
+- **Secret handling:**
+  - The key is read server-side through the service-role-only RPC
+    `finance_stripe_secret`.
+  - It is held in memory for one request.
+  - It is never stored elsewhere, logged, audited or returned.
+- **Operator-only SQL:**
+  - `finance_stripe_connect(org, mode, endpoint, key, actor, note)` checks
+    that the key prefix matches the mode. It audits
+    `finance_stripe.connected` with only the mode, endpoint and key kind.
+  - `finance_stripe_disconnect` deletes the Vault secret and audits.
+  - Both have execute revoked from every API role.
+- **TEST guard (`stripe.requireTestMode`):** a live connection, a live key
+  (even on a test row), or any object with `livemode: true` gives 409
+  `stripe_live_mode_refused`, and nothing is shown. The emulator is test
+  mode only.
+
+### FIN10.4 API (all under `finance`, F1 rules)
+
+| Route | Access | What |
+|---|---|---|
+| `GET /stripe/status[?check=1]` | View | Connection + readiness. `check=1` reads the Stripe account (read-only) and records it |
+| `GET /stripe/subscriptions[?customer=cus_…]` | View | Every subscription (status=all, all pages), customer + latest invoice + charge + balance transaction expanded in the list call |
+| `GET /stripe/subscriptions/{sub_…}` | View | One subscription + its last 12 invoices + Stripe's upcoming-invoice preview |
+| `GET /stripe/payments[?from&to][&customer]` | View | Charges in a local-date window (default 30 days, max 93) |
+| `GET /stripe/refunds[?from&to]` | View | Refunds already in Stripe |
+| `POST /stripe/customers/{cus_…}/parent-link` | Manage | `{ parentId, reason }` — the explicit link (audited `finance_stripe.customer_linked`) |
+| `POST /stripe/settings` | Manage | `{ feeEstimate: { percentBasisPoints, fixedMinor } \| null, reason? }` (audited `finance_stripe.settings_updated`) |
+
+- No refund / cancel / retry / write route exists. For example,
+  `POST /stripe/refunds` → 405 and `…/cancel` → 404.
+- **Provider:** `StripeReadProvider` is GET only. Production uses
+  `api.stripe.com/v1`; TEST uses the emulator (sandbox endpoint only).
+- **Reads are live, never cached.** Every response carries
+  `source { provider, label, endpoint, mode, accountId, apiVersion,
+  fetchedAt, cached:false }`.
+
+### FIN10.5 Subscription state mapping (raw `stripeStatus` always kept, plus `stateReason`)
+
+| Stripe | Hub state | Reason |
+|---|---|---|
+| active | Active | renewing |
+| active + cancel_at_period_end / cancel_at | Cancelling | cancels_at_period_end / cancel_date_scheduled |
+| trialing | Trialling | in_trial |
+| trialing + cancellation | Cancelling | trial_cancels_before_first_payment |
+| past_due | Payment issue | payment_failed_stripe_retrying |
+| unpaid | Payment issue | payment_failed_retries_exhausted |
+| incomplete | Payment issue | first_payment_not_completed |
+| incomplete_expired | Inactive | first_payment_never_completed |
+| paused | Inactive | paused_trial_ended_without_payment_method |
+| canceled | Cancelled | cancelled |
+| anything else | Unknown | unrecognised_stripe_status |
+
+### FIN10.6 Money
+
+- **Actual** = a succeeded charge (`receipt: true`, source `stripe`).
+  - Fee / net come only from its balance transaction. Until Stripe has
+    one, they read "not yet available", never estimated.
+  - Refunds and disputes are flagged.
+  - Failures carry a category (insufficient funds, card expired,
+    authentication required, declined, …).
+- **Expected:**
+  - next collection date (period end / trial end / Stripe's retry);
+  - gross from the price list (list route) or Stripe's upcoming invoice
+    (detail route);
+  - `actualRevenue: false`.
+  - Expected fee / net appear **only** if Manage configured a fee
+    estimate, and are labelled estimated. Otherwise they are deferred
+    (`feeState: not_configured`).
+- **VAT:** read from the Stripe invoice when Stripe recorded tax (tax
+  rates or Stripe Tax). Otherwise `not_recorded_in_stripe`: VAT and net
+  revenue are null, never assumed. There is no Hub VAT rule fallback,
+  because no subscription → service link exists.
+
+### FIN10.7 Mapping
+
+- **Customer → Hub parent:** only through `finance_stripe_customer_links`
+  (one parent per customer).
+  - Written by Manage after checking:
+    - the parent exists, is active and has a unique Parent ID;
+    - the customer exists, is not deleted, and is in this Stripe account.
+  - Never by name or email.
+- **Player:** always `unresolved`. A multi-child parent gets an explicit
+  reason; even a single child is not inferred.
+- **Service / session:** `unresolved`. Stripe price / product ids are
+  exposed for a later mapping; nothing is inferred from amounts.
+
+### FIN10.8 Code, schema, tests
+
+- **New files:**
+  - `finance-stripe.ts` (pure)
+  - `finance-stripe-provider.ts`
+  - `finance-stripe-repository.ts`
+  - `finance-stripe-orchestrator.ts`
+  - routes in `index.ts` (dispatched first)
+- **Not touched:** the 12 Finance modules shared with Needs Attention.
+- **Migrations (TEST):**
+  - `finance_f10_stripe_read_connector`: connections, customer links,
+    secret RPC, operator connect / disconnect; RLS on, no client grants.
+  - `finance_f10_stripe_sandbox_test_only` +
+    `finance_f10_stripe_sandbox_page_fault_op`: the emulator's accounts /
+    objects / faults / request log.
+- **Emulator `stripe-sandbox` v1:**
+  - GET only (non-GET → 405);
+  - Stripe list / pagination / expand / error shapes;
+  - upcoming-invoice preview;
+  - faults: fail_500, rate_limit, timeout, malformed, livemode, and a
+    later-page failure.
+- **Fixtures:** generated by
+  `supabase/functions-test/stripe-sandbox/fixtures.py <acct_ZZTEST…>`.
+  - Every id carries ZZTEST; livemode false; `@test.invalid` emails.
+  - Includes 101 cancelled filler subscriptions, so a real 100-per-page
+    read needs a second page.
+- **Emulator smoke check (throwaway smoke account, removed afterwards):**
+  - account 200;
+  - 102 subscriptions → 100 rows + has_more, then 1 row;
+  - a 4-level expand returned the fee;
+  - upcoming 55.00 + 11.00 VAT;
+  - unknown id 404, POST 405, bad key 401.
+- **Tests:**
+  - `tests/support/finance-stripe.test.ts`: **64/64**. Covers brief
+    items 1–38 + settings + code / drift checks, using the real F10 HTTP
+    adapter against an in-memory fake Stripe.
+  - Mutation **20/20** caught.
+  - `financebundletest` B11–B12 added (12/12).
+  - Full suite **81/81**.
+  - F9 suite 75/75.
+
+### FIN10.9 Resting TEST state (checkpoint)
+
+- No Stripe connection; 0 Vault secrets.
+- Emulator tables empty: smoke account and requests removed.
+- No customer links.
+- Audit **218** (unchanged by F10 so far).
+- One Manage grant; `module_finance` ON; no locks; no probe schema.
+- `finance` v16 and `needs-attention` v14 still deployed.
+
+### FIN10.10 Open items / future debt
+
+- **Real Stripe proof** needs a Stripe test-mode restricted key (read
+  only) for a TEST account, connected through the operator SQL.
+- **Josh's real Stripe account:** its customer / subscription metadata
+  conventions must be audited before any mapping beyond explicit links.
+- **Missing stable mappings:**
+  - subscription → player (child);
+  - subscription → Finance Service / Session;
+  - a metadata convention, if one exists.
+
+  Each needs a product decision. Until then, VAT for Stripe payments
+  without Stripe-recorded tax stays unknown.
+- **Data and API debt:**
+  - the TEST duplicate Parent ID;
+  - Parents & Guardians has no Organisation link (multi-organisation
+    debt);
+  - the pinned API version `2024-06-20` needs a deliberate upgrade later.
+- **Webhooks:** not built. On-demand reads are correct without them.
+  Scheduled / webhook sync is later work.
+- **Boundaries:**
+  - F11 (parent credit / refund bridge), F17 (Cash Flow), F18 and F21
+    (Stripe refund execution) are not started;
+  - ATT-025 stays Planned;
+  - production is untouched.

@@ -81,6 +81,18 @@
  *   POST /clients/{FCL-id}/xero-contact             { contactId, reason }  link an existing Xero contact explicitly (never by name)
  *   Reaching Ready (F5) and the F6 freeze never contact Xero: only these explicit Management actions do.
  *
+ * F10 Stripe READ connector (Finance read = GET, Finance manage = POST); Stripe stays the payment authority:
+ *   GET  /stripe/status[?check=1]                   connection + readiness; check=1 also reads the Stripe account (read-only)
+ *   GET  /stripe/subscriptions[?customer=cus_..]     every subscription (all statuses, all pages): Hub state + raw status, plan,
+ *                                                   next EXPECTED collection, latest collection, customer -> parent mapping
+ *   GET  /stripe/subscriptions/{sub_..}             one subscription + recent collections + Stripe's upcoming-invoice preview
+ *   GET  /stripe/payments[?from&to][&customer]       charges in a local-date window (<= 93 days): receipt only when succeeded,
+ *                                                   fee / net from Stripe's balance transaction only, refunds, failures
+ *   GET  /stripe/refunds[?from&to]                  refunds already in Stripe (read only)
+ *   POST /stripe/customers/{cus_..}/parent-link     { parentId, reason }  explicit customer -> Hub parent link (never by name / email)
+ *   POST /stripe/settings                           { feeEstimate: { percentBasisPoints, fixedMinor } | null, reason? }  estimate for FUTURE charges
+ *   No route creates, changes, cancels, retries or refunds anything in Stripe, or records a Stripe payment as an F7 Finance Payment.
+ *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
  * tenant-looking query parameter or body key is rejected with 400, never
@@ -111,6 +123,8 @@ import { createCreditNote, issueDraft, listInvoiceCreditNotes, listInvoices, rea
 import { checkReceiptsQuery, checkReceivablesQuery, matchReceivablesRoute, parseApplication, parseCreditCreate, parseDueDateChange, parsePayment, parseRequiredReason } from "./finance-receivables.ts";
 import { matchXeroRoute, parseContactLink, parseXeroAction, parseXeroSettings } from "./finance-xero.ts";
 import { type XeroDeps, issueToXero, linkXeroContact, readXeroInvoiceState, readXeroStatus, updateXeroSettings } from "./finance-xero-orchestrator.ts";
+import { matchStripeRoute, parseParentLink, parseStripeQuery, parseStripeSettings } from "./finance-stripe.ts";
+import { type StripeDeps, linkStripeCustomer, listStripePayments, listStripeRefunds, listStripeSubscriptions, readStripeStatus, readStripeSubscription, updateStripeSettings } from "./finance-stripe-orchestrator.ts";
 import {
   applyClientCredit,
   changeDueDate,
@@ -196,11 +210,13 @@ async function resolveCaller(authHeader: string | null): Promise<FinanceCaller |
   };
 }
 
-const deps: SettingsDeps & CommercialDeps & XeroDeps = {
+const deps: SettingsDeps & CommercialDeps & XeroDeps & StripeDeps = {
   airtable: { baseId: AIRTABLE_BASE_ID, token: AIRTABLE_TOKEN },
   grants: { supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY },
   // TEST DEPLOYMENT GUARD (F9): a live Xero connection must reach a Xero Demo Company - TEST never issues into a real Xero organisation.
   xero: { requireDemoTenant: true },
+  // TEST DEPLOYMENT GUARD (F10): only a test-mode Stripe key / account is ever read here - never live payment data.
+  stripe: { requireTestMode: true },
 };
 
 const ROUTES: Record<string, string[]> = { access: ["GET"], "write-check": ["POST"], settings: ["GET", "POST"] };
@@ -454,6 +470,32 @@ async function handleXero(req: Request, url: URL, match: NonNullable<ReturnType<
   return commercialResponse(await issueToXero(deps, caller, r.params.invoiceId, r.name === "invoice.xero_issue" ? "issue" : "retry", p.reason));
 }
 
+/** F10 routes: same order as F3-F9 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleStripe(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchStripeRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  const q = parseStripeQuery(r.name, url.searchParams, isTenantKey);
+  if (!q.ok) return commercialResponse({ status: "error", ...q });
+  if (r.name === "stripe.status") return commercialResponse(await readStripeStatus(deps, caller, q.check === true));
+  if (r.name === "stripe.subscriptions") return commercialResponse(await listStripeSubscriptions(deps, caller, { customer: q.customer }));
+  if (r.name === "stripe.subscription") return commercialResponse(await readStripeSubscription(deps, caller, r.params.subscriptionId));
+  if (r.name === "stripe.payments") return commercialResponse(await listStripePayments(deps, caller, { from: q.from, to: q.to, customer: q.customer }));
+  if (r.name === "stripe.refunds") return commercialResponse(await listStripeRefunds(deps, caller, { from: q.from, to: q.to }));
+  const raw = await req.text();
+  if (r.name === "stripe.settings") {
+    const p = parseStripeSettings(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await updateStripeSettings(deps, caller, p));
+  }
+  const p = parseParentLink(raw, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  return commercialResponse(await linkStripeCustomer(deps, caller, r.params.customerId, p.parentId, p.reason));
+}
+
 /** Path segments URL-decoded (an Occurrence ID contains ":"); null when a segment is not valid percent-encoding. */
 function decodedPath(route: string): string | null {
   try {
@@ -474,7 +516,11 @@ Deno.serve(async (req: Request) => {
   try {
     const decoded = decodedPath(route);
     if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
-    // F9 first: it owns only xero/..., invoices/{id}/xero[-*] and clients/{id}/xero-contact, and returns null for the rest.
+    // F10 first: it owns only stripe/..., and returns null for the rest.
+    const stripe = matchStripeRoute(route, req.method);
+    if (stripe) return await handleStripe(req, url, stripe);
+
+    // F9 next: it owns only xero/..., invoices/{id}/xero[-*] and clients/{id}/xero-contact, and returns null for the rest.
     const xero = matchXeroRoute(route, req.method);
     if (xero) return await handleXero(req, url, xero);
 

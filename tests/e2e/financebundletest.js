@@ -60,6 +60,20 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   ck('B9. F9 routes are live in the artifact: xero/status GET-only (401 / 405), xero/settings POST-only, xero-issue / xero-retry POST-only (401 without a token), invoice Xero state 401, unknown xero-* 404, contact link POST-only; F7 payments unchanged (401)', xs401.status === 401 && xs405.status === 405 && xset405.status === 405 && xi405.status === 405 && xi401.status === 401 && xr401.status === 401 && xst401.status === 401 && xbad404.status === 404 && xc405.status === 405 && f7still.status === 401, `${xs401.status}/${xs405.status}/${xset405.status}/${xi405.status}/${xi401.status}/${xr401.status}/${xst401.status}/${xbad404.status}/${xc405.status}/${f7still.status}`);
   ck('B10. The TEST deployment guard for Xero is in the artifact (Demo Company required) and the sandbox is reachable only on this project', /requireDemoTenant:\s*(!0|true)/.test(code) && code.replace(/\\\n/g, '').includes('/functions/v1/xero-sandbox') && code.includes('identity.xero.com/connect/token'));
 
+  const ss401 = await call('GET', 'stripe/status');
+  const ss405 = await call('POST', 'stripe/status');
+  const sl401 = await call('GET', 'stripe/subscriptions');
+  const so401 = await call('GET', 'stripe/subscriptions/sub_ZZ123');
+  const sp401 = await call('GET', 'stripe/payments');
+  const sr405 = await call('POST', 'stripe/refunds');
+  const scancel404 = await call('POST', 'stripe/subscriptions/sub_ZZ123/cancel');
+  const srefund404 = await call('POST', 'stripe/payments/ch_ZZ123/refund');
+  const slink405 = await call('GET', 'stripe/customers/cus_ZZ123/parent-link');
+  const sset401 = await call('POST', 'stripe/settings');
+  ck('B11. F10 Stripe READ routes are live in the artifact: reads GET-only (401 without a token / 405), refunds GET-only, no cancel / refund route (404), parent link + settings POST-only', ss401.status === 401 && ss405.status === 405 && sl401.status === 401 && so401.status === 401 && sp401.status === 401 && sr405.status === 405 && scancel404.status === 404 && srefund404.status === 404 && slink405.status === 405 && sset401.status === 401, `${ss401.status}/${ss405.status}/${sl401.status}/${so401.status}/${sp401.status}/${sr405.status}/${scancel404.status}/${srefund404.status}/${slink405.status}/${sset401.status}`);
+  const flat = code.replace(/\\\n/g, '');
+  ck('B12. The TEST guard for Stripe (test mode only) is in the artifact; the emulator is reachable only on this project; api.stripe.com is the only real base; the API version is pinned', /requireTestMode:\s*(!0|true)/.test(code) && flat.includes('/functions/v1/stripe-sandbox/v1') && flat.includes('https://api.stripe.com/v1') && flat.includes('2024-06-20'));
+
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;
   console.log(`\n${results.length - failed}/${results.length} passing`);
