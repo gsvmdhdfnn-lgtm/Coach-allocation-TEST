@@ -16424,3 +16424,297 @@ The stored rows match the API:
     need dated balances;
   - the list read loads the organisation's F6/F7 tables in full (bounded
     per organisation, as in F6).
+
+## Finance Foundation — F8a (Finance Needs Attention: access filter + invoice overdue) — TEST only — 2026-10-01
+
+F8a puts Finance into Needs Attention without a second task system and
+without storing any Finance case. It adds:
+- the **Finance capability filter**: Finance cases exist only for callers
+  holding Finance View or Manage;
+- **ATT-047 `invoice_overdue`**, derived on every read from F6 / F7 data;
+- Finance-Manage-only exceptions (snooze) on Finance cases.
+
+- **Locked decisions applied (David, F8 decisions 1–3):**
+  - Finance NA cases are hidden completely from Management without
+    Finance View / Manage: no case, count, title, amount or suppressed
+    case, and no redacted placeholder.
+  - Finance View sees the cases but cannot snooze or create an exception;
+    Finance Manage can.
+  - Catalogue: ATT-047 `invoice_overdue` and ATT-048
+    `invoice_draft_blocked` approved; no due-today rule.
+  - Split: F8a = access + ATT-047 (+ ATT-034 only if cleanly evaluable);
+    ATT-048 is F8b.
+- **Not built:** ATT-048 (F8b), ATT-024 / 025 / 026, client-query,
+  outgoing-payment, estimate-review and cash-risk rules (all Planned),
+  reminder emails, Xero (F9), any Finance UI.
+- **Scope:** TEST Airtable `appQktredAuGa1X7e`, TEST Supabase
+  `dkqubldmfyeuudecxmvh`, org `ORG-TEST-001` only.
+- **Production** (Airtable, Supabase, Finance, Needs Attention settings,
+  Xero, Stripe, Sheets, legacy Financials) was not touched. No email or
+  reminder was sent. No real money was recorded.
+
+### FIN8a.1 Audit findings (before code)
+
+- **Needs Attention had no capability filter**, only module gating and
+  Management-only access. Without a filter every Management user would
+  have seen invoice values, so the F8 brief's conflict rule applied and
+  the access model was locked first (decision 1).
+- **Engine fit:** cases are derived per read and identified by
+  Organisation + Rule + Case Key, exceptions match the exact key, and
+  evaluators are pure functions over pre-loaded tables. A Finance rule
+  needs no new engine concept beyond the access filter.
+- **Finance source of truth:** F7's `receivableOf` (outstanding,
+  settlement, due state, calendar-day overdue) over F6 / F7 rows.
+  Awaiting-external-issue invoices are never receivables (F6x).
+- **F3 / F4 data for ATT-034** — see FIN8a.3.
+
+### FIN8a.2 Rules activated / left Planned
+
+| Rule | Status | Why |
+|---|---|---|
+| ATT-047 `invoice_overdue` | **Active**, module `module_finance`, **Default Enabled No**, base **Warning**, no escalation thresholds, Supports Override + Client Customisable, action "Review Receivable" | Locked decision 2 |
+| ATT-048 `invoice_draft_blocked` | **Planned** (catalogued, Normal, "Review Invoice Draft") | F8b |
+| ATT-034 `session_billing_setup_missing` | **Planned** (unchanged) | Not cleanly evaluable — FIN8a.3 |
+| ATT-024 / 025 / 026, client-query, outgoing-payment, estimate-review, cash-risk | Planned (unchanged) | Locked decision 2 |
+
+New TEST catalogue rows (Needs Attention Rules `tblyawQ8vSEN945Qp`):
+`recC80hmlglLibk7I` (ATT-047, Sort 47) and `recqJL02MwyCcMogr`
+(ATT-048, Sort 48). **Catalogue totals now: 40 rows — 15 Active (all with
+live evaluators), 25 Planned, 0 Retired** (supersedes the 38-row counts in
+NA1.7 / NA12). Only 14 non-Finance rules run by default: ATT-047 is the
+15th Active rule and is off until an organisation enables it.
+
+### FIN8a.3 ATT-034 — left Planned (exact ambiguity)
+
+ATT-034 needs "an active Session that requires Finance handling has no
+valid usable setup for the current period", without flagging parent /
+subscription / intentionally non-client sessions. The F3 / F4 model cannot
+decide this without guessing:
+1. **No field says a Session is intentionally not client-billed.** F4
+   resolves a client service + terms per occurrence; a Session with no
+   Finance Service ID is indistinguishable from one that was forgotten.
+2. The only fields carrying that meaning are the deprecated Session
+   **`Commercial Model`** (Parent Bookable / School / Client Contract /
+   Internal / Non-Bookable) and **`Billing Model`** (… / No Charge /
+   Internal). F3 marked them transitional and F4 deliberately never reads
+   them, so using them would reintroduce a source F3 retired.
+3. **Sessions have no Organisation link**; the tenant scope would itself
+   be inferred.
+4. **"Current period" is undefined**: today, the next occurrence, or the
+   current term (a term may start in the future).
+- **TEST evidence:** the active sessions TEST-A and TEST-B have no Finance
+  Service ID and are `Commercial Model = Parent Bookable`, so any rule
+  would have to guess whether they should be flagged.
+- **Needed to activate it:** a product decision on an authoritative
+  "billing handled by: client / parent / none" fact (on the Session or the
+  F3 service), the tenant link, and the period definition.
+
+### FIN8a.4 Evaluator truths (`invoice_overdue`)
+
+- **A case exists exactly when** F7 says the invoice is a receivable with
+  `dueState = overdue` and outstanding > 0, as of the **organisation's
+  calendar day in its own time zone** (Europe/London for TEST).
+  - Due today → no case (no due-today rule). Future due → no case.
+  - Paid in full, credited in full, or paid-then-credited (credit excess)
+    → no case.
+  - Awaiting external issue (Xero) → never a case.
+  - A due date moved later clears the case; moved earlier, the case is
+    measured against the new date (the original is kept in context).
+  - Client credit applied reduces the outstanding (credit, not cash); a
+    reversed payment owes again.
+- **Derivation:** F7's `receivableOf`, `orderedDueChanges`, `daysBetween`,
+  F6's `isIssued` and F2's `isIsoDate` are **copied verbatim** into
+  `needs-attention/finance.ts` (drift-tested chunk by chunk against the
+  Finance source). Table and field names equal the F6 / F7 mapping
+  constants (drift-tested). Nothing is re-decided in Needs Attention.
+- **Data quality:** only rows linked to exactly this organisation are
+  used. A row linked to two organisations, a malformed row, duplicate ids
+  or history that does not add up fail the pass loudly
+  (`complete:false` + `evaluator_error`); no partial Finance list, no
+  guessed balance.
+- **Severity:** base Warning only; the catalogue has no thresholds, so
+  there is no 30-day Urgent escalation (locked).
+
+### FIN8a.5 Case identity, payload and return context
+
+- **Case Key:** `invoice_overdue|invoice:<FIV-…>` (one case per invoice,
+  exact-case exceptions).
+- **Title / detail:** "Invoice TEST-INV-001004 overdue - TEST Parkside
+  Primary (F3)" / "£45.00 outstanding (of £135.00), due 2026-09-30, 1 day
+  overdue (due date moved from 2026-10-30)".
+- **Destination:** area Finance, route `finance/invoice-receivable`,
+  params `{invoiceId}`; `targetIds {invoiceId, clientId}`.
+- **Context (display-ready, strings for money):** invoiceNumber (official
+  Hub or Xero number), clientName, outstanding, gross, cashReceived,
+  clientCreditApplied, creditNotes, settlement, invoiceDate, dueDate,
+  originalDueDate, dueDateMoved, daysOverdue, asOf, and
+  `sourceApi: GET /finance/invoices/{id}/receivable` (the Finance read
+  that shows the same figures).
+- **Anchors:** anchorTime = local midnight of the due date;
+  outstandingSince = local midnight of the day after.
+
+### FIN8a.6 Finance access filter
+
+- **Lookup:** when (and only when) a `module_finance` rule would run, the
+  orchestrator calls `deps.financeAccess(caller)` **once**: the F1
+  `resolveFinanceAccess` (copied verbatim from `finance/finance-access.ts`)
+  over the caller's own grant rows, read by `loadFinanceGrants` (copied
+  verbatim from `finance/repository.ts`: one service-role GET of
+  `finance_access_grants?user_id=eq.<uuid>`, 3 columns).
+- **None:** every Finance rule is skipped as `finance_access_required`
+  **before any source is loaded**, and removed from the sources to load.
+  No Finance table is read; nothing Finance-derived appears in cases,
+  summary, Home counts, suppressed cases or config issues. A caseKey
+  lookup answers `exists:false`.
+- **Lookup failure:** fail closed (treated as none) + `complete:false` +
+  `finance_access_unavailable`; non-Finance rules still run.
+- **View:** cases shown, `exceptionAllowed:false` on every Finance case;
+  create / revoke → 403 `finance_manage_required`.
+- **Manage:** cases shown, exceptions allowed (still subject to the
+  rule's Supports Override and the organisation's Allow Override).
+- **Exceptions without access:** create → 404 `case_not_found` (the rule
+  was skipped, so the case is never confirmed); revoke of a Finance
+  exception → 404 `exception_not_found` (existence not revealed). Revoke
+  checks the catalogue first, so the Finance guard runs before
+  "already revoked".
+- **F1 is unchanged.** Coach / Parent still get 403 before any of this.
+
+### FIN8a.7 Settings, snooze and auto-resolution
+
+- **Default:** catalogue Default Enabled is No and there is no Settings
+  row → skipped `disabled`; no Finance read and no grant lookup.
+- **Enable:** an organisation Settings row (Enabled ✓) turns it on;
+  Enabled off → `settings_disabled`. The Settings inheritance is the
+  standard one (Client Customisable).
+- **Snooze:** exact-case exception (Finance Manage only). It suppresses
+  only that invoice's case and **never changes Finance**: the invoice,
+  due date, balance and audit trail are untouched; after expiry or revoke
+  the case returns with the true (later) day count.
+- **Auto-resolution:** there is no "mark done". The case disappears on the
+  next read when the source changes: balance received, fully credited, or
+  due date moved into the future. A stale exception on a resolved case
+  shows nothing.
+
+### FIN8a.8 Reads and performance
+
+- Six Finance tables (Invoices, Credit Notes, Payments, Client Credits,
+  Client Credit Applications, Invoice Due Date Changes), **each listed
+  once per request**; one memoised receivable pass shared per request; no
+  per-invoice read and no Finance API call (unit test: 120 overdue
+  invoices → 120 cases, still 6 Finance lists, one pass).
+- Live: with Finance access, 25 table lists per request (19 config +
+  non-Finance + 6 Finance), every table exactly once; without access or
+  with the rule off, 19 lists and no Finance table.
+
+### FIN8a.9 Code, tests, deploy
+
+- **Code (`supabase/functions-test/needs-attention/`):**
+  - `finance.ts` (new): copied F2 / F6 / F7 / F1 blocks, strict
+    org-scoped row readers, the receivable pass, `INVOICE_OVERDUE_EVALUATOR`
+    (ATT-047), and `isFinanceRule` / `needsFinanceAccess` /
+    `restrictFinanceRules` / `canManageFinanceExceptions`.
+  - `orchestrator.ts`: access check before loading sources; Finance
+    `exceptionAllowed`; create / revoke guards; `financeAccess` in
+    diagnostics.
+  - `repository.ts`: copied `loadFinanceGrants`. `index.ts`: wires
+    `deps.financeAccess`. `registry.ts`: registers ATT-047.
+    `needs-attention.ts`: `finance_access_required` skip reason. The
+    engine string stays `needs-attention-slice-8`.
+- **Tests:** `tests/support/needs-attention-finance.test.ts` **64/64**
+  (overdue truths, settings, exceptions, access matrix, tenant, auto-
+  resolution, reads, data quality, parity with Finance's own strict
+  parsers + `receivableOf`, drift). Existing NA suites updated for the
+  40-row catalogue (needs-attention 110/110, foundation 78/78, compliance
+  80/80, coach-schedule 55/55, staffing 100/100, cover 56/56, exceptions
+  76/76, work-summaries 80/80). Mutation: 8 mutants on the overdue
+  condition and access guards, 7 killed, 1 equivalent (the
+  `outstanding > 0` guard is implied by F7's `overdue` state).
+- **Deploy method:** deterministic bundle, same as `finance`:
+  `scripts/build-needs-attention-bundle.mjs` (pinned esbuild 0.28.2,
+  fixed options, external `jsr:*` only) →
+  `supabase/deploy-artifacts/needs-attention/index.js` + `manifest.json`;
+  `--check` rebuilds and byte-compares; `tests/e2e/needsattentionbundletest.js`
+  (8/8) boots the artifact with a stubbed Deno and routes requests. The
+  13 `.ts` files were too large for one deploy call, so the single
+  bundled file is deployed (entrypoint `index.js`, `verify_jwt: true`).
+- **Deployed:** TEST `needs-attention` **v13** (deployed by David from
+  commit `587a33d`), entrypoint `index.js`, **109,420 bytes, sha256
+  `f224d2d9f22f84a21d98809b790484ab9db102802d5a3791d3b4feaeeb5d98bd`**,
+  independently re-fetched and byte-identical to the committed artifact
+  and manifest. **`finance` stays v15** (not redeployed).
+
+### FIN8a.10 Live TEST proof (2026-10-01, `needs-attention` v13, real HTTP via `pg_net`)
+
+Real password logins (TEST manager, TEST coach) through a temporary
+`f2probe` schema, dropped afterwards. Organisation day 2026-10-01
+(Europe/London). ATT-047 was enabled for the proof by a temporary
+Settings row `NAS-F8A-PROBE-ATT-047` (`recGyXLMTwzV1FUQQ`).
+
+**Controlled Finance writes (TEST only, through Finance's own API, each
+audited):** no TEST invoice was overdue, and an F6 invoice cannot carry a
+past invoice date, so overdue was produced the honest way: on 1 Oct the
+due date of `FIV-BDF2992D20D3` (`TEST-INV-001004`, invoice date 30 Sept)
+was moved to 30 Sept, making it genuinely 1 day overdue.
+
+| # | Write | Result |
+|---|---|---|
+| W1 | due date → 2026-09-30 | 201 `FDD-CF9E83C29AD3`; F7: `overdue`, 1 day, £45.00 |
+| W2 | `settleRemaining` (proof C) | 201 `FPY-745BD63143B8` £45.00, ref `TEST-F8A-C` → `paid` |
+| W3 | reverse W2 | 201 `FPR-64ABAE527554` → outstanding £45.00 again |
+| W4 | due date → 2026-11-20 (resting) | 201 `FDD-402C0F569540` → `partially_paid`, due in 50 days |
+
+| # | Check | Result |
+|---|---|---|
+| A | Overdue appears | After W1: one case `invoice_overdue|invoice:FIV-BDF2992D20D3`, Warning, ATT-047, "Review Receivable", area Finance; summary Warning 1; `view=summary` and the caseKey lookup agree |
+| B | Partial shows remaining | Detail "£45.00 outstanding (of £135.00) … 1 day overdue (due date moved from 2026-10-30)"; context cash 50.00, client credit 40.00 — equal to F7's own receivable read |
+| C | Paid disappears | After W2: 0 candidates, Clear; after W3 the case returns, recalculated (cash 50.00, £45.00) |
+| D | Awaiting never | The 6 Awaiting-external-issue invoices never produced a candidate (rule ON, 0 candidates before W1) |
+| E | Due move clears / recalculates | W1 (earlier) created the case at 1 day; W4 (later) cleared it: 0 candidates, Clear |
+| F / G | Draft blocked | N/A in F8a (ATT-048 is F8b) |
+| H | Rule OFF absent | Default (no Settings row): `disabled`; Settings Enabled off: `settings_disabled`; both: no case, no Finance table, access `not_checked` |
+| I | Rule ON returns | Re-enabled: the same case returns, access `manage` |
+| J | Exact-case snooze, Finance unchanged | Manage create → 201 `NAEX-20261001060051-CD8F6C39` (1 write, no context links): Clear, suppressed 1. Finance read unchanged (`overdue`, £45.00, due 30 Sept), audit unchanged. Duplicate → 409 `exception_exists`. Manage revoke → 200, `visibleAgain:true`, `problem_still_present` |
+| K | No leakage | **View** (probe grant): case visible, `exceptionAllowed:false`; create and revoke → 403 `finance_manage_required`. **No grant:** Clear, total 0, suppressed 0, skipped `finance_access_required`, no Finance table listed, no invoice id / number / client / amount anywhere in the payload; caseKey lookup `exists:false`; create 404 `case_not_found`; revoke 404 `exception_not_found`. Coach → 403 |
+| L | Tenant | `?organisationId=` → 400 `tenant_param_rejected`; `organisationId` in the exception body → 400 |
+| M | Non-Finance unchanged | The same 14 non-Finance rules evaluated for Manage, View and no-access callers; TEST has 0 non-Finance cases throughout |
+| N | Catalogue | 40 rules; ATT-047 Active (default off), ATT-034 and ATT-048 Planned |
+| O | Reads | Every table listed exactly once: 25 lists with Finance, 19 without; complete, 0 config issues |
+| P | No Finance audit from evaluation | Audit 161 → **165**: exactly W1–W4 (`finance_invoice.due_date_changed` ×2, `finance_payment.recorded`, `finance_payment.reversed`, all by the manager with reasons). 18 Needs Attention reads, 8 exception calls (1 create + 1 revoke succeeded, 6 refused), 2 Settings toggles and 4 grant changes added **0** |
+| Q | Deployment / production | `needs-attention` v13 sha matches; `finance` v15 unchanged; production not touched |
+
+### FIN8a.11 Resting TEST state
+
+- **Needs Attention:** Settings **0 rows** (probe row deleted), Exceptions
+  **0 rows** (the revoked probe exception deleted by exact id, as in NA
+  Slice 5). **ATT-047 rests OFF** by its catalogue default (Default
+  Enabled No, no Settings row) — the deliberate resting state; an
+  organisation enables it with a Settings row. `/cases` → Clear,
+  complete, 0 config issues, 19 lists, Finance access not looked up.
+- **Finance:**
+  - `module_finance` ON (not toggled);
+  - one active grant: **Manage `ca3d8365-71ba-46f6-9242-b57bfbe42f79`**
+    (the F7 resting grant `bdb3770f…` and the View probe `ffa9d8e9…` are
+    revoked with notes);
+  - lock tables empty; `f2probe` dropped;
+  - audit count **165**.
+- **`FIV-BDF2992D20D3`:** back to `partially_paid`, outstanding **£45.00**,
+  due **2026-11-20** (original 2026-10-30); history now also holds
+  `FDD-CF9E83C29AD3`, `FDD-402C0F569540`, `FPY-745BD63143B8` (reversed by
+  `FPR-64ABAE527554`). Cash received stays £50.00: the reversed £45
+  payment counts as no cash (F7 rule).
+- TEST user passwords were reset for the probe (TEST only).
+
+### FIN8a.12 Boundaries (not started)
+
+- **F8b:** ATT-048 `invoice_draft_blocked` (one bounded pass over F5).
+- **F9 Xero:** once Xero confirms issue, an Awaiting invoice becomes a
+  receivable and can then become overdue here with no Needs Attention
+  change; Xero payment rows count as cash through the same F7 derivation.
+- **F13 / F16 / F17 (later Finance rules on future domains):** the
+  remaining Finance catalogue rules depend on domains that do not exist in
+  TEST yet, so they stay Planned and F8a builds none of them: ATT-024 /
+  025 / 026, client-query, outgoing-payment, estimate-review and
+  cash-risk. No reminder or email is sent by any Needs Attention rule.
+  The `finance/invoice-receivable` route is a placeholder for the later
+  Finance UI.
+- **ATT-034** waits for the product decision in FIN8a.3.
