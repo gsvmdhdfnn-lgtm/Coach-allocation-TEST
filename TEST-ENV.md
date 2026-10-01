@@ -19699,25 +19699,19 @@ real data should keep Finance Service IDs accurate.
             'F13: deliberate TEST Manage grant restored after the View / no-grant probes');
   ```
 
-## Finance Foundation — F14 (supplier / venue credits) — CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN — TEST only — 2026-10-01
+## Finance Foundation — F14 (supplier / venue credits) — LIVE-PROVEN on `finance` v22 — TEST only — 2026-10-01
 
-> **Deployment checkpoint.** The F14 code is committed and its TEST schema is
-> applied, but the new `finance` artifact is **not deployed** and F14 is
-> **not live-proven**.
+> **DEPLOYED + LIVE-PROVEN in TEST** (`finance` v22, 2026-10-01; live proof
+> A–AD in FIN14.14, resting state in FIN14.15).
 >
-> - **Artifact to deploy:** `supabase/deploy-artifacts/finance/index.js`,
->   573,406 bytes, sha256
->   `eadb7ce7be8d8f5b36728dd2ef3bc72aed124a4abdc76e0b3e4e18a97c2a777e`
->   (source sha256 `e208b941e8a64e05de10016b6b39d4ba7951e1a3b88fb888612d87383511ea95`).
->   `node scripts/build-finance-bundle.mjs --check` reproduces it
->   byte-for-byte.
-> - **Live today:** `finance` v21 (F13). v21 keeps working on the F14
->   schema: the migration is backward compatible (FIN14.9). v21 has no
->   credit routes.
-> - **`needs-attention`:** v14 is unchanged; its `--check` is MATCH, so it
->   does not need a redeploy.
-> - **Next (after the operator deploys the artifact):** byte-verify it,
->   then run live proof A–AD (FIN14.12).
+> - **Deployed artifact:** `finance` v22 is ACTIVE, `verify_jwt` true, one
+>   `index.js`, deployed by the operator from commit `1154328`.
+>   Independently re-verified: 573,406 bytes, sha256
+>   `eadb7ce7be8d8f5b36728dd2ef3bc72aed124a4abdc76e0b3e4e18a97c2a777e`,
+>   byte-identical to `supabase/deploy-artifacts/finance/index.js`.
+> - **`needs-attention`:** v14 was not redeployed and is byte-identical to
+>   its artifact (166,807 bytes, sha256 `0d5df081…9939`).
+> - **TEST schema:** `finance_f14_supplier_credits` (FIN14.9).
 > - **Not built:** Overheads / Salaries (F15), Cash Flow, Month Report,
 >   paid-instalment corrections, Needs Attention changes.
 > - **Production untouched.**
@@ -20043,7 +20037,7 @@ real data should keep Finance Service IDs accurate.
   - `finance --check` and `needs-attention --check` MATCH;
   - full `node tests/run-all.js`: **85/85 files** (84 before + the F14 shim); every Finance suite green.
 
-### FIN14.11 Resting TEST state (deployment checkpoint)
+### FIN14.11 Resting TEST state (deployment checkpoint, superseded by FIN14.15)
 
 - F14 tables are empty, every instalment has `credited_minor` 0, and
   audit is **351**.
@@ -20059,10 +20053,8 @@ real data should keep Finance Service IDs accurate.
 
 ### FIN14.12 Open items / future debt
 
-- **Operator:** deploy `supabase/deploy-artifacts/finance/index.js` (sha256
-  above) as the next `finance` version.
-- **After deploy:** byte-verify, then run live proof A–AD with ZZTEST
-  fixtures:
+- **Done:** the artifact was deployed as `finance` v22, byte-verified and
+  live-proven (FIN14.14). The original plan was:
   1. A–H create / read / partial apply / remainder / second instalment /
      multiple credits / no auto-apply;
   2. I–L cross-supplier, over-apply, unapply, balances restored;
@@ -20090,6 +20082,14 @@ real data should keep Finance Service IDs accurate.
     `cashTiming.creditApplied`; not built.
 - `creditDate` ≤ today is checked in the organisation's timezone by the
   API. The database backstop allows `current_date + 1` (UTC slack).
+- **Reporting note (by design, decision 2):** a credit is dated when it is
+  recorded, so one month's supplier net cost can be negative when a large
+  credit lands in a month with few instalments due. Live example: the
+  ZZTEST venue in October 2026 showed gross 500.00 − credit 810.00 = net
+  −310.00. Month Report / Cash Flow (not built) must present this as a
+  credit, not as an error.
+- **`f2probe` helpers added by F14:** `f14_base`, `f14_snap()` and
+  `f14_others()` join the existing operator cleanup item.
 
 ### FIN14.13 Applied SQL (`finance_f14_supplier_credits`, TEST `dkqubldmfyeuudecxmvh`)
 
@@ -20450,3 +20450,97 @@ revoke all on function public.finance_supplier_instalment_rows(jsonb), public.fi
   public.finance_supplier_credit_change(text, text, text, jsonb, jsonb, jsonb, jsonb) from public, anon, authenticated;
 grant execute on function public.finance_supplier_credit_record(jsonb, jsonb, jsonb), public.finance_supplier_credit_change(text, text, text, jsonb, jsonb, jsonb, jsonb) to service_role;
 ```
+
+### FIN14.14 Live TEST proof on `finance` v22 (2026-10-01)
+
+Run through the `f2probe` harness (pg_net calls to the deployed function
+with real TEST user tokens), with fresh ZZTEST fixtures, so F13's fixtures
+stay untouched.
+
+**Fixtures**
+- **Suppliers:** venue `FSU-A88060F84C1E` "ZZTEST F14 Credit Venue";
+  contractor `FSU-0F7763E6AF27` "ZZTEST F14 Other Supplier".
+- **KA** `FSA-9A0413F247A8`: direct, ZZTEST-F13-W sessions, 1–31 Oct.
+  - Instalments: I1 `FSI-58B89979137B` 500.00 (20 Oct); I2
+    `FSI-F6064C33008D` 500.00 (20 Nov); I3 `FSI-9ABBF33F39CE` 300.00
+    (20 Dec).
+  - Frozen shares 433.34 / 433.33 / 433.33 on 7 / 14 / 21 Oct
+    (FSV-681F9A8704C8).
+- **KG** `FSA-13ADCA945089`: general; G1 `FSI-00C38C813B3A` 250.00, GE
+  `FSI-DABBF3C4C320` 120.00 estimated.
+- **KO** `FSA-17C00137ECE8` (other supplier): OI `FSI-BCE337A81500`
+  200.00.
+- **Credits:**
+  - C1 `FSC-0EE06208D26C`: supplier-only 300.00;
+  - C2 `FSC-BEA806E83437`: supplier-only 150.00;
+  - C3 `FSC-9B9E9CF2A660`: specific sessions 90.01, dated 30 Sep;
+  - C4 `FSC-5C90F31097DC`: whole agreement 60.00;
+  - C5 `FSC-BCB3420A5683`: 25.00, voided;
+  - C6 `FSC-8ABBDAC3B870`: 300.00.
+
+**Results (every refusal checked with an unchanged snapshot and no audit
+row)**
+
+| Proof | Result |
+|---|---|
+| Deploy | v22 ACTIVE, `verify_jwt`, one `index.js`, byte-identical to the artifact; `needs-attention` v14 byte-identical |
+| A create | C1 201, Available 300.00 / 0.00 / 300.00, kind `supplier_credit`, "Recorded only"; 0 applications, no instalment credited; one `created` audit row |
+| B read | list / one / `status=available` / supplier read: remaining 300.00 derived; supplier `availableCredit` 300.00, `creditApplied` 0.00 |
+| C partial | 200.00 of C1 → I1 (500.00): 201 `FSX-CA8B3CCB069A`; no payment row; I1 500 / 0 / 200 |
+| D preserved | C1 Partially Applied, 100.00 left |
+| E instalment | I1 remaining 300.00, "Partially Credited", method `credit`, cash 0.00 (also via `GET /supplier-instalments/{id}`) |
+| F remainder | C1's 100.00 → I2 (same supplier): `FSX-696733445909`; C1 Fully Applied, I2 remaining 400.00 |
+| G multiple | 5 more credits (sessions / agreement / supplier-only), each with its own balance. The first C4 send overlapped C3's write → 409 `finance_commercial_busy` (lock), resent OK |
+| H no auto-apply | after 6 credits: only the 2 explicit applications exist |
+| I cross-supplier | C2 → other supplier's instalment → 409 `wrong_supplier` |
+| J over-apply | `over_credit` (150.01 > 150.00; 0.01 on a used-up credit); `over_instalment` (250.01 > 250.00); estimate → `instalment_estimated`; −5.00 → 400 |
+| K unapply | C1 on I1 → 200; row kept (`active` false, by / at / reason) |
+| L restored | C1 100.00 applied / 200.00 left; I1 500.00 remaining, Confirmed. Re-apply `FSX-8C89EB81E047` 201; identical retry → `already_applied_to_instalment` (1 active pair) |
+| M pay credited | 300.01 → `overpayment` (300.00 left after credit); 300.00 → I1 "Settled (cash + credit)", cash 300.00 + credit 200.00, remaining 0.00; one 300.00 payment row |
+| Credit-only | C6 300.00 → I3: "Settled by credit", cash 0.00, credit 300.00; 0 payment rows (no fabricated cash) |
+| N unapply after settle | I1 and I3 → 409 `instalment_settled` |
+| O immutable | settled I1: apply `instalment_settled`; payment / cancel / move `instalment_paid`; I1 instalment + application + payment rows and the full snapshot (incl. audit count) byte-identical |
+| P void unused | C5 → Voided, remaining 0.00, cost adjustment 0.00, by / at / reason; again → `already_voided`; apply → `credit_voided`; all 6 credits still stored |
+| Q used credit | void C1 → 409 `credit_has_applications` |
+| R cash + credit | I2: 500 − 150 cash − 100 credit = 250.00, "Partially Paid + Credited"; 250.01 → `overpayment` |
+| S concurrent apply | C2 + C4 → I2 at once: one 201, one `finance_commercial_busy`; same pair twice at once: one 201, one busy, 1 active pair |
+| T payment vs credit | pay + apply on I2 at once: apply 201, pay busy; I2 500 − 150 − 170 = 180, sums of payments / applications match the instalment |
+| U net cost | KA gross 1300.00 − 150.01 (C3 90.01 sessions + C4 60.00 agreement) = net 1149.99, per Finance Service too. Sep–Dec venue facts: gross 1670.00 − 900.01 = 769.99 (voided C5 excluded); payable due 1670.00 = cash 450.00 + credit 680.00 + remaining 540.00 |
+| V gross visible | KA `profitability`, its frozen allocation rows and its agreement row byte-identical to before any credit; F13 `profitability` rows and `byFinanceService` byte-identical |
+| Date vs attribution | C3 dated 30 Sep appears only in September facts, with its attribution to the 7 / 14 Oct sessions (−45.01 / −45.00); October facts exclude it |
+| Applying ≠ second cost cut | C3 30.00 → I2: cost net still 769.99, adjustment still 900.01, KA net still 1149.99; only `creditApplied` 680 → 710 and `remainingPayable` 540 → 510; every `cashTiming.creditApplied` row `cash: false` |
+| W View | 6 reads 200 (`access` view); create / apply / unapply / void → 403 `finance_manage_required`, nothing changed |
+| X Manage | every write above |
+| Y denied | no grant → `finance_access_denied` (read + write); Coach / Parent → `management_required`; `module_finance` off → `finance_module_disabled` (then restored); tenant key in query / create body / apply body → `tenant_param_rejected` |
+| Z audit | 6 `created`, 8 `applied`, 1 `unapplied`, 1 `voided` = exactly the stored rows; each with actor, `ORG:FSC-…` record, contract `finance-supplier-credits-v1`, route; no secrets. Audit 362 → 380 = 16 credit events + 2 payments; no refusal or read audited |
+| AA no auto-apply | 8 applications = the 8 explicit Apply calls that returned 201 |
+| AB no paid rewrite | see O; settled instalments frozen |
+| AC unchanged | all F13 fixture rows (6 suppliers, 15 agreements, 21 allocations, 38 instalments, 4 payments) byte-identical; 13 other Finance tables byte-identical; F13 / prior Finance reads 200; `cash-flow`, `month-report` 404 |
+| AD production | every call went to TEST (`dkqubldmfyeuudecxmvh`, `appQktredAuGa1X7e`); production never called |
+
+### FIN14.15 Resting TEST state (after the F14 live proof)
+
+- **F14 data (append-only, kept as deliberate ZZTEST fixtures, like F12 /
+  F13):**
+  - 2 suppliers, 3 agreements, 3 allocations, 6 instalments;
+  - 2 payments (I1 300.00, I2 150.00);
+  - 6 credits (1 voided), 2 credit-session rows;
+  - 8 applications (7 active, 1 unapplied).
+  - Credited per instalment: I1 200.00 (settled cash + credit), I2 200.00,
+    I3 300.00 (settled by credit), G1 10.00.
+- **Totals:** 8 suppliers, 18 agreements, 24 allocations, 44 instalments,
+  6 payments; audit **380**.
+- **Grants:**
+  - Manage grant `aaf4c06f…` ended in proof W;
+  - View grant `2a69277b-66d2-44be-884b-885483fcb617` ended after W;
+  - **Manage grant `93588584-f5ee-4be1-a4ef-52db48f332c4` restored and
+    open** (`f14-live-proof`).
+  - All three grant statements ran without the MCP gate holding them.
+- **`module_finance`:** ON (turned off once for proof Y, then restored).
+- **Harness tokens:** cleared (`cleared-after-f14-proof`).
+- F12 (FIN12.13) and F13 (FIN13.15) fixtures are unchanged.
+- **Re-run after the live proof (2026-10-01):**
+  - F14 78/78, F13 98/98, F12 83/83, bundle 20/20;
+  - every Finance + Needs Attention Finance suite green;
+  - `finance --check` and `needs-attention --check` MATCH;
+  - full `node tests/run-all.js` **85/85 files**.
