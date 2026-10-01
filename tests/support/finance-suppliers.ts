@@ -25,10 +25,10 @@
  *     agreement version changes it.
  *   - CASH TIMING: the instalments' own due dates and amounts.
  *
- * Money is integer pence. Nothing here builds supplier credits (F14),
- * overheads / salaries (F15), Cash Flow or a Month Report. Remaining balance
- * is computed in ONE place (remainingOf) so F14 can later subtract applied
- * credits there.
+ * Money is integer pence. Nothing here builds overheads / salaries (F15),
+ * Cash Flow or a Month Report. Remaining balance is computed in ONE place
+ * (remainingOf): amount due - cash paid - supplier credit applied (F14,
+ * finance-supplier-credits.ts). A credit is never a payment.
  */
 import { REASON_MAX, auditEvent } from "./finance-commercial.ts";
 import { VAT_TREATMENTS, divRoundHalfAwayFromZero, formatMinor, parseMoney } from "./finance-money.ts";
@@ -183,6 +183,8 @@ export interface Instalment {
   amountDueMinor: number;
   amountState: "estimated" | "confirmed";
   paidMinor: number;
+  /** Supplier credit currently applied (F14; the sum of the active applications, kept in step by the database). Never cash. */
+  creditedMinor: number;
   splitFromInstalmentId: string | null;
   note: string | null;
   cancelledAt: string | null;
@@ -212,7 +214,7 @@ export interface Payment {
 // ---------------------------------------------------------------------
 export const m = (minor: number) => formatMinor(minor);
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
-export function newId(prefix: "FSU" | "FSA" | "FSI" | "FSP", random: () => string = () => crypto.randomUUID()): string {
+export function newId(prefix: "FSU" | "FSA" | "FSI" | "FSP" | "FSC" | "FSX", random: () => string = () => crypto.randomUUID()): string {
   return `${prefix}-${random().replace(/-/g, "").slice(0, 12).toUpperCase()}`;
 }
 export function isRealDate(v: unknown): v is string {
@@ -256,15 +258,30 @@ export function hourlyEstimate(rateMinor: number, hoursHundredths: number): numb
 // ---------------------------------------------------------------------
 // Instalment state - the only place remaining balance is computed.
 // ---------------------------------------------------------------------
-/** What is still owed on an instalment. F14 will subtract applied supplier credits HERE. */
+/** What is still owed on an instalment: amount due - cash paid - supplier credit applied (F14). */
 export function remainingOf(i: Instalment): number {
-  return i.cancelledAt ? 0 : i.amountDueMinor - i.paidMinor;
+  return i.cancelledAt ? 0 : i.amountDueMinor - i.paidMinor - i.creditedMinor;
 }
+/** Internal state. "paid" means SETTLED (remaining 0) by cash and / or credit - see settlementOf for how. */
 export function stateOf(i: Instalment): InstalmentState {
   if (i.cancelledAt) return "cancelled";
   if (i.amountState === "estimated") return "estimated";
-  if (i.paidMinor === 0) return "confirmed";
+  if (i.paidMinor === 0 && i.creditedMinor === 0) return "confirmed";
   return remainingOf(i) === 0 ? "paid" : "partially_paid";
+}
+/** A settled instalment (remaining 0) is frozen: no payment, credit apply / unapply, move, split or cancel. */
+export const isSettled = (i: Instalment) => !i.cancelledAt && i.amountState === "confirmed" && remainingOf(i) === 0;
+/** How an instalment is (being) settled - never claims cash moved when only credit did. */
+export function settlementOf(i: Instalment) {
+  const method = i.paidMinor > 0 && i.creditedMinor > 0 ? "cash_and_credit" : i.paidMinor > 0 ? "cash" : i.creditedMinor > 0 ? "credit" : null;
+  return { method, settled: isSettled(i), cashPaid: m(i.paidMinor), creditApplied: m(i.creditedMinor), remaining: m(remainingOf(i)) };
+}
+/** Plain label: cash-only states keep F13's words; anything involving credit says so. */
+export function stateLabelOf(i: Instalment): string {
+  const st = stateOf(i);
+  if (st === "paid") return i.creditedMinor === 0 ? "Paid" : i.paidMinor === 0 ? "Settled by credit" : "Settled (cash + credit)";
+  if (st === "partially_paid") return i.creditedMinor === 0 ? "Partially Paid" : i.paidMinor === 0 ? "Partially Credited" : "Partially Paid + Credited";
+  return INSTALMENT_STATE_LABELS[st];
 }
 export const isOverdue = (i: Instalment, today: string) => remainingOf(i) > 0 && i.dueDate < today;
 
@@ -443,14 +460,18 @@ export function instalmentView(i: Instalment, today: string, payments: Payment[]
     originalDueDate: i.originalDueDate,
     moved: i.dueDate !== i.originalDueDate,
     state,
-    stateLabel: INSTALMENT_STATE_LABELS[state],
+    stateLabel: stateLabelOf(i),
     /** The amount first planned when the instalment was created - kept forever. */
     plannedAmount: m(i.plannedMinor),
     /** What is owed now: the estimate while Estimated, otherwise the confirmed amount. */
     amountDue: m(i.amountDueMinor),
     amountIsEstimate: i.amountState === "estimated",
+    /** Cash actually paid (Management-confirmed). */
     paid: m(i.paidMinor),
+    /** Supplier credit applied - not cash, not a payment. */
+    creditApplied: m(i.creditedMinor),
     remaining: m(remainingOf(i)),
+    settlement: settlementOf(i),
     overdue: isOverdue(i, today),
     note: i.note,
     splitFrom: i.splitFromInstalmentId,
@@ -553,7 +574,7 @@ export function supplierAudit(a: { organisationId: string; actorUserId: string; 
   return { ...e, context: { ...e.context, contract: SUPPLIER_CONTRACT } };
 }
 export function auditInstalment(i: Instalment) {
-  return { instalmentId: i.instalmentId, agreementId: i.agreementId, dueDate: i.dueDate, amountDue: m(i.amountDueMinor), amountState: i.amountState, paid: m(i.paidMinor), remaining: m(remainingOf(i)), state: stateOf(i) };
+  return { instalmentId: i.instalmentId, agreementId: i.agreementId, dueDate: i.dueDate, amountDue: m(i.amountDueMinor), amountState: i.amountState, paid: m(i.paidMinor), creditApplied: m(i.creditedMinor), remaining: m(remainingOf(i)), state: stateOf(i) };
 }
 
 // ---------------------------------------------------------------------
@@ -680,7 +701,7 @@ export function factMonths(q: SupplierQuery, currentMonth: string): { from: stri
   return { from: monthBounds(from).from, to: monthBounds(to).to };
 }
 
-function jsonObject(raw: string, allowed: readonly string[], isTenantKey: (k: string) => boolean): { ok: true; body: Record<string, unknown> } | Invalid {
+export function jsonObject(raw: string, allowed: readonly string[], isTenantKey: (k: string) => boolean): { ok: true; body: Record<string, unknown> } | Invalid {
   let body: unknown;
   try {
     body = JSON.parse(raw);
@@ -694,8 +715,8 @@ function jsonObject(raw: string, allowed: readonly string[], isTenantKey: (k: st
   if (unknown.length) return invalid("unexpected_field", `Unexpected field(s): ${unknown.join(", ")}`);
   return { ok: true, body: body as Record<string, unknown> };
 }
-type T = { ok: true; value: string | null } | { ok: false; error: string };
-function text(v: unknown, required: boolean, max = REASON_MAX): T {
+export type T = { ok: true; value: string | null } | { ok: false; error: string };
+export function text(v: unknown, required: boolean, max = REASON_MAX): T {
   if (v === undefined || v === null) return required ? { ok: false, error: "is required" } : { ok: true, value: null };
   if (typeof v !== "string") return { ok: false, error: "must be text" };
   const t = v.trim();
@@ -704,7 +725,7 @@ function text(v: unknown, required: boolean, max = REASON_MAX): T {
   if (CONTROL_RE.test(t.replace(/\n/g, ""))) return { ok: false, error: "contains control characters" };
   return { ok: true, value: t };
 }
-function money(v: unknown, f: Record<string, string>, key: string, required: boolean): number | null {
+export function money(v: unknown, f: Record<string, string>, key: string, required: boolean): number | null {
   if (v === undefined || v === null) {
     if (required) f[key] = "is required";
     return null;
@@ -720,7 +741,7 @@ function money(v: unknown, f: Record<string, string>, key: string, required: boo
   }
   return p.minor;
 }
-function date(v: unknown, f: Record<string, string>, key: string, required: boolean): string | null {
+export function date(v: unknown, f: Record<string, string>, key: string, required: boolean): string | null {
   if (v === undefined || v === null) {
     if (required) f[key] = "is required";
     return null;
@@ -1029,7 +1050,7 @@ export type ChangePlan =
 export function planChange(i: Instalment, input: ActionInput, ctx: { today: string; actor: string; at: string; newId: (p: "FSI" | "FSP") => string }): ChangePlan | Refusal {
   const remaining = remainingOf(i);
   if (i.cancelledAt) return refuse(409, "instalment_cancelled", "This instalment was cancelled - it can no longer change");
-  if (remaining === 0) return refuse(409, "instalment_paid", "This instalment is fully paid - paid history is never rewritten (use a correction later)");
+  if (remaining === 0) return refuse(409, "instalment_paid", "This instalment is settled (nothing remains - paid in cash and / or by credit) - its history is never rewritten (use a correction later)");
   if (input.action === "confirm-estimate") {
     if (i.amountState !== "estimated") return refuse(409, "already_confirmed", "This amount is already confirmed");
     const amount = input.useEstimate ? i.amountDueMinor : (input.amountMinor as number);
@@ -1051,6 +1072,7 @@ export function planChange(i: Instalment, input: ActionInput, ctx: { today: stri
       plannedMinor: p.amountMinor,
       amountDueMinor: p.amountMinor,
       paidMinor: 0,
+      creditedMinor: 0,
       splitFromInstalmentId: i.instalmentId,
       note: null,
       cancelledAt: null,
@@ -1059,7 +1081,7 @@ export function planChange(i: Instalment, input: ActionInput, ctx: { today: stri
       createdAt: ctx.at,
       createdBy: ctx.actor,
     }));
-    return { ok: true, kind: "split", next: { ...i, amountDueMinor: i.paidMinor + first.amountMinor, dueDate: first.dueDate }, children };
+    return { ok: true, kind: "split", next: { ...i, amountDueMinor: i.paidMinor + i.creditedMinor + first.amountMinor, dueDate: first.dueDate }, children };
   }
   if (input.action === "payment") {
     if (i.amountState === "estimated") return refuse(409, "amount_still_estimated", "Confirm the amount first (enter the actual amount or Use Estimate) - an estimate is never paid as-is");
@@ -1088,5 +1110,6 @@ export function planChange(i: Instalment, input: ActionInput, ctx: { today: stri
     };
   }
   if (i.paidMinor > 0) return refuse(409, "instalment_partially_paid", "Money has already been paid against this instalment - it cannot be cancelled (split or correct it instead)");
+  if (i.creditedMinor > 0) return refuse(409, "instalment_has_credit", "A supplier credit is applied to this instalment - unapply it first, then cancel");
   return { ok: true, kind: "cancel", next: { ...i, cancelledAt: ctx.at, cancelledBy: ctx.actor, cancelReason: input.reason } };
 }

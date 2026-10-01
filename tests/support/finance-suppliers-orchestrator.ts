@@ -25,7 +25,9 @@
  *   POST /supplier-instalments/{FSI}/confirm-estimate | move | split | payment | cancel
  *
  * Airtable is read only. Nothing here pays a supplier, talks to a bank,
- * creates a supplier credit, an overhead or a Cash Flow event.
+ * creates an overhead or a Cash Flow event. Supplier credits (F14) are created
+ * and applied only by finance-supplier-credits-orchestrator.ts; the reads here
+ * show them beside - never inside - the F13 figures (gross + adjustment = net).
  */
 import type { FinanceCaller, OrganisationContext } from "./finance-access.ts";
 import { authorizeFinance } from "./finance-orchestrator.ts";
@@ -81,42 +83,63 @@ import {
   venueExists,
   writeSupplier,
 } from "./finance-suppliers-repository.ts";
+import { adjustmentRows, applicationView, costFigures, creditRemainingOf, creditView, netByFinanceService } from "./finance-supplier-credits.ts";
 
 export interface SupplierDeps extends CommercialDeps {
   suppliers?: { random?: () => string };
 }
 export type SFail = { status: "error"; httpStatus: 400 | 403 | 404 | 409 | 503; code: string; error: string; details?: Record<string, unknown> };
 export type Ok = { status: "ok"; httpStatus: 200 | 201; body: Record<string, unknown> };
-const fail = (httpStatus: SFail["httpStatus"], code: string, error: string, details?: Record<string, unknown>): SFail => ({ status: "error", httpStatus, code, error, ...(details ? { details } : {}) });
-const isFail = (x: unknown): x is SFail => !!x && typeof x === "object" && (x as any).status === "error";
+export const fail = (httpStatus: SFail["httpStatus"], code: string, error: string, details?: Record<string, unknown>): SFail => ({ status: "error", httpStatus, code, error, ...(details ? { details } : {}) });
+export const isFail = (x: unknown): x is SFail => !!x && typeof x === "object" && (x as any).status === "error";
 
-const now = (deps: SupplierDeps) => (deps.clock ?? (() => new Date()))();
+export const now = (deps: SupplierDeps) => (deps.clock ?? (() => new Date()))();
 const lockKey = (o: OrganisationContext) => `commercial:${o.organisationId}`;
-const unavailable = () => fail(503, "suppliers_unavailable", "Suppliers could not be loaded just now - try again");
+export const unavailable = () => fail(503, "suppliers_unavailable", "Suppliers could not be loaded just now - try again");
 
-const REFUSALS: Record<string, string> = {
+export const REFUSALS: Record<string, string> = {
   supplier_changed: "This supplier was changed by someone else just now - reload and try again",
   agreement_changed: "This agreement's schedule changed just now - reload and try again",
   agreement_already_versioned: "This agreement already has a newer version - change the latest version instead",
   version_must_start_later: "A new version must start after the version it replaces",
   profitability_history_conflict: "The version it replaces already attributes sessions that have taken place on or after this start date - that profitability history is never rewritten (start the new version after them)",
   paid_instalment_after_change: "Money has already been paid against an instalment due on or after the new version's start - that history is never rewritten",
+  credited_instalment_after_change: "A supplier credit is applied to an instalment due on or after the new version's start - unapply it first (credit history is never rewritten)",
+  instalment_has_credit: "A supplier credit is applied to this instalment - unapply it first",
   instalment_changed: "This instalment was changed by someone else just now - reload and try again",
   instalment_cancelled: "This instalment was cancelled - it can no longer change",
-  instalment_paid: "This instalment is fully paid - paid history is never rewritten",
+  instalment_paid: "This instalment is settled - paid history is never rewritten",
   already_confirmed: "This amount is already confirmed",
   amount_still_estimated: "Confirm the amount first - an estimate is never paid as-is",
   overpayment: "That payment is more than the remaining balance",
   instalment_partially_paid: "Money has already been paid against this instalment - it cannot be cancelled",
   split_mismatch: "The parts must add up exactly to the remaining balance",
   snapshot_mismatch: "The change did not add up - nothing was saved",
+  credit_changed: "This credit was changed by someone else just now - reload and try again",
+  credit_voided: "This credit was voided - it cannot be applied",
+  credit_has_applications: "This credit has been applied - it can never simply be voided once used",
+  already_voided: "This credit is already voided",
+  already_unapplied: "That application was already unapplied",
+  application_not_found: "No such application on this credit",
+  wrong_supplier: "A credit can only be applied to an instalment of the same supplier",
+  instalment_estimated: "Confirm the instalment amount first - a credit is only applied to a confirmed amount",
+  instalment_settled: "That instalment is settled - applied credit there is frozen history",
+  over_credit: "That is more than this credit has remaining",
+  over_instalment: "That is more than remains on the instalment",
+  already_applied_to_instalment: "This credit is already applied to that instalment - unapply it first to change the amount",
+  duplicate_credit: "A credit with this source and reference is already recorded for this supplier",
+  credit_not_found: "No such supplier credit",
+  agreement_not_for_supplier: "That agreement belongs to a different supplier",
+  agreement_has_no_sessions: "That agreement has no agreed sessions to attribute a credit to",
+  session_not_in_agreement: "Some sessions are not among the agreement's agreed sessions",
+  credit_date_in_future: "creditDate cannot be in the future",
 };
-function refusalFail(e: unknown): SFail | null {
+export function refusalFail(e: unknown): SFail | null {
   if (e instanceof SupplierRefusal) return fail(409, e.code, REFUSALS[e.code] ?? "The change was refused by the ledger's rules - nothing was changed");
   return null;
 }
 
-type Ctx = { org: OrganisationContext; access: string; today: string; ledger: SupplierLedger };
+export type Ctx = { org: OrganisationContext; access: string; today: string; ledger: SupplierLedger };
 async function load(deps: SupplierDeps, org: OrganisationContext, access: string): Promise<Ctx | SFail> {
   try {
     return { org, access, today: todayIn(org.timezone, now(deps)), ledger: await loadSupplierLedger(deps.grants, org.organisationId) };
@@ -125,12 +148,12 @@ async function load(deps: SupplierDeps, org: OrganisationContext, access: string
     return unavailable();
   }
 }
-async function readCtx(deps: SupplierDeps, caller: FinanceCaller): Promise<Ctx | SFail> {
+export async function readCtx(deps: SupplierDeps, caller: FinanceCaller): Promise<Ctx | SFail> {
   const auth = await authorizeFinance(deps, caller, "read");
   if (auth.status !== "ok") return fail(auth.httpStatus, auth.code, auth.error);
   return load(deps, auth.organisation, auth.access);
 }
-async function withLock(deps: SupplierDeps, caller: FinanceCaller, run: (ctx: Ctx) => Promise<Ok | SFail>): Promise<Ok | SFail> {
+export async function withLock(deps: SupplierDeps, caller: FinanceCaller, run: (ctx: Ctx) => Promise<Ok | SFail>): Promise<Ok | SFail> {
   const auth = await authorizeFinance(deps, caller, "manage");
   if (auth.status !== "ok") return fail(auth.httpStatus, auth.code, auth.error);
   const org = auth.organisation;
@@ -159,18 +182,23 @@ async function withLock(deps: SupplierDeps, caller: FinanceCaller, run: (ctx: Ct
     }
   }
 }
-const head = (ctx: Ctx) => ({ contract: SUPPLIER_CONTRACT, organisation: { organisationId: ctx.org.organisationId, name: ctx.org.name }, access: ctx.access, currency: "GBP" });
+export const head = (ctx: Ctx) => ({ contract: SUPPLIER_CONTRACT, organisation: { organisationId: ctx.org.organisationId, name: ctx.org.name }, access: ctx.access, currency: "GBP" });
 const successorOf = (ctx: Ctx, a: Agreement) => ctx.ledger.agreements.find((x) => x.supersedesAgreementId === a.agreementId) ?? null;
 const paymentsOf = (ctx: Ctx, i: Instalment) => ctx.ledger.payments.filter((p) => p.instalmentId === i.instalmentId);
 const sumMinor = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 
-function money(ctx: Ctx, instalments: Instalment[]) {
+function money(ctx: Ctx, instalments: Instalment[], supplierId: string) {
   const open = instalments.filter((i) => remainingOf(i) > 0);
   const next = open.find((i) => i.dueDate >= ctx.today) ?? null;
+  const credits = ctx.ledger.credits.filter((c) => c.supplierId === supplierId);
   return {
     outstandingConfirmed: m(sumMinor(open.filter((i) => i.amountState === "confirmed").map(remainingOf))),
     outstandingEstimated: m(sumMinor(open.filter((i) => i.amountState === "estimated").map(remainingOf))),
+    /** Cash actually paid - credit applied is never counted as cash. */
     paidToDate: m(sumMinor(instalments.map((i) => i.paidMinor))),
+    creditApplied: m(sumMinor(instalments.map((i) => i.creditedMinor))),
+    /** Supplier credit recorded but not yet applied (applied only when Management chooses). */
+    availableCredit: m(sumMinor(credits.map((c) => creditRemainingOf(c, ctx.ledger.applications)))),
     overdue: { count: open.filter((i) => isOverdue(i, ctx.today)).length, amount: m(sumMinor(open.filter((i) => isOverdue(i, ctx.today)).map(remainingOf))) },
     nextDue: next ? { instalmentId: next.instalmentId, dueDate: next.dueDate, amount: m(remainingOf(next)), estimated: next.amountState === "estimated" } : null,
   };
@@ -187,7 +215,7 @@ export async function listSuppliers(deps: SupplierDeps, caller: FinanceCaller, q
     .map((s) => {
       const agreements = ctx.ledger.agreements.filter((a) => a.supplierId === s.supplierId);
       const current = agreements.filter((a) => ["active", "upcoming"].includes(agreementStatus(a, successorOf(ctx, a), ctx.today)));
-      return { ...supplierView(s), whatWeGet: current.map((a) => a.name), agreements: { current: current.length, total: agreements.length }, money: money(ctx, ctx.ledger.instalments.filter((i) => i.supplierId === s.supplierId)) };
+      return { ...supplierView(s), whatWeGet: current.map((a) => a.name), agreements: { current: current.length, total: agreements.length }, money: money(ctx, ctx.ledger.instalments.filter((i) => i.supplierId === s.supplierId), s.supplierId) };
     });
   return { status: "ok", httpStatus: 200, body: { ...head(ctx), suppliers: rows } };
 }
@@ -207,11 +235,13 @@ export async function readSupplier(deps: SupplierDeps, caller: FinanceCaller, su
       supplier: supplierView(s),
       /** The four plain questions, in order. */
       whatWeAreGetting: agreements.map((a) => agreementView(a, successorOf(ctx, a), ctx.today)),
-      whatWeArePaying: money(ctx, instalments),
+      whatWeArePaying: money(ctx, instalments, supplierId),
       whenWeArePaying: instalments.filter((i) => remainingOf(i) > 0).map((i) => instalmentView(i, ctx.today)),
       whoWeAreDealingWith: supplierView(s).contact,
       paymentHistory: ctx.ledger.payments.filter((p) => p.supplierId === supplierId).map(paymentView),
       schedule: instalments.map((i) => instalmentView(i, ctx.today)),
+      credits: ctx.ledger.credits.filter((c) => c.supplierId === supplierId).map((c) => creditView(c, ctx.ledger.applications, ctx.ledger.creditSessions)),
+      cost: costFigures(instalments, ctx.ledger.credits.filter((c) => c.supplierId === supplierId)),
     },
   };
 }
@@ -241,6 +271,10 @@ export async function readAgreement(deps: SupplierDeps, caller: FinanceCaller, a
   for (let x: Agreement | undefined = a; x; x = x.supersedesAgreementId ? ctx.ledger.agreements.find((y) => y.agreementId === x!.supersedesAgreementId) : undefined) chain.unshift(x.agreementId);
   for (let x = successor; x; x = successorOf(ctx, x)) chain.push(x.agreementId);
   const supplier = ctx.ledger.suppliers.find((s) => s.supplierId === a.supplierId);
+  const profitability = profitabilityView(a, allocations, successor, statuses);
+  const credits = ctx.ledger.credits.filter((c) => c.agreementId === agreementId);
+  const grossMinor = sumMinor(allocations.filter((x) => !allocationSuperseded(x, successor)).map((x) => x.allocatedMinor));
+  const adjustmentMinor = sumMinor(credits.filter((c) => !c.voidedAt).map((c) => c.amountMinor));
   return {
     status: "ok",
     httpStatus: 200,
@@ -250,7 +284,16 @@ export async function readAgreement(deps: SupplierDeps, caller: FinanceCaller, a
       supplier: supplier ? { supplierId: supplier.supplierId, name: supplier.name, type: supplier.supplierType } : null,
       versionChain: chain,
       schedule: ctx.ledger.instalments.filter((i) => i.agreementId === agreementId).map((i) => instalmentView(i, ctx.today, paymentsOf(ctx, i))),
-      profitability: profitabilityView(a, allocations, successor, statuses),
+      profitability,
+      /** F14: supplier credits attributed to this agreement - beside the frozen shares above, never inside them. */
+      creditAdjustments: {
+        gross: m(grossMinor),
+        creditAdjustment: m(adjustmentMinor),
+        net: m(grossMinor - adjustmentMinor),
+        byFinanceService: a.classification === "direct" && a.linkState === "linked" ? netByFinanceService(allocations.filter((x) => !allocationSuperseded(x, successor)).map((x) => ({ financeServiceId: x.financeServiceId, label: x.programmeLabel, amountMinor: x.allocatedMinor })), credits.flatMap((c) => adjustmentRows(c, ctx.ledger.creditSessions))) : [],
+        credits: credits.map((c) => creditView(c, ctx.ledger.applications, ctx.ledger.creditSessions)),
+        note: "Gross original cost (the frozen shares, never rewritten) - separate supplier credit adjustment = net real cost.",
+      },
       rule: "Profitability (spread across the originally agreed sessions) and cash timing (the instalments) are separate. A cancellation never redistributes the cost.",
     },
   };
@@ -286,6 +329,7 @@ export async function readInstalment(deps: SupplierDeps, caller: FinanceCaller, 
       instalment: instalmentView(i, ctx.today, paymentsOf(ctx, i)),
       agreement: a ? { agreementId: a.agreementId, name: a.name } : null,
       children: ctx.ledger.instalments.filter((x) => x.splitFromInstalmentId === instalmentId).map((x) => x.instalmentId),
+      creditApplications: ctx.ledger.applications.filter((x) => x.instalmentId === instalmentId).map(applicationView),
       history,
     },
   };
@@ -315,8 +359,29 @@ export async function listCostFacts(deps: SupplierDeps, caller: FinanceCaller, q
   }
   const cash = ctx.ledger.instalments
     .filter((i) => !i.cancelledAt && inRange(i.dueDate))
-    .map((i) => ({ type: "supplier_payment_due", source: "instalment", supplierId: i.supplierId, supplier: supplierName.get(i.supplierId) ?? null, agreementId: i.agreementId, instalmentId: i.instalmentId, dueDate: i.dueDate, amountDue: m(i.amountDueMinor), estimated: i.amountState === "estimated", paid: m(i.paidMinor), remaining: m(remainingOf(i)), state: stateOf(i) }));
+    .map((i) => ({ type: "supplier_payment_due", source: "instalment", supplierId: i.supplierId, supplier: supplierName.get(i.supplierId) ?? null, agreementId: i.agreementId, instalmentId: i.instalmentId, dueDate: i.dueDate, amountDue: m(i.amountDueMinor), estimated: i.amountState === "estimated", paid: m(i.paidMinor), creditApplied: m(i.creditedMinor), remaining: m(remainingOf(i)), state: stateOf(i) }));
   const paid = ctx.ledger.payments.filter((p) => inRange(p.paidDate)).map((p) => ({ type: "supplier_payment_made", source: "management_confirmed", supplierId: p.supplierId, supplier: supplierName.get(p.supplierId) ?? null, instalmentId: p.instalmentId, paidDate: p.paidDate, amount: m(p.amountMinor) }));
+  // F14: one credit = one cost correction, dated when it was recorded (creditDate); its attribution is kept alongside.
+  const creditsInRange = ctx.ledger.credits.filter((c) => !c.voidedAt && inRange(c.creditDate));
+  const adjustments = creditsInRange.flatMap((c) => adjustmentRows(c, ctx.ledger.creditSessions));
+  const creditAdjustments = creditsInRange.map((c) => ({
+    type: "supplier_credit_adjustment",
+    source: "supplier_credit",
+    supplierId: c.supplierId,
+    supplier: supplierName.get(c.supplierId) ?? null,
+    creditId: c.creditId,
+    agreementId: c.agreementId,
+    date: c.creditDate,
+    scope: c.scope,
+    amount: m(-c.amountMinor),
+    attribution: adjustmentRows(c, ctx.ledger.creditSessions).map((r) => ({ financeServiceId: r.financeServiceId, programme: r.label, sessionId: r.sessionId, sessionDate: r.sessionDate, amount: m(-r.amountMinor) })),
+  }));
+  const liveDue = ctx.ledger.instalments.filter((i) => !i.cancelledAt && inRange(i.dueDate));
+  const suppliersInFacts = [...new Set([...liveDue.map((i) => i.supplierId), ...creditsInRange.map((c) => c.supplierId)])].sort();
+  const supplierCost = suppliersInFacts.map((sid) => ({ supplierId: sid, supplier: supplierName.get(sid) ?? null, ...costFigures(liveDue.filter((i) => i.supplierId === sid), creditsInRange.filter((c) => c.supplierId === sid)) }));
+  const applied = ctx.ledger.applications
+    .filter((x) => inRange(x.appliedAt.slice(0, 10)))
+    .map((x) => ({ type: "supplier_credit_applied", source: "management_applied", cash: false, supplierId: x.supplierId, supplier: supplierName.get(x.supplierId) ?? null, creditId: x.creditId, instalmentId: x.instalmentId, appliedDate: x.appliedAt.slice(0, 10), amount: m(x.amountMinor), active: !x.unappliedAt }));
   return {
     status: "ok",
     httpStatus: 200,
@@ -326,9 +391,16 @@ export async function listCostFacts(deps: SupplierDeps, caller: FinanceCaller, q
       to,
       profitability,
       byFinanceService: byFinanceService(byService),
+      creditAdjustments,
+      byFinanceServiceNet: netByFinanceService(byService, adjustments),
+      supplierCost: {
+        suppliers: supplierCost,
+        total: costFigures(liveDue, creditsInRange),
+        note: "gross = instalment amounts due in the range; creditAdjustment = supplier credits recorded in the range; net = gross - creditAdjustment. cashPaid + creditApplied + remainingPayable = amountDue.",
+      },
       unresolvedDirectAgreements: unresolved,
-      cashTiming: { due: cash, paid },
-      rule: "Profitability facts follow the originally agreed sessions; cash facts follow the instalment dates. They are reported separately and never mixed. Nothing here is a Cash Flow event.",
+      cashTiming: { due: cash, paid, creditApplied: applied },
+      rule: "Profitability facts follow the originally agreed sessions; cash facts follow the instalment dates. They are reported separately and never mixed. A supplier credit is a separate cost adjustment (dated when recorded) and applying it is never cash. Nothing here is a Cash Flow event.",
     },
   };
 }
@@ -428,6 +500,7 @@ async function recordNewAgreement(deps: SupplierDeps, caller: FinanceCaller, ctx
     amountDueMinor: p.plannedMinor,
     amountState: p.estimated ? "estimated" : "confirmed",
     paidMinor: 0,
+    creditedMinor: 0,
     splitFromInstalmentId: null,
     note: p.note,
     cancelledAt: null,
@@ -440,6 +513,7 @@ async function recordNewAgreement(deps: SupplierDeps, caller: FinanceCaller, ctx
   if (predecessor) {
     const after = ctx.ledger.instalments.filter((i) => i.agreementId === predecessor.agreementId && i.dueDate >= spec.effectiveFrom && !i.cancelledAt);
     if (after.some((i) => i.paidMinor > 0)) return fail(409, "paid_instalment_after_change", REFUSALS.paid_instalment_after_change, { instalmentIds: after.filter((i) => i.paidMinor > 0).map((i) => i.instalmentId) });
+    if (after.some((i) => i.creditedMinor > 0)) return fail(409, "credited_instalment_after_change", REFUSALS.credited_instalment_after_change, { instalmentIds: after.filter((i) => i.creditedMinor > 0).map((i) => i.instalmentId) });
     cancel = after.map((i) => ({ ...i, cancelledAt: at, cancelledBy: caller.userId, cancelReason: `Superseded by ${agreementId} from ${spec.effectiveFrom}` }));
   }
   const a: Agreement = {

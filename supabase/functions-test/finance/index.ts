@@ -136,7 +136,15 @@
  *   GET  /supplier-instalments/{FSI-..}              one instalment + payments + history
  *   POST /supplier-instalments/{FSI-..}/confirm-estimate | move | split | payment | cancel
  *   GET  /supplier-cost-facts[?from&to]              profitability facts + cash-timing facts, kept separate
- *   No route creates a supplier credit (F14), an overhead / salary (F15), a bank payment or a Cash Flow event.
+ *   No route here creates an overhead / salary (F15), a bank payment or a Cash Flow event.
+ *
+ * F14 supplier / venue credits (Finance read = GET, Finance manage = POST); never auto-applied, never deleted:
+ *   GET  /supplier-credits[?supplierId&agreementId&status]
+ *   POST /supplier-credits                           { supplierId, scope: sessions|agreement|supplier, agreementId?, occurrenceIds?, amount, creditDate, sourceType, sourceReference, reason }
+ *   GET  /supplier-credits/{FSC-..}                  credit + cost adjustment + applications + history
+ *   POST /supplier-credits/{FSC-..}/apply            { instalmentId, amount, reason? }  explicit, same supplier, confirmed + unsettled only
+ *   POST /supplier-credits/{FSC-..}/unapply          { applicationId, reason }  before the instalment is settled only
+ *   POST /supplier-credits/{FSC-..}/void             { reason }  only a credit that was never applied
  *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
@@ -172,6 +180,8 @@ import { matchStripeRoute, parseParentLink, parseStripeQuery, parseStripeSetting
 import { matchCoachCostRoute, parseCorrection, parseCostQuery, parseFinalise } from "./finance-coach-costs.ts";
 import { type CostDeps, correctFinanceMonth, finaliseWorkerMonth, listCostFacts, listFinanceMonths, readCostMonth, readFinanceMonth, readWorkerMonth, readWorkerMonths } from "./finance-coach-costs-orchestrator.ts";
 import { matchSupplierRoute, parseAction, parseAgreement, parseSupplierCreate, parseSupplierQuery, parseSupplierUpdate } from "./finance-suppliers.ts";
+import { matchCreditRoute, parseCreditAction, parseCreditCreate, parseCreditQuery } from "./finance-supplier-credits.ts";
+import { createCredit, creditAction, listCredits, readCredit } from "./finance-supplier-credits-orchestrator.ts";
 import { type SupplierDeps, changeInstalmentAction, createAgreement, createSupplier, listAgreements, listCostFacts as listSupplierCostFacts, listInstalments, listSuppliers, readAgreement, readInstalment, readSupplier, updateSupplier, versionAgreement } from "./finance-suppliers-orchestrator.ts";
 import { matchFamilyRoute, parseApply, parseDecision, parseFamilyPayment, parseFamilyQuery, parseReason } from "./finance-family.ts";
 import { applyFamilyCredit, listFamilyCredits, listRefundDecisions, listRevenueCorrections, readFamily, readRefundDecision, readRefundSource, recordFamilyPayment, recordRefundDecision, reverseRefundDecision, voidFamilyCredit } from "./finance-family-orchestrator.ts";
@@ -611,6 +621,30 @@ async function handleSuppliers(req: Request, url: URL, match: NonNullable<Return
   return commercialResponse(await changeInstalmentAction(deps, caller, r.params.instalmentId, r.params.action, p.input));
 }
 
+/** F14 routes: same order as F3-F13 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleCredits(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchCreditRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  // Writes take no query parameters at all (parsed as a route with none allowed).
+  const q = parseCreditQuery(req.method === "GET" ? r.name : "credits.create", url.searchParams, isTenantKey);
+  if (!q.ok) return commercialResponse({ status: "error", ...q });
+  if (r.name === "credits.list") return commercialResponse(await listCredits(deps, caller, { supplierId: q.supplierId, agreementId: q.agreementId, status: q.status }));
+  if (r.name === "credits.one") return commercialResponse(await readCredit(deps, caller, r.params.creditId));
+  const raw = await req.text();
+  if (r.name === "credits.create") {
+    const p = parseCreditCreate(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await createCredit(deps, caller, p.input));
+  }
+  const p = parseCreditAction(r.params.action, raw, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  return commercialResponse(await creditAction(deps, caller, r.params.creditId, r.params.action, p.input));
+}
+
 /** F11 routes: same order as F3-F10 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
 async function handleFamily(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchFamilyRoute>>): Promise<Response> {
   if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
@@ -675,6 +709,10 @@ Deno.serve(async (req: Request) => {
     // F13 first: it owns only suppliers/..., supplier-agreements/..., supplier-instalments/... and supplier-cost-facts.
     const suppliers = matchSupplierRoute(route, req.method);
     if (suppliers) return await handleSuppliers(req, url, suppliers);
+
+    // F14 next: it owns only supplier-credits/...
+    const credits = matchCreditRoute(route, req.method);
+    if (credits) return await handleCredits(req, url, credits);
 
     // F12 next: it owns only coach-costs/..., coach-summaries/... and coach-cost-facts.
     const coachCosts = matchCoachCostRoute(route, req.method);

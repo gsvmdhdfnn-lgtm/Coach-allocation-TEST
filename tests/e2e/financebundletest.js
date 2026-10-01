@@ -109,10 +109,23 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   const sl405 = await call('POST', 'supplier-instalments');
   const sx401 = await call('GET', 'supplier-cost-facts');
   const scr404 = await call('POST', 'supplier-instalments/FSI-0123456789AB/apply-credit');
-  const scc404 = await call('POST', 'supplier-credits');
   const scf404 = await call('GET', 'cash-flow');
-  ck('B17. F13 supplier routes are live in the artifact: reads GET-only (401 without a token), writes POST-only (405), an agreement is never POSTed in place (405), no supplier-credit / Cash Flow route (404)', su401.status === 401 && su1.status === 401 && sa401.status === 401 && sv405.status === 405 && sa405.status === 405 && si401.status === 401 && sp405.status === 405 && sl405.status === 405 && sx401.status === 401 && scr404.status === 404 && scc404.status === 404 && scf404.status === 404, `${su401.status}/${su1.status}/${sa401.status}/${sv405.status}/${sa405.status}/${si401.status}/${sp405.status}/${sl405.status}/${sx401.status}/${scr404.status}/${scc404.status}/${scf404.status}`);
+  ck('B17. F13 supplier routes are live in the artifact: reads GET-only (401 without a token), writes POST-only (405), an agreement is never POSTed in place (405), no instalment-level credit route / Cash Flow route (404)', su401.status === 401 && su1.status === 401 && sa401.status === 401 && sv405.status === 405 && sa405.status === 405 && si401.status === 401 && sp405.status === 405 && sl405.status === 405 && sx401.status === 401 && scr404.status === 404 && scf404.status === 404, `${su401.status}/${su1.status}/${sa401.status}/${sv405.status}/${sa405.status}/${si401.status}/${sp405.status}/${sl405.status}/${sx401.status}/${scr404.status}/${scf404.status}`);
   ck('B18. F13 writes go through its atomic database functions only (finance_supplier_* RPCs in the artifact)', ['finance_supplier_write', 'finance_supplier_agreement_record', 'finance_supplier_instalment_change'].every((f) => flat.includes(f)));
+
+  const kl401 = await call('GET', 'supplier-credits');
+  const kc401 = await call('POST', 'supplier-credits');
+  const ko401 = await call('GET', 'supplier-credits/FSC-0123456789AB');
+  const kp405 = await call('POST', 'supplier-credits/FSC-0123456789AB');
+  const kd405 = await call('DELETE', 'supplier-credits/FSC-0123456789AB');
+  const ka401 = await call('POST', 'supplier-credits/FSC-0123456789AB/apply');
+  const ka405 = await call('GET', 'supplier-credits/FSC-0123456789AB/apply');
+  const ku401 = await call('POST', 'supplier-credits/FSC-0123456789AB/unapply');
+  const kv401 = await call('POST', 'supplier-credits/FSC-0123456789AB/void');
+  const kx404 = await call('POST', 'supplier-credits/FSC-0123456789AB/delete');
+  const kauto404 = await call('POST', 'supplier-credits/apply-all');
+  ck('B19. F14 supplier-credit routes are live in the artifact: list / one GET, create / apply / unapply / void POST (401 without a token); a credit is never POSTed / DELETEd in place (405); no delete / auto-apply route (404)', kl401.status === 401 && kc401.status === 401 && ko401.status === 401 && kp405.status === 405 && kd405.status === 405 && ka401.status === 401 && ka405.status === 405 && ku401.status === 401 && kv401.status === 401 && kx404.status === 404 && kauto404.status === 404, `${kl401.status}/${kc401.status}/${ko401.status}/${kp405.status}/${kd405.status}/${ka401.status}/${ka405.status}/${ku401.status}/${kv401.status}/${kx404.status}/${kauto404.status}`);
+  ck('B20. F14 writes go through its atomic database functions only (finance_supplier_credit_* RPCs in the artifact)', ['finance_supplier_credit_record', 'finance_supplier_credit_change'].every((f) => flat.includes(f)));
 
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;

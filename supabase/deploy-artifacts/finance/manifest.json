@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "8ae50aa66647f4044300d139e46901cd75ee641822567bcfbf4d4b72f1aec059",
-  "artifactBytes": 544861,
+  "artifactSha256": "eadb7ce7be8d8f5b36728dd2ef3bc72aed124a4abdc76e0b3e4e18a97c2a777e",
+  "artifactBytes": 573406,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "7f153c6da33519b2054113099192ba1a760fb009a25446c96d45455e2eca1b41",
+  "sourceSha256": "e208b941e8a64e05de10016b6b39d4ba7951e1a3b88fb888612d87383511ea95",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -178,16 +178,24 @@
       "sha256": "f1c0249e0e0cb92791e058db16333b87f5adce83c4dff17f380aea967d5fd303"
     },
     {
+      "path": "supabase/functions-test/finance/finance-supplier-credits-orchestrator.ts",
+      "sha256": "ed54f02fb85bd491d8c561cbbe00d49c8762882b0c0ab03ffedbf5089ffc277f"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-supplier-credits.ts",
+      "sha256": "80d44537f45331a30c7739968f5dfb670b1f1e425b4aad5ccd3806db23a90801"
+    },
+    {
       "path": "supabase/functions-test/finance/finance-suppliers-orchestrator.ts",
-      "sha256": "61bf5bd2a01be45b6a0cc16ec794621692dee947dc1e1c82ad382b81b3720233"
+      "sha256": "8d09e2c1016ae32054986ad0d2d8b9ec9fbb20ceb1b2b3d5fc98b153a49d493a"
     },
     {
       "path": "supabase/functions-test/finance/finance-suppliers-repository.ts",
-      "sha256": "8c0d2cb4e077c00ec24122e58499b9c13a5bc9064b67a1d8de5728f36050c28d"
+      "sha256": "59b512b08c5adf490a2243b1c0568db5d1cbaafc3e0a7b60a9cdb7f4c4bf0dab"
     },
     {
       "path": "supabase/functions-test/finance/finance-suppliers.ts",
-      "sha256": "4007910c1096187c6028d82ddcdc942f4f90ccb8501d1c782f14d5a3410ea3a7"
+      "sha256": "9e77a886ad53e84b3fd2f902c42bf823cb24c724630de330da0f5fe40cd2a108"
     },
     {
       "path": "supabase/functions-test/finance/finance-xero-orchestrator.ts",
@@ -207,7 +215,7 @@
     },
     {
       "path": "supabase/functions-test/finance/index.ts",
-      "sha256": "02d4bdf7fd01540dc5d978f1c1198b60789ea1ab5ac1e75b3baefca21f97b264"
+      "sha256": "945bb86463b3e00fa240434ea6efbadcecd1563e5e0a43a14fea3f6ff7f48027"
     },
     {
       "path": "supabase/functions-test/finance/orchestrator.ts",

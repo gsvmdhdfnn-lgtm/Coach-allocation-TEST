@@ -18,8 +18,12 @@
  *   finance_supplier_allocations    append-only frozen direct-cost split per occurrence
  *   finance_supplier_instalments    the cash schedule (narrow guarded updates only)
  *   finance_supplier_payments       append-only Management-confirmed payments
+ *   finance_supplier_credits        F14 supplier / venue credits (only a void is ever set)
+ *   finance_supplier_credit_sessions        append-only frozen per-session cost adjustment
+ *   finance_supplier_credit_applications    explicit applications (only an unapply is ever set)
  * Every write is ONE database function call (finance_supplier_write /
- * finance_supplier_agreement_record / finance_supplier_instalment_change) that
+ * finance_supplier_agreement_record / finance_supplier_instalment_change /
+ * finance_supplier_credit_record / finance_supplier_credit_change) that
  * writes its finance_audit_events rows in the same transaction.
  */
 import type { AirtableConfig, GrantStoreConfig } from "./finance-repository.ts";
@@ -35,6 +39,7 @@ import {
   SERVICE_ID_RE,
   SESSION_ID_RE,
 } from "./finance-suppliers.ts";
+import type { CreditApplication, CreditSession, SupplierCredit } from "./finance-supplier-credits.ts";
 
 export const TABLE = {
   suppliers: "finance_suppliers",
@@ -42,8 +47,17 @@ export const TABLE = {
   allocations: "finance_supplier_allocations",
   instalments: "finance_supplier_instalments",
   payments: "finance_supplier_payments",
+  credits: "finance_supplier_credits",
+  creditSessions: "finance_supplier_credit_sessions",
+  applications: "finance_supplier_credit_applications",
 } as const;
-export const RPC = { supplier: "finance_supplier_write", agreement: "finance_supplier_agreement_record", change: "finance_supplier_instalment_change" } as const;
+export const RPC = {
+  supplier: "finance_supplier_write",
+  agreement: "finance_supplier_agreement_record",
+  change: "finance_supplier_instalment_change",
+  credit: "finance_supplier_credit_record",
+  creditChange: "finance_supplier_credit_change",
+} as const;
 export const ID_READ_CHUNK = 40;
 
 // ---------------------------------------------------------------------
@@ -299,6 +313,7 @@ export const instalmentFromRow = (r: Record<string, any>): Instalment => ({
   amountDueMinor: int(r.amount_due_minor, "amount_due_minor"),
   amountState: r.amount_state,
   paidMinor: int(r.paid_minor, "paid_minor"),
+  creditedMinor: int(r.credited_minor ?? 0, "credited_minor"),
   splitFromInstalmentId: r.split_from_instalment_id ?? null,
   note: r.note ?? null,
   cancelledAt: r.cancelled_at ? iso(r.cancelled_at) : null,
@@ -319,6 +334,7 @@ export const instalmentRow = (i: Instalment) => ({
   amount_due_minor: i.amountDueMinor,
   amount_state: i.amountState,
   paid_minor: i.paidMinor,
+  credited_minor: i.creditedMinor,
   split_from_instalment_id: i.splitFromInstalmentId,
   note: i.note,
   cancelled_at: i.cancelledAt,
@@ -358,22 +374,132 @@ export const paymentRow = (p: Payment) => ({
   recorded_by: p.recordedBy,
 });
 
+export const creditFromRow = (r: Record<string, any>): SupplierCredit => ({
+  organisationId: r.organisation_id,
+  creditId: r.credit_id,
+  supplierId: r.supplier_id,
+  agreementId: r.agreement_id ?? null,
+  scope: r.scope,
+  amountMinor: int(r.amount_minor, "amount_minor"),
+  currency: r.currency,
+  creditDate: dateOf(r.credit_date),
+  sourceType: r.source_type,
+  sourceReference: r.source_reference,
+  reason: r.reason,
+  financeServiceId: r.finance_service_id ?? null,
+  programmeLabel: r.programme_label ?? null,
+  createdAt: iso(r.created_at),
+  createdBy: r.created_by,
+  voidedAt: r.voided_at ? iso(r.voided_at) : null,
+  voidedBy: r.voided_by ?? null,
+  voidReason: r.void_reason ?? null,
+});
+export const creditRow = (c: SupplierCredit) => ({
+  organisation_id: c.organisationId,
+  credit_id: c.creditId,
+  supplier_id: c.supplierId,
+  agreement_id: c.agreementId,
+  scope: c.scope,
+  amount_minor: c.amountMinor,
+  currency: c.currency,
+  credit_date: c.creditDate,
+  source_type: c.sourceType,
+  source_reference: c.sourceReference,
+  reason: c.reason,
+  finance_service_id: c.financeServiceId,
+  programme_label: c.programmeLabel,
+  created_at: c.createdAt,
+  created_by: c.createdBy,
+  voided_at: c.voidedAt,
+  voided_by: c.voidedBy,
+  void_reason: c.voidReason,
+});
+export const creditSessionFromRow = (r: Record<string, any>): CreditSession => ({
+  organisationId: r.organisation_id,
+  creditId: r.credit_id,
+  occurrenceRecordId: r.occurrence_record_id,
+  occurrenceRef: r.occurrence_ref ?? null,
+  occurrenceDate: dateOf(r.occurrence_date),
+  sessionId: r.session_id ?? null,
+  sessionName: r.session_name ?? null,
+  financeServiceId: r.finance_service_id ?? null,
+  programmeLabel: r.programme_label ?? null,
+  adjustmentMinor: int(r.adjustment_minor, "adjustment_minor"),
+});
+export const creditSessionRow = (s: CreditSession) => ({
+  organisation_id: s.organisationId,
+  credit_id: s.creditId,
+  occurrence_record_id: s.occurrenceRecordId,
+  occurrence_ref: s.occurrenceRef,
+  occurrence_date: s.occurrenceDate,
+  session_id: s.sessionId,
+  session_name: s.sessionName,
+  finance_service_id: s.financeServiceId,
+  programme_label: s.programmeLabel,
+  adjustment_minor: s.adjustmentMinor,
+});
+export const applicationFromRow = (r: Record<string, any>): CreditApplication => ({
+  organisationId: r.organisation_id,
+  applicationId: r.application_id,
+  creditId: r.credit_id,
+  instalmentId: r.instalment_id,
+  agreementId: r.agreement_id,
+  supplierId: r.supplier_id,
+  amountMinor: int(r.amount_minor, "amount_minor"),
+  appliedAt: iso(r.applied_at),
+  appliedBy: r.applied_by,
+  reason: r.reason ?? null,
+  unappliedAt: r.unapplied_at ? iso(r.unapplied_at) : null,
+  unappliedBy: r.unapplied_by ?? null,
+  unapplyReason: r.unapply_reason ?? null,
+});
+export const applicationRow = (a: CreditApplication) => ({
+  organisation_id: a.organisationId,
+  application_id: a.applicationId,
+  credit_id: a.creditId,
+  instalment_id: a.instalmentId,
+  agreement_id: a.agreementId,
+  supplier_id: a.supplierId,
+  amount_minor: a.amountMinor,
+  applied_at: a.appliedAt,
+  applied_by: a.appliedBy,
+  reason: a.reason,
+  unapplied_at: a.unappliedAt,
+  unapplied_by: a.unappliedBy,
+  unapply_reason: a.unapplyReason,
+});
+
 export interface SupplierLedger {
   suppliers: Supplier[];
   agreements: Agreement[];
   allocations: Allocation[];
   instalments: Instalment[];
   payments: Payment[];
+  credits: SupplierCredit[];
+  creditSessions: CreditSession[];
+  applications: CreditApplication[];
 }
 export async function loadSupplierLedger(svc: GrantStoreConfig, organisationId: string): Promise<SupplierLedger> {
-  const [s, a, al, i, p] = await Promise.all([
+  const [s, a, al, i, p, c, cs, ap] = await Promise.all([
     read(svc, TABLE.suppliers, organisationId, "name.asc,supplier_id.asc"),
     read(svc, TABLE.agreements, organisationId, "effective_from.asc,agreement_id.asc"),
     read(svc, TABLE.allocations, organisationId, "agreement_id.asc,occurrence_date.asc,occurrence_record_id.asc"),
     read(svc, TABLE.instalments, organisationId, "due_date.asc,sequence.asc,instalment_id.asc"),
     read(svc, TABLE.payments, organisationId, "paid_date.asc,recorded_at.asc,payment_id.asc"),
+    read(svc, TABLE.credits, organisationId, "credit_date.asc,created_at.asc,credit_id.asc"),
+    read(svc, TABLE.creditSessions, organisationId, "credit_id.asc,occurrence_date.asc,occurrence_record_id.asc"),
+    read(svc, TABLE.applications, organisationId, "applied_at.asc,application_id.asc"),
   ]);
-  return { suppliers: s.map(supplierFromRow), agreements: a.map(agreementFromRow), allocations: al.map(allocationFromRow), instalments: i.map(instalmentFromRow), payments: p.map(paymentFromRow) };
+  return {
+    suppliers: s.map(supplierFromRow),
+    agreements: a.map(agreementFromRow),
+    allocations: al.map(allocationFromRow),
+    instalments: i.map(instalmentFromRow),
+    payments: p.map(paymentFromRow),
+    credits: c.map(creditFromRow),
+    creditSessions: cs.map(creditSessionFromRow),
+    applications: ap.map(applicationFromRow),
+  };
 }
 /** The audit trail of one record (its created / updated history), oldest first. */
 export async function loadHistory(svc: GrantStoreConfig, organisationId: string, recordId: string): Promise<Record<string, any>[]> {
@@ -391,7 +517,7 @@ async function rpc(svc: GrantStoreConfig, fn: string, args: Record<string, unkno
     } catch {
       /* keep the raw text */
     }
-    const mm = /f13:([a-z_]+)/.exec(String(msg));
+    const mm = /f1[34]:([a-z_]+)/.exec(String(msg));
     if (mm) throw new SupplierRefusal(mm[1]);
     if (/one_successor/i.test(String(msg))) throw new SupplierRefusal("agreement_already_versioned");
     throw new Error(`${fn} failed: ${res.status} ${text}`);
@@ -422,9 +548,38 @@ export const changeInstalment = (
     p_org: before.organisationId,
     p_instalment_id: before.instalmentId,
     p_kind: kind,
-    p_expected: { paid_minor: before.paidMinor, amount_due_minor: before.amountDueMinor, due_date: before.dueDate, amount_state: before.amountState, cancelled: !!before.cancelledAt },
+    p_expected: { paid_minor: before.paidMinor, credited_minor: before.creditedMinor, amount_due_minor: before.amountDueMinor, due_date: before.dueDate, amount_state: before.amountState, cancelled: !!before.cancelledAt },
     p_change: change,
     p_new_instalments: newInstalments.map(instalmentRow),
     p_payment: payment ? paymentRow(payment) : null,
+    p_events: events,
+  });
+export const recordCredit = (svc: GrantStoreConfig, c: SupplierCredit, sessions: CreditSession[], events: Events) =>
+  rpc(svc, RPC.credit, { p_credit: creditRow(c), p_sessions: sessions.map(creditSessionRow), p_events: events });
+/**
+ * apply: inserts the application and raises the instalment's credited amount;
+ * unapply: marks the application unapplied and lowers it again; void: marks the
+ * never-applied credit voided. The function locks the credit and instalment rows
+ * and re-checks every rule against p_expected (the state the plan was made on).
+ */
+export const changeCredit = (
+  svc: GrantStoreConfig,
+  c: SupplierCredit,
+  kind: "apply" | "unapply" | "void",
+  expected: { instalment: Instalment | null; appliedMinor: number },
+  application: CreditApplication | null,
+  voided: { voided_at: string; voided_by: string; void_reason: string } | null,
+  events: Events,
+) =>
+  rpc(svc, RPC.creditChange, {
+    p_org: c.organisationId,
+    p_credit_id: c.creditId,
+    p_kind: kind,
+    p_expected: {
+      applied_minor: expected.appliedMinor,
+      instalment: expected.instalment ? { instalment_id: expected.instalment.instalmentId, paid_minor: expected.instalment.paidMinor, credited_minor: expected.instalment.creditedMinor, amount_due_minor: expected.instalment.amountDueMinor } : null,
+    },
+    p_application: application ? applicationRow(application) : null,
+    p_void: voided,
     p_events: events,
   });
