@@ -17712,3 +17712,365 @@ SQL calls, and writes were sent one at a time (org write lock).
   - no subscription write action exists;
   - ATT-025 stays Planned;
   - production is untouched.
+
+## Finance Foundation — F11 (parent / family credit + refund DECISION bridge) — CHECKPOINT — TEST only — 2026-10-01
+
+> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
+>
+> - **TEST schema is applied:**
+>   - `finance_f11_family_credit_refund_bridge`;
+>   - `finance_f11_credit_apply_error_codes`.
+>
+>   Its database rules were exercised live in a self-rolling-back smoke
+>   block (FIN11.13). Nothing persisted: all F11 tables are empty and the
+>   audit count is still 223.
+> - **The `finance` bundle is 443,883 bytes**, sha256
+>   `18497081d172ca343489d2febfd2391fd04c026050379e9ece1433d939536d21`.
+>   That is too large for this session to deploy. The exact artifact is
+>   committed at `supabase/deploy-artifacts/finance/index.js` and needs
+>   deployment assistance, exactly as for F7–F10.
+> - **Deploy as `finance` v18:** `verify_jwt` true, one `index.js`, a
+>   byte-for-byte copy of the committed artifact.
+> - **Not redeployed:** `needs-attention` v14 (artifact `--check` MATCH)
+>   and `stripe-sandbox` v1. The emulator already serves
+>   `GET /v1/charges/{id}` and `GET /v1/refunds?charge=`.
+> - The live proof A–W runs after v18 is deployed.
+
+### FIN11.1 Pre-implementation audit (2026-10-01)
+
+- **Repo:** HEAD `dae6cfd` = origin, clean.
+- **No family / household entity exists.** Parents & Guardians is one
+  record per guardian account: Parent ID, Active, Supabase user. A child
+  can be linked to several guardian accounts. For example, Dylan has a
+  Verified link to `PARENT-TEST-001` and Pending links to the duplicate
+  `PARENT-ED3BDF220DC2` records.
+- **Parent–Player Links** carry `Link Lifecycle Status` (Pending /
+  Verified / Needs Review / Rejected / Ended) and a verification method.
+- **Memberships** (Player Session Links) carry lifecycle, cancellation and
+  notice dates, plus Price / Billing Model snapshots, which are empty in
+  TEST. They hold no Stripe id and no payment.
+- **Requests:** Player & Parent Requests include "Membership
+  cancellation". It is workflow only, with no money.
+- **Occurrence Financial Outcomes** hold a per-occurrence "Parent Outcome"
+  (Credit / Refund / None + an amount). It has no parent, payment or
+  booking link, so it is a policy *context*, not a per-family entitlement.
+- **No parent credit field or table, and no refund status field, exists
+  anywhere.** F7 Client Credits are for FCL clients (schools) and are
+  **not reused**.
+- **Payment source allocation:** nothing recorded it before F11. Family
+  credit did not exist before F11, so every existing parent payment (a
+  Stripe charge) is 100 % card-funded. That is a fact, not a guess. Mixed
+  funding can only arise from F11's own recorded applications.
+- **Bookings → Stripe:** no stored link (F10: subscription → player /
+  service unresolved). F11 therefore identifies a payment by the Stripe
+  charge (family from F10's explicit customer link), or by a recorded
+  family payment (FIN11.3).
+- **Camp refund default (48 h, configurable) is not stored anywhere.**
+  F11 does not build a booking-policy engine; it is a documented
+  dependency.
+- **Subscription 30-day notice** exists only as membership dates. It never
+  implies a refund.
+- **Verdict:** no STOP condition. The family is definable without
+  inference (FIN11.2), and source allocation is complete for every source
+  that can exist (FIN11.5).
+
+### FIN11.2 Family identity
+
+- **Family = one verified guardian account:** a Parents & Guardians
+  record with a unique Parent ID.
+  - The ledger owner key is (organisation, parent record id); the Parent
+    ID is kept as a snapshot.
+  - **Verified** = active, with at least one `Verified` Parent–Player
+    Link. **Eligible children** = the players on those Verified links.
+- **Never inferred** from surname, address, email or a Stripe customer's
+  name.
+- **Two guardian accounts are never merged.** Separated parents of the
+  same child are separate families.
+- **A duplicate Parent ID is refused** with 409 `parent_id_ambiguous`.
+- **A Stripe payment's family comes ONLY from F10's explicit
+  customer → parent link.** An unlinked customer gets 409
+  `stripe_customer_not_linked`.
+- **An unverified guardian** cannot hold or use credit. A card refund of
+  card-funded value is still possible.
+
+### FIN11.3 Ledger (Supabase, RLS on, no client grants, history tables refuse DELETE)
+
+| Table | Holds |
+|---|---|
+| `finance_family_payments` (`FFP-…`) | A parent payable, priced first (amount due, description, optional child / booking ref), and how it was paid: family credit applications plus at most one Stripe charge (id, customer and amount verified live from Stripe; unique per organisation) |
+| `finance_family_credits` (`FFC-…`) | One credit per decision that returned value as credit: original amount, split credit-funded / card-funded, origin decision + source, void fields. **No balance column.** |
+| `finance_family_credit_applications` (`FFA-…`, batch `FFB-…`) | Credit used against a family payment: amount, order in the batch, applied at / by |
+| `finance_refund_decisions` (`FRD-…`) | The decision (FIN11.5) |
+| `finance_family_sources` | One version row per refund source, for optimistic concurrency |
+
+- **Balance** = Σ (original − applications) over non-voided credits.
+- **Status** (available / partially used / used / voided) is derived.
+  Amounts are integer pence (GBP); nothing is rounded away.
+
+### FIN11.4 Oldest credit first (locked)
+
+- Credits are used in `created_at` order, then by credit id (a
+  deterministic tie-break).
+- A credit is never consumed beyond the target amount, and partial
+  balances are kept.
+- **Example:** £10 (Jan) and £15 (Feb), apply £12 → £10 Jan + £2 Feb, with
+  £13 Feb left.
+- **The database function re-checks this under row locks** and refuses
+  any other order (`not_oldest_first`) or overspend (`insufficient_credit`).
+- **Not a discount.** It pays an amount already priced (sibling / academy /
+  manual discounts are untouched), and the payment's amount due never
+  changes.
+- **Checkout is not wired.** `POST /family-credits/apply` is the ledger
+  logic, ready for a future parent checkout to call.
+
+### FIN11.5 Refund decision model + states
+
+- **Per source** (a Stripe charge `ch_…`, or a family payment `FFP-…`) the
+  decision records:
+  - family, optional child (must be an eligible child);
+  - funding snapshot (total / credit-funded / card-funded) and
+    returnable-before;
+  - `decisionType`: `refund_to_card` | `family_credit` | `split` |
+    `no_return`;
+  - card refund, credit restored (the credit-funded part), card value kept
+    as credit, amount retained;
+  - required reason; policy context (`manual_management_decision` default,
+    or `occurrence_financial_outcome` / `membership_cancellation` /
+    `parent_request` / `booking_policy` with a required source ref);
+  - decided at / by, and reversal fields.
+- **Execution state:**
+
+  | State | When |
+  |---|---|
+  | `decided_no_return` | no return |
+  | `credit_created` | credit only |
+  | `refund_due` | card only |
+  | `split_refund_due` | card + credit |
+
+- **Refund state:** `none` or `awaiting_refund_action`.
+  `refund_processing` / `refunded` / `refund_failed` and `stripe_refund_id`
+  are reserved for F21. **F11 never claims a refund happened.**
+- **Family credit** is created immediately: one credit row, audited. No
+  cash and no Stripe call.
+- **Refund Due:** no Stripe call, no cash OUT, no refund receipt.
+- **A split** creates only the credit portion now, and records the card
+  portion as Refund Due under the same decision.
+
+### FIN11.6 Mixed funding + partial returns
+
+- **Full return:** the credit-funded part → family credit (a new credit,
+  `fundedBy.creditFunded`); the card-funded part → card refund (Refund
+  Due). For £40 credit + £60 card that gives **£40 credit + £60 Refund
+  Due**, never £100 to card.
+- **`family_credit`** keeps the card part as credit too (an explicit
+  Management choice). **`split`** sends `cardRefundAmount` (more than 0 and
+  less than the card part) to the card and the rest to credit.
+- **Wholly credit-funded payment:** a refund to card is refused (409
+  `no_card_funded_value`).
+- **A payment's own Stripe charge cannot be decided on its own** (409
+  `charge_belongs_to_family_payment`). That would ignore its credit part.
+- **Partial return rule (for David to confirm):** the return is split in
+  proportion to what remains of each part.
+  - This follows the brief's preferred principle ("back to its original
+    funding source proportion").
+  - The credit share is rounded down, so the odd penny stays with the card
+    share.
+  - Example: £50 of £40 credit / £60 card → **£20 credit + £30 Refund
+    Due**; the rest → £20 + £30.
+- **Insufficient history fails safely:**
+  - a family payment with an unfunded remainder → 409 `funding_incomplete`;
+  - Stripe no longer matching the recorded charge (amount or customer) →
+    409 `funding_history_mismatch`;
+  - a failed, disputed or non-GBP charge → 409.
+
+### FIN11.7 Returnable balance
+
+```
+original returnable value (credit-funded + card-funded)
+  - family credit already created from it (credit restorations + card value kept as credit)
+  - card refunds already decided (Refund Due) or executed
+  - Stripe refunds no Hub decision accounts for (succeeded or pending; failed / cancelled ignored)
+= remaining returnable, never below zero
+```
+
+- **A `no_return` closes the source** until it is reversed. Reversed
+  decisions do not count.
+- **Stripe refunds already linked to a Hub decision are counted once.**
+  F21 will set `stripe_refund_id`; none is set yet.
+- **External Stripe refunds** are surfaced as
+  `partially_refunded_in_stripe_without_hub_decision` /
+  `fully_refunded_in_stripe_without_hub_decision`, with a `mismatch`
+  amount when Stripe refunded more than the Hub expects. They are never
+  written into Hub history.
+- **Refusals:** over-return 409 `over_return`; nothing left 409
+  `nothing_returnable` (also blocks duplicates).
+
+### FIN11.8 Cancellation / policy boundary
+
+- **A cancellation never creates a decision.** F11 reads no membership or
+  cancellation data and has no automation; a decision exists only when
+  Management records one.
+- **Policy outcomes are context only.** An Occurrence Financial Outcome, a
+  membership cancellation, a parent request or a booking policy is
+  referenced by `policy.kind` + `ref`. No entitlement is derived from it.
+- **Not built:** the camp 48 h default and any booking-policy engine
+  (documented dependency).
+- **A subscription ending implies nothing.**
+
+### FIN11.9 Stripe boundary
+
+- **Reads only**, through F10's GET provider. Two read methods were added:
+  `charge(id)` → `GET /v1/charges/{id}`, and `chargeRefunds(id)` →
+  `GET /v1/refunds?charge=`.
+- **Refused as a source:** a failed / pending, disputed or non-GBP charge.
+- **No code path:** POSTs to Stripe, refunds, cancels a subscription,
+  changes a payment method, or updates a customer.
+- **Not the family-credit ledger:** Stripe customer balance is not used.
+
+### FIN11.10 Revenue / cash semantics
+
+- `GET /revenue-corrections` (and each decision's `revenueCorrections`)
+  returns facts with source `parent_finance_decision`.
+
+  | Fact | Amount | Cash impact |
+  |---|---|---|
+  | `family_credit` | credited (funded-by split shown) | `none` |
+  | `refund_due` | card refund | `none_yet` (`expectedCashOut`; cash leaves only when F21 executes) |
+  | `no_return` | 0.00 | — (retained amount shown) |
+  | `family_credit_voided` / `decision_reversed` | negative offsets, dated when they happen | — |
+
+- **Every fact says `businessCost: false`.**
+- **Not built:** Month Report, Cash Flow, and F7 receipts / payments
+  writes.
+
+### FIN11.11 API (all under `finance`, F1 rules) + access
+
+| Route | Access | What |
+|---|---|---|
+| `GET /family-credits[?parentId]` | View | Families' credits (derived balances + application history) |
+| `GET /family-credits/{PARENT-…}` | View | Family: verified children, `parentSummary` ("Credit available / Refund awaiting processing"), credits, payments, decisions |
+| `POST /family-credits/apply` | Manage | `{ parentId, paymentId, amount?, reason? }`. `parentId` = the credit-owning family; another family → 409 `cross_family_refused` |
+| `POST /family-credits/{FFC-…}/void` | Manage | `{ reason }`; unused only (used → 409 `credit_used`) |
+| `POST /family-payments` | Manage | `{ parentId, amount, description, playerId?, bookingRef?, stripeChargeId?, reason }` |
+| `GET /refund-decisions[?parentId&state]` | View | Decisions + summary (awaiting refund action, refund due, credit created) |
+| `POST /refund-decisions` | Manage | `{ source, parentId, decisionType, amount?, cardRefundAmount?, playerId?, reason, policy? }` |
+| `GET /refund-decisions/{FRD-…}` | View | Decision + its credit + revenue corrections; Stripe ids under `technical` |
+| `POST /refund-decisions/{FRD-…}/reverse` | Manage | `{ reason }`; only while its credit is unused and its refund unexecuted |
+| `GET /refund-sources/{ch_…\|FFP-…}` | View | Funding split + returnable balance + external Stripe refunds (live Stripe read) |
+| `GET /revenue-corrections[?from&to]` | View | Revenue-correction facts (window ≤ 366 days) |
+
+- **No refund-execution route exists** (`…/execute` → 404) and there is
+  no `POST /stripe/refund`.
+- **Access:**
+  - Coach / Parent / pending → 403 `management_required`;
+  - no grant → 403 `finance_access_denied`;
+  - View writes → 403;
+  - module off → 403 `finance_module_disabled`;
+  - any tenant key in a query or body → 400.
+- **No Parent endpoint was added.** `parentSummary` is the ready-made
+  projection for a later Parent Hub read, which must use the existing
+  guardianship checks.
+
+### FIN11.12 Concurrency + audit
+
+- **Every write** runs under the shared Finance write lock
+  (`commercial:{org}`) **and** is ONE database function. The ledger rows
+  and their audit rows commit together, or nothing does.
+- **Database guards under row locks:**
+  - source version (a stale decision / reversal → `source_changed`);
+  - credits locked oldest first (no overspend, no skipped older credit);
+  - cross-family refused;
+  - used credit cannot be voided or reversed;
+  - CHECK constraints on every amount identity;
+  - DELETE refused on history tables.
+- **Audit events** (`finance_audit_events`):
+
+  | Write | Events |
+  |---|---|
+  | payment recorded | `finance_family.payment_recorded` |
+  | credit applied | `finance_family.credit_applied` (one per batch, with its allocations) |
+  | decision | `finance_family.refund_decision_recorded` + `finance_family.credit_created` (if credit) + `finance_family.refund_due_recorded` (if card refund) |
+  | void | `finance_family.credit_voided` |
+  | reversal | `finance_family.refund_decision_reversed` |
+
+- **Reads and refused writes audit nothing.** No card details, keys or
+  secrets are audited.
+- **External refunds are only surfaced, never stored**, so there is no
+  "discovered" event.
+
+### FIN11.13 Code, schema, tests
+
+- **New files:**
+  - `finance-family.ts` (pure)
+  - `finance-family-repository.ts`
+  - `finance-family-orchestrator.ts`
+  - routes in `index.ts` (dispatched first)
+- **F10 additions:**
+  - provider `charge` / `chargeRefunds` (GET);
+  - `openStripeSession` / `recordStripeHealth` / `StripeSession` exported;
+  - `listAll` exported.
+- **Not touched:** the 12 Finance modules shared with Needs Attention.
+- **Live DB smoke (self-rolling-back `DO` block) — all refused as
+  designed:**
+  - a stale-version decision → `source_changed`;
+  - newest-first → `not_oldest_first`;
+  - cross-family → `cross_family`;
+  - overspend → `insufficient_credit`;
+  - voiding used credit → `credit_used`;
+  - reversing a decision whose credit is spent → `credit_used`;
+  - DELETE → `history_is_append_only`;
+  - a write without audit → `audit_missing`.
+
+  A valid oldest-first application (£30 + £2 of £15) succeeded inside the
+  block, and everything rolled back.
+- **Tests:**
+  - `tests/support/finance-family.test.ts`: **62/62**. Covers brief items
+    1–41 + reversal / identity / summary + drift checks, against the real
+    orchestrator, repository and F10 HTTP adapter, with fake database
+    functions using the same rules as the SQL.
+  - Mutation **15/16** caught by assertions. The 16th (removing the API's
+    used-credit void pre-check) is still refused by the database function
+    with the same code.
+  - F10 suite 64/64.
+  - `financebundletest` B13–B14 added (14/14).
+  - Full suite **82/82**.
+
+### FIN11.14 Resting TEST state (checkpoint)
+
+- F11 tables empty; audit **223**.
+- One Manage grant; `module_finance` ON; no locks; no probe schema.
+- Stripe still disconnected (F10 resting state).
+- `finance` v17, `needs-attention` v14, `stripe-sandbox` v1 deployed.
+
+### FIN11.15 Open items / future debt
+
+- **Product confirmations for David:**
+  - the proportional partial-return rule (FIN11.6);
+  - family = one guardian account. Co-guardian household sharing would be
+    a new product decision.
+  - Manual / goodwill family credit without a source payment is **not
+    built**: it would create value no revenue backs, so it needs a product
+    decision.
+- **Dependencies:**
+  - a structured cancellation / camp refund policy (48 h default) is not
+    stored — booking-policy work;
+  - parent checkout wiring (auto-apply credit at payment) — the ledger is
+    ready;
+  - a Parent Hub read endpoint;
+  - credit expiry (only if policy requires);
+  - application reversal (not built; spent credit is history).
+- **F21 boundary:** F21 executes the card refund for decisions with
+  `refund_state = awaiting_refund_action`. It sets `stripe_refund_id` and
+  moves the refund state, and the cash OUT happens on the refund date.
+  F11 already counts a linked Stripe refund once.
+- **Needs Attention:** none activated. "Refund Due / awaiting refund
+  action" (`GET /refund-decisions?state=awaiting_refund_action`) and the
+  external refund mismatch (`stripeRefunds.state` / `mismatch`) are
+  structured for later cases. ATT-025 stays Planned.
+- **Carried debt:**
+  - the TEST duplicate Parent ID;
+  - parents with no Organisation link;
+  - real Stripe metadata conventions unknown;
+  - subscription → player / service mapping undecided.
+- **Boundaries:** no Stripe refund execution; F21 not started; no
+  subscription write; Cash Flow not started; production untouched.

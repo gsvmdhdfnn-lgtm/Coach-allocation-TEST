@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "bf1c428f3dd2249925b4452c6f410638e74e3ed1371ef5df688a6e7177c29ad7",
-  "artifactBytes": 392420,
+  "artifactSha256": "18497081d172ca343489d2febfd2391fd04c026050379e9ece1433d939536d21",
+  "artifactBytes": 443883,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "38a586961fe1a43f69bb1e6ef6451333ae99972d7ff5156e5950c77262090c1f",
+  "sourceSha256": "77406a311aab6dbc1ef84fdcea70363e6a57b2294d4936b7d57f6c12271b925a",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -68,6 +68,18 @@
     {
       "path": "supabase/functions-test/finance/finance-effective-dating.ts",
       "sha256": "71d8106c2cef55ba2cb64ec9305c79a6cb78b9a3e49c577071ecc1752cbf4615"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-family-orchestrator.ts",
+      "sha256": "786b9cf4245969648229315f93428a2879dcf2c303a204ca254d57d71e0e2662"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-family-repository.ts",
+      "sha256": "8e44891388ac5da9ef9f5cfb05e077e40b666535361922283249ee4e203d2843"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-family.ts",
+      "sha256": "69c7cd40f2f90966432263845dba6714d9006e0a4bc65dda2900e17e12a28450"
     },
     {
       "path": "supabase/functions-test/finance/finance-invoicing-mapping.ts",
@@ -139,15 +151,15 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-stripe-orchestrator.ts",
-      "sha256": "cf298400a8ba9b07fa977455143ed32f56086166ca88a2bfc1fda7ec4e4a1a17"
+      "sha256": "0e63bac706f8589c74cda49a70fae9f175018888ed9f9fb45634b2bfb220274a"
     },
     {
       "path": "supabase/functions-test/finance/finance-stripe-provider.ts",
-      "sha256": "663ba58937e28b06c4838c168bf8d7d2f03fc4df0900952fe42937e18d74a2fc"
+      "sha256": "31de10dd2d5c58a6179670a07812d2b420d7c85f6616b280fde2dc18a7451a8d"
     },
     {
       "path": "supabase/functions-test/finance/finance-stripe-repository.ts",
-      "sha256": "e92409318264193d35ba038f08e60fed3afcf17e9a606e169d1d28bed1d3afbc"
+      "sha256": "17a466dd4c2dffb5143b2322c679b209328d874402b3a7e240d87b431eca08f1"
     },
     {
       "path": "supabase/functions-test/finance/finance-stripe.ts",
@@ -171,7 +183,7 @@
     },
     {
       "path": "supabase/functions-test/finance/index.ts",
-      "sha256": "7e13e1db0c2a99c7bfe23df4811565da8f5d9fc84091d32f1fb508c5f30adf3d"
+      "sha256": "028bfac33e2b3a7a97d412ef8281eeef357234ba44aaf605d6fc7de58659bfda"
     },
     {
       "path": "supabase/functions-test/finance/orchestrator.ts",

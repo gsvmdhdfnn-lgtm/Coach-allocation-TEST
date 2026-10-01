@@ -157,7 +157,7 @@ export async function deleteCustomerLink(svc: GrantStoreConfig, organisationId: 
   await ok(await fetch(`${rest(svc, CUSTOMER_LINKS_TABLE)}?organisation_id=${eq(organisationId)}&stripe_customer_id=${eq(customerId)}`, { method: "DELETE", headers: headers(svc, { Prefer: "return=minimal" }) }), "Stripe customer link removal");
 }
 
-async function listAll(config: AirtableConfig, table: string, fields: string[]): Promise<{ id: string; fields: Record<string, any> }[]> {
+export async function listAll(config: AirtableConfig, table: string, fields: string[]): Promise<{ id: string; fields: Record<string, any> }[]> {
   const rows: { id: string; fields: Record<string, any> }[] = [];
   let offset = "";
   do {

@@ -93,6 +93,23 @@
  *   POST /stripe/settings                           { feeEstimate: { percentBasisPoints, fixedMinor } | null, reason? }  estimate for FUTURE charges
  *   No route creates, changes, cancels, retries or refunds anything in Stripe, or records a Stripe payment as an F7 Finance Payment.
  *
+ * F11 parent / family credit + refund DECISION bridge (Finance read = GET, Finance manage = POST); a family is one verified
+ * guardian account; credit balances are derived and used oldest first; nothing is executed in Stripe (that is F21):
+ *   GET  /family-credits[?parentId=PARENT-..]        families' credits (derived balances, history)
+ *   GET  /family-credits/{PARENT-..}                 one family: verified children, balance, credits, payments, decisions, parent summary
+ *   POST /family-credits/apply                       { parentId, paymentId, amount?, reason? }  oldest credit first, never another family's
+ *   POST /family-credits/{FFC-..}/void               { reason }  unused credit only
+ *   POST /family-payments                            { parentId, amount, description, playerId?, bookingRef?, stripeChargeId?, reason }
+ *                                                   a parent payable (priced first) and how it is paid (credit + one Stripe charge)
+ *   GET  /refund-decisions[?parentId&state]          decisions (credit portion, refund portion, status)
+ *   POST /refund-decisions                           { source: ch_..|FFP-.., parentId, decisionType, amount?, cardRefundAmount?, playerId?,
+ *                                                     reason, policy? }  refund_to_card | family_credit | split | no_return
+ *   GET  /refund-decisions/{FRD-..}                  one decision + its revenue-correction facts
+ *   POST /refund-decisions/{FRD-..}/reverse          { reason }  only while its credit is unused and its refund unexecuted
+ *   GET  /refund-sources/{ch_..|FFP-..}              funding split + returnable balance (live Stripe read of the charge + its refunds)
+ *   GET  /revenue-corrections[?from&to]              revenue-correction facts (no cash, no business cost)
+ *   No route executes a refund, calls a Stripe write, or creates a discount.
+ *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
  * tenant-looking query parameter or body key is rejected with 400, never
@@ -124,6 +141,8 @@ import { checkReceiptsQuery, checkReceivablesQuery, matchReceivablesRoute, parse
 import { matchXeroRoute, parseContactLink, parseXeroAction, parseXeroSettings } from "./finance-xero.ts";
 import { type XeroDeps, issueToXero, linkXeroContact, readXeroInvoiceState, readXeroStatus, updateXeroSettings } from "./finance-xero-orchestrator.ts";
 import { matchStripeRoute, parseParentLink, parseStripeQuery, parseStripeSettings } from "./finance-stripe.ts";
+import { matchFamilyRoute, parseApply, parseDecision, parseFamilyPayment, parseFamilyQuery, parseReason } from "./finance-family.ts";
+import { applyFamilyCredit, listFamilyCredits, listRefundDecisions, listRevenueCorrections, readFamily, readRefundDecision, readRefundSource, recordFamilyPayment, recordRefundDecision, reverseRefundDecision, voidFamilyCredit } from "./finance-family-orchestrator.ts";
 import { type StripeDeps, linkStripeCustomer, listStripePayments, listStripeRefunds, listStripeSubscriptions, readStripeStatus, readStripeSubscription, updateStripeSettings } from "./finance-stripe-orchestrator.ts";
 import {
   applyClientCredit,
@@ -496,6 +515,47 @@ async function handleStripe(req: Request, url: URL, match: NonNullable<ReturnTyp
   return commercialResponse(await linkStripeCustomer(deps, caller, r.params.customerId, p.parentId, p.reason));
 }
 
+/** F11 routes: same order as F3-F10 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleFamily(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchFamilyRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  // Writes take no query parameters at all (parsed as a route with none allowed).
+  const q = parseFamilyQuery(req.method === "GET" ? r.name : "family.apply", url.searchParams, isTenantKey);
+  if (!q.ok) return commercialResponse({ status: "error", ...q });
+  if (req.method === "GET") {
+    if (r.name === "family.credits") return commercialResponse(await listFamilyCredits(deps, caller, { parentId: q.parentId }));
+    if (r.name === "family.family") return commercialResponse(await readFamily(deps, caller, r.params.parentId));
+    if (r.name === "family.decisions") return commercialResponse(await listRefundDecisions(deps, caller, { parentId: q.parentId, state: q.state }));
+    if (r.name === "family.decision") return commercialResponse(await readRefundDecision(deps, caller, r.params.decisionId));
+    if (r.name === "family.source") return commercialResponse(await readRefundSource(deps, caller, r.params.sourceRef));
+    if (r.name === "family.corrections") return commercialResponse(await listRevenueCorrections(deps, caller, { from: q.from, to: q.to }));
+  }
+  const raw = await req.text();
+  if (r.name === "family.payments") {
+    const p = parseFamilyPayment(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await recordFamilyPayment(deps, caller, p));
+  }
+  if (r.name === "family.apply") {
+    const p = parseApply(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await applyFamilyCredit(deps, caller, p));
+  }
+  if (r.name === "family.decisions") {
+    const p = parseDecision(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await recordRefundDecision(deps, caller, p));
+  }
+  const p = parseReason(raw, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  if (r.name === "family.void") return commercialResponse(await voidFamilyCredit(deps, caller, r.params.creditId, p.reason));
+  return commercialResponse(await reverseRefundDecision(deps, caller, (r.params as { decisionId: string }).decisionId, p.reason));
+}
+
 /** Path segments URL-decoded (an Occurrence ID contains ":"); null when a segment is not valid percent-encoding. */
 function decodedPath(route: string): string | null {
   try {
@@ -516,7 +576,11 @@ Deno.serve(async (req: Request) => {
   try {
     const decoded = decodedPath(route);
     if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
-    // F10 first: it owns only stripe/..., and returns null for the rest.
+    // F11 first: it owns only family-credits/..., family-payments, refund-decisions/..., refund-sources/... and revenue-corrections.
+    const family = matchFamilyRoute(route, req.method);
+    if (family) return await handleFamily(req, url, family);
+
+    // F10 next: it owns only stripe/..., and returns null for the rest.
     const stripe = matchStripeRoute(route, req.method);
     if (stripe) return await handleStripe(req, url, stripe);
 

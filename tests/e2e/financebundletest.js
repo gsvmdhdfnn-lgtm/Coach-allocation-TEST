@@ -74,6 +74,19 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   const flat = code.replace(/\\\n/g, '');
   ck('B12. The TEST guard for Stripe (test mode only) is in the artifact; the emulator is reachable only on this project; api.stripe.com is the only real base; the API version is pinned', /requireTestMode:\s*(!0|true)/.test(code) && flat.includes('/functions/v1/stripe-sandbox/v1') && flat.includes('https://api.stripe.com/v1') && flat.includes('2024-06-20'));
 
+  const fc401 = await call('GET', 'family-credits');
+  const ff401 = await call('GET', 'family-credits/PARENT-TEST-001');
+  const fa405 = await call('GET', 'family-credits/apply');
+  const fv405 = await call('GET', 'family-credits/FFC-0123456789AB/void');
+  const fp405 = await call('GET', 'family-payments');
+  const rd401 = await call('POST', 'refund-decisions');
+  const rr405 = await call('GET', 'refund-decisions/FRD-0123456789AB/reverse');
+  const rs401 = await call('GET', 'refund-sources/ch_ZZ123');
+  const rc401 = await call('GET', 'revenue-corrections');
+  const rexec404 = await call('POST', 'refund-decisions/FRD-0123456789AB/execute');
+  ck('B13. F11 family credit / refund decision routes are live in the artifact: reads GET-only (401 without a token), writes POST-only (405), no refund execution route (404)', fc401.status === 401 && ff401.status === 401 && fa405.status === 405 && fv405.status === 405 && fp405.status === 405 && rd401.status === 401 && rr405.status === 405 && rs401.status === 401 && rc401.status === 401 && rexec404.status === 404, `${fc401.status}/${ff401.status}/${fa405.status}/${fv405.status}/${fp405.status}/${rd401.status}/${rr405.status}/${rs401.status}/${rc401.status}/${rexec404.status}`);
+  ck('B14. F11 writes go through its atomic database functions only (finance_family_* RPCs in the artifact)', ['finance_family_payment_record', 'finance_family_credit_apply', 'finance_family_decision_record', 'finance_family_credit_void', 'finance_family_decision_reverse'].every((f) => flat.includes(f)));
+
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;
   console.log(`\n${results.length - failed}/${results.length} passing`);

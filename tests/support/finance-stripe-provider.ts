@@ -55,6 +55,10 @@ export interface StripeReadProvider {
   listCharges(o: { gte: number; lte: number; customer?: string }): Promise<PR<Record<string, any>[]>>;
   /** Refunds created in [gte, lte], balance transaction expanded. */
   listRefunds(o: { gte: number; lte: number }): Promise<PR<Record<string, any>[]>>;
+  /** One charge (F11 reads the source of a refund decision); null when Stripe has no such charge. */
+  charge(chargeId: string): Promise<PR<Record<string, any> | null>>;
+  /** Every refund Stripe holds for one charge (all pages). */
+  chargeRefunds(chargeId: string): Promise<PR<Record<string, any>[]>>;
   /** Calls made (method + path + status only - never headers or query values that could carry data). */
   callLog(): { method: string; path: string; status: number | null }[];
 }
@@ -173,6 +177,8 @@ export function httpStripeProvider(o: { baseUrl: string; secretKey: string; requ
         ...(q.customer ? ([["customer", q.customer]] as [string, string][]) : []),
       ]),
     listRefunds: (q) => all("/refunds", [["created[gte]", String(q.gte)], ["created[lte]", String(q.lte)], ["expand[]", "data.balance_transaction"]]),
+    charge: (id) => getOne(`/charges/${encodeURIComponent(id)}`),
+    chargeRefunds: (id) => all("/refunds", [["charge", id]]),
     callLog: () => log.map((x) => ({ ...x })),
   };
 }

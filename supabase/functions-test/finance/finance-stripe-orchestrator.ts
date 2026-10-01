@@ -102,10 +102,10 @@ export function providerFailure(f: ProviderFail, doing: string): SFail {
   }
 }
 
-type Session = { org: OrganisationContext; access: string; conn: StripeConnection; p: StripeReadProvider };
+export type StripeSession = { org: OrganisationContext; access: string; conn: StripeConnection; p: StripeReadProvider };
 
 /** Authorise, load the connection, apply the TEST guards, open the provider. No Stripe call yet. */
-async function open(deps: StripeDeps, caller: FinanceCaller, level: "read" | "manage"): Promise<Session | SFail> {
+export async function openStripeSession(deps: StripeDeps, caller: FinanceCaller, level: "read" | "manage"): Promise<StripeSession | SFail> {
   const auth = await authorizeFinance(deps, caller, level);
   if (auth.status !== "ok") return fail(auth.httpStatus, auth.code, auth.error);
   const org = auth.organisation;
@@ -128,7 +128,7 @@ async function open(deps: StripeDeps, caller: FinanceCaller, level: "read" | "ma
 }
 
 /** Throttled health stamp after a Stripe read (never a new row, never audited, never fails the read). */
-async function health(deps: StripeDeps, s: Session, at: string, f: SFail | null) {
+export async function recordStripeHealth(deps: StripeDeps, s: StripeSession, at: string, f: SFail | null) {
   try {
     if (f) await recordStripeOutcome(deps.grants, s.conn, { ok: false, at, code: f.code, message: f.error });
     else await recordStripeOutcome(deps.grants, s.conn, { ok: true, at });
@@ -147,7 +147,7 @@ async function hubMapping(deps: StripeDeps, org: OrganisationContext): Promise<{
   }
 }
 
-const head = (s: Session, fetchedAt: string) => ({ contract: STRIPE_CONTRACT, organisation: orgBody(s.org), access: s.access, source: sourceOf(s.conn, fetchedAt) });
+const head = (s: StripeSession, fetchedAt: string) => ({ contract: STRIPE_CONTRACT, organisation: orgBody(s.org), access: s.access, source: sourceOf(s.conn, fetchedAt) });
 
 // ---------------------------------------------------------------------
 // GET /stripe/status[?check=1]
@@ -176,21 +176,21 @@ export async function readStripeStatus(deps: StripeDeps, caller: FinanceCaller, 
   };
   if (!check) return { status: "ok", httpStatus: 200, body };
   if (problems.length) return { status: "ok", httpStatus: 200, body: { ...body, check: { ran: false, reason: problems[0].code } } };
-  const s = await open(deps, caller, "read");
+  const s = await openStripeSession(deps, caller, "read");
   if (isFail(s)) return s.code === "stripe_live_mode_refused" || s.code === "stripe_not_connected" ? { status: "ok", httpStatus: 200, body: { ...body, check: { ran: false, reason: s.code, message: s.error } } } : s;
   const at = now(deps).toISOString();
   const a = await s.p.account();
   let result: Record<string, unknown>;
   if (!a.ok) {
     const f = providerFailure(a, "checking the Stripe account");
-    await health(deps, s, at, f);
+    await recordStripeHealth(deps, s, at, f);
     result = { ran: true, ok: false, at, error: { code: f.code, message: f.error }, calls: s.p.callLog().length };
   } else {
     const id = String(a.value.id);
     const name = typeof a.value.settings?.dashboard?.display_name === "string" ? a.value.settings.dashboard.display_name : typeof a.value.business_profile?.name === "string" ? a.value.business_profile.name : null;
     if (s.conn.accountId && s.conn.accountId !== id) {
       const f = fail(409, "stripe_account_changed", "The key now reaches a different Stripe account than the one recorded - reconnect it deliberately");
-      await health(deps, s, at, f);
+      await recordStripeHealth(deps, s, at, f);
       result = { ran: true, ok: false, at, error: { code: f.code, message: f.error }, calls: s.p.callLog().length };
     } else {
       try {
@@ -209,7 +209,7 @@ export async function readStripeStatus(deps: StripeDeps, caller: FinanceCaller, 
 // ---------------------------------------------------------------------
 
 export async function listStripeSubscriptions(deps: StripeDeps, caller: FinanceCaller, q: { customer?: string }): Promise<Ok | SFail> {
-  const s = await open(deps, caller, "read");
+  const s = await openStripeSession(deps, caller, "read");
   if (isFail(s)) return s;
   const hub = await hubMapping(deps, s.org);
   if (isFail(hub)) return hub;
@@ -217,10 +217,10 @@ export async function listStripeSubscriptions(deps: StripeDeps, caller: FinanceC
   const r = await s.p.listSubscriptions({ customer: q.customer });
   if (!r.ok) {
     const f = providerFailure(r, "listing subscriptions");
-    await health(deps, s, at, f);
+    await recordStripeHealth(deps, s, at, f);
     return f;
   }
-  await health(deps, s, at, null);
+  await recordStripeHealth(deps, s, at, null);
   const views = r.value.map((sub) => subscriptionView(sub, { tz: s.org.timezone, fee: s.conn.config.feeEstimate, links: hub.links, parents: hub.parents }));
   const customers = [...new Set(views.map((v) => v.customer.customerId).filter(Boolean))] as string[];
   return {
@@ -247,7 +247,7 @@ export async function listStripeSubscriptions(deps: StripeDeps, caller: FinanceC
 // ---------------------------------------------------------------------
 
 export async function readStripeSubscription(deps: StripeDeps, caller: FinanceCaller, subscriptionId: string): Promise<Ok | SFail> {
-  const s = await open(deps, caller, "read");
+  const s = await openStripeSession(deps, caller, "read");
   if (isFail(s)) return s;
   const hub = await hubMapping(deps, s.org);
   if (isFail(hub)) return hub;
@@ -255,11 +255,11 @@ export async function readStripeSubscription(deps: StripeDeps, caller: FinanceCa
   const r = await s.p.subscription(subscriptionId);
   if (!r.ok) {
     const f = providerFailure(r, "reading the subscription");
-    await health(deps, s, at, f);
+    await recordStripeHealth(deps, s, at, f);
     return f;
   }
   if (!r.value) {
-    await health(deps, s, at, null);
+    await recordStripeHealth(deps, s, at, null);
     return fail(404, "stripe_subscription_not_found", `Stripe has no subscription ${subscriptionId} in this account`);
   }
   const sub = r.value;
@@ -267,7 +267,7 @@ export async function readStripeSubscription(deps: StripeDeps, caller: FinanceCa
   const inv = await s.p.subscriptionInvoices(subscriptionId, 12);
   if (!inv.ok) {
     const f = providerFailure(inv, "reading the subscription's invoices");
-    await health(deps, s, at, f);
+    await recordStripeHealth(deps, s, at, f);
     return f;
   }
   let upcoming: Record<string, any> | null = null;
@@ -275,12 +275,12 @@ export async function readStripeSubscription(deps: StripeDeps, caller: FinanceCa
     const u = await s.p.upcomingInvoice(subscriptionId);
     if (!u.ok) {
       const f = providerFailure(u, "reading Stripe's upcoming invoice");
-      await health(deps, s, at, f);
+      await recordStripeHealth(deps, s, at, f);
       return f;
     }
     upcoming = u.value;
   }
-  await health(deps, s, at, null);
+  await recordStripeHealth(deps, s, at, null);
   const view = subscriptionView(sub, { tz: s.org.timezone, fee: s.conn.config.feeEstimate, links: hub.links, parents: hub.parents, upcoming });
   const recent = inv.value.map((i) => collectionOfInvoice(i, s.org.timezone)).filter(Boolean) as NonNullable<ReturnType<typeof collectionOfInvoice>>[];
   return {
@@ -306,7 +306,7 @@ function epochWindow(org: OrganisationContext, from: string, to: string) {
 }
 
 export async function listStripePayments(deps: StripeDeps, caller: FinanceCaller, q: { from?: string; to?: string; customer?: string }): Promise<Ok | SFail> {
-  const s = await open(deps, caller, "read");
+  const s = await openStripeSession(deps, caller, "read");
   if (isFail(s)) return s;
   const w = windowOf(q.from, q.to, todayIn(s.org.timezone, now(deps)));
   if (!w.ok) return { status: "error", httpStatus: 400, code: w.code, error: w.error };
@@ -316,10 +316,10 @@ export async function listStripePayments(deps: StripeDeps, caller: FinanceCaller
   const r = await s.p.listCharges({ ...epochWindow(s.org, w.from, w.to), customer: q.customer });
   if (!r.ok) {
     const f = providerFailure(r, "listing payments");
-    await health(deps, s, at, f);
+    await recordStripeHealth(deps, s, at, f);
     return f;
   }
-  await health(deps, s, at, null);
+  await recordStripeHealth(deps, s, at, null);
   const payments = r.value.map((ch) => {
     const p = paymentFromCharge(ch, s.org.timezone);
     const cm = customerMapping(p.customerId, hub.links, hub.parents);
@@ -340,7 +340,7 @@ export async function listStripePayments(deps: StripeDeps, caller: FinanceCaller
 }
 
 export async function listStripeRefunds(deps: StripeDeps, caller: FinanceCaller, q: { from?: string; to?: string }): Promise<Ok | SFail> {
-  const s = await open(deps, caller, "read");
+  const s = await openStripeSession(deps, caller, "read");
   if (isFail(s)) return s;
   const w = windowOf(q.from, q.to, todayIn(s.org.timezone, now(deps)));
   if (!w.ok) return { status: "error", httpStatus: 400, code: w.code, error: w.error };
@@ -348,10 +348,10 @@ export async function listStripeRefunds(deps: StripeDeps, caller: FinanceCaller,
   const r = await s.p.listRefunds(epochWindow(s.org, w.from, w.to));
   if (!r.ok) {
     const f = providerFailure(r, "listing refunds");
-    await health(deps, s, at, f);
+    await recordStripeHealth(deps, s, at, f);
     return f;
   }
-  await health(deps, s, at, null);
+  await recordStripeHealth(deps, s, at, null);
   const refunds = r.value.map((re) => refundView(re, s.org.timezone));
   const by: Record<string, { count: number; succeededMinor: number; pending: number; failedOrCanceled: number }> = {};
   r.value.forEach((re, i) => {
@@ -419,16 +419,16 @@ export function linkStripeCustomer(deps: StripeDeps, caller: FinanceCaller, cust
       return fail(409, "stripe_customer_linked_elsewhere", `Stripe customer ${customerId} is already linked to Hub parent ${existing.parentId} - one Stripe customer never belongs to two parents`);
     }
     // Confirm the customer exists in THIS Stripe account (read-only) before storing a link to it.
-    const s = await open(deps, caller, "manage");
+    const s = await openStripeSession(deps, caller, "manage");
     if (isFail(s)) return s;
     const at = now(deps).toISOString();
     const c = await s.p.customer(customerId);
     if (!c.ok) {
       const f = providerFailure(c, "reading the Stripe customer");
-      await health(deps, s, at, f);
+      await recordStripeHealth(deps, s, at, f);
       return f;
     }
-    await health(deps, s, at, null);
+    await recordStripeHealth(deps, s, at, null);
     if (!c.value || c.value.deleted === true) return fail(404, "stripe_customer_not_found", `Stripe has no (undeleted) customer ${customerId} in this account`);
     const link: CustomerLink = { organisationId: org.organisationId, customerId, parentId, parentRecordId: parent.recordId, method: "linked_by_manager", linkedAt: at, linkedBy: caller.userId };
     if ((await insertCustomerLink(deps.grants, link)) === "conflict") return fail(409, "stripe_customer_linked_elsewhere", "This Stripe customer was linked by someone else just now - reload and try again");
