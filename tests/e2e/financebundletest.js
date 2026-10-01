@@ -87,6 +87,18 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   ck('B13. F11 family credit / refund decision routes are live in the artifact: reads GET-only (401 without a token), writes POST-only (405), no refund execution route (404)', fc401.status === 401 && ff401.status === 401 && fa405.status === 405 && fv405.status === 405 && fp405.status === 405 && rd401.status === 401 && rr405.status === 405 && rs401.status === 401 && rc401.status === 401 && rexec404.status === 404, `${fc401.status}/${ff401.status}/${fa405.status}/${fv405.status}/${fp405.status}/${rd401.status}/${rr405.status}/${rs401.status}/${rc401.status}/${rexec404.status}`);
   ck('B14. F11 writes go through its atomic database functions only (finance_family_* RPCs in the artifact)', ['finance_family_payment_record', 'finance_family_credit_apply', 'finance_family_decision_record', 'finance_family_credit_void', 'finance_family_decision_reverse'].every((f) => flat.includes(f)));
 
+  const cc401 = await call('GET', 'coach-costs');
+  const cw401 = await call('GET', 'coach-costs/COACH-TEST-A');
+  const cm401 = await call('GET', 'coach-costs/COACH-TEST-A/2026-09');
+  const cf405 = await call('GET', 'coach-costs/COACH-TEST-A/2026-09/finalise');
+  const cs401 = await call('GET', 'coach-summaries/FCM-0123456789AB');
+  const cr405 = await call('GET', 'coach-summaries/FCM-0123456789AB/corrections');
+  const cx401 = await call('GET', 'coach-cost-facts');
+  const creo404 = await call('POST', 'coach-summaries/FCM-0123456789AB/reopen');
+  const cpay404 = await call('POST', 'coach-costs/COACH-TEST-A/2026-09/pay');
+  ck('B15. F12 coach cost routes are live in the artifact: reads GET-only (401 without a token), writes POST-only (405), no reopen / payment route (404)', cc401.status === 401 && cw401.status === 401 && cm401.status === 401 && cf405.status === 405 && cs401.status === 401 && cr405.status === 405 && cx401.status === 401 && creo404.status === 404 && cpay404.status === 404, `${cc401.status}/${cw401.status}/${cm401.status}/${cf405.status}/${cs401.status}/${cr405.status}/${cx401.status}/${creo404.status}/${cpay404.status}`);
+  ck('B16. F12 writes go through its atomic database functions only (finance_worker_month_* RPCs in the artifact)', ['finance_worker_month_finalise', 'finance_worker_month_correct'].every((f) => flat.includes(f)));
+
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;
   console.log(`\n${results.length - failed}/${results.length} passing`);

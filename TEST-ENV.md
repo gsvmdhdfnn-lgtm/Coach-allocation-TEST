@@ -18400,3 +18400,313 @@ still 212.00).
 **Tests after the proof:** `tests/support/finance-family.test.ts`
 **67/67**; full suite **82/82** test files; `build-finance-bundle --check`
 and `build-needs-attention-bundle --check` MATCH.
+
+## Finance Foundation — F12 (coach cost READ + Finance Coach Month finalisation) — CHECKPOINT — TEST only — 2026-10-01
+
+> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
+>
+> - **TEST schema is applied:**
+>   - Supabase `finance_f12_worker_cost_months` (FIN12.6);
+>   - Airtable Coach Allocations field **`Cost Basis`** (`fldsbucAv8XMLV4RT`).
+>
+>   The database rules were exercised live in a self-rolling-back smoke
+>   block (FIN12.9). Nothing persisted: all F12 tables are empty and the
+>   audit count is still **268**.
+> - **The `finance` bundle is 487,768 bytes**, sha256
+>   `5a0d8992d9b26238da9cc361763f83aeb0fdc2ac67466918d0a5fc7512d01545`
+>   (manifest `6aa725c8…`). That is too large for this session to deploy.
+>   The exact artifact is committed at
+>   `supabase/deploy-artifacts/finance/index.js` and needs deployment
+>   assistance, as for F7–F11.
+> - **Deploy as `finance` v19:** `verify_jwt` true, one `index.js`, a
+>   byte-for-byte copy of the committed artifact.
+> - **Not redeployed:** `needs-attention` v14 (artifact `--check` MATCH),
+>   `coach-work-summaries`, `coach-allocations`,
+>   `occurrence-financial-outcomes` (none changed).
+> - The live proof A–AA runs after v19 is deployed.
+
+### FIN12.1 Pre-implementation audit (2026-10-01) and the decisions it needed
+
+- **Repo:** HEAD `70e82f8` = origin, clean.
+- **Historical cost authority:** Coach Allocations (Airtable, Coaches
+  Slice 5). Each allocation stores its own frozen snapshots:
+  - Rate Profile link, Rate Type, Pay Unit (Per Hour / Per Session /
+    Per Day), Rate Amount;
+  - Paid Units, Cost Override + Override Reason;
+  - Final Coach Cost (currency, pounds, 2 dp), Cost Status (Draft /
+    Confirmed / Exported);
+  - Slice 6 Coach Outcome (Paid / Partial / Unpaid, decided by / at).
+
+  Allocations are created explicitly (`coach-allocations /allocate`),
+  never from staffing. At most one per coach + occurrence is enforced in
+  application code only. **Allocations stay editable in Airtable**, so
+  Finance must snapshot them.
+- **Cancellation / weather / partial pay:** Coaches Slice 6 replaced the
+  5-hour and 10-minute rules with an explicit per-allocation Management
+  outcome. Finance reads that result and recalculates no policy.
+- **An existing finalisation:** Coaches Slice 10 Work Summaries:
+  - Not ready / Needs review / Finalised / Queried;
+  - coach query, reopen / re-finalise (lines updated in place, History
+    audited);
+  - arbitrary periods up to 366 days;
+  - Needs Attention ATT-045 / ATT-046.
+
+  **STOPPED and reported.** David's decisions (2026-10-01):
+  - **Option A.** Two distinct layers. The Work Summary stays the
+    coach-facing statement, unchanged. F12 adds a separate **Finance
+    Coach Month** (organisation + coach + calendar work month): Finance
+    Manage only, an immutable snapshot, Finance audit + lock, **no Finance
+    reopen**, later changes as explicit corrections.
+  - **Precondition by allocation coverage, not by date ranges:** every
+    allocation must be on a Work Summary that is not Queried / Needs
+    review (FIN12.4).
+  - **Option B.** An explicit cost basis (Paid / Salaried / Volunteer).
+    0.00 is intentional, never ambiguous.
+  - **Programme** = stable Finance Service ID; the free-text Programme is a
+    label only; otherwise unresolved.
+  - **Payment timing** = configured Coach Payment Day in the month after
+    the work.
+  - **Coach self-view** unchanged (Work Summaries); F12 is Management
+    Finance only.
+- **Salaried / volunteer:** nothing represented them before F12 (no
+  employment field on Coaches); `Cost Basis` adds it.
+- **Coach Payment Day:** already F2 (`Coach Payment Day`, 1–31,
+  `resolveCoachPaymentDate` with the last-day fallback). TEST value 7.
+- **TEST data:** Coach Allocations, Rate Profiles and Work Summaries were
+  all empty.
+
+### FIN12.2 Source-of-truth boundary (unchanged ownership)
+
+| Owner | Owns |
+|---|---|
+| Coaches | worker profile, normal rates (Rate Profiles), rate types, availability, staffing role; the Work Summary statement, query, reopen / re-finalise |
+| Schedule | occurrences, status, delivery |
+| Coach Allocation (Coaches) | the historical cost record (snapshots, override, outcome, Final Coach Cost, Cost Basis) |
+| Finance (F12) | the read model, the Finance Coach Month snapshot, corrections, payment-date facts, reporting facts |
+
+- **Finance never writes Airtable** and never reads Coach Rate Profiles:
+  the current rate is not an input.
+- **Generic model.** "Coach" is the organisation's current label. The
+  Supabase model is `worker_*` / work items, with no football-specific
+  rule.
+
+### FIN12.3 Historical rate / cost rules
+
+- **Cost = the allocation's stored Final Coach Cost**, converted to exact
+  pence (a value that is not a whole number of pence is refused).
+  - Frozen rate x frozen units (both in pence / hundredths, two accepted
+    roundings because Coaches stored the product with float rounding) is
+    used **only to check** a stored cost, never to replace it.
+- **Cost Basis:**
+
+  | Basis | Rule |
+  |---|---|
+  | Paid (or blank — Coaches' rate resolution only creates paid work) | needs Rate Profile + Rate Type + Pay Unit + Rate Amount snapshots, Paid Units > 0 (2 dp), a valid Final Coach Cost; a 0.00 rate is refused |
+  | Salaried — no direct session cost | Final Coach Cost must be exactly 0 and no non-zero override |
+  | Volunteer — no direct session cost | same as Salaried |
+
+  A missing cost is **never** 0.00 (`missing_final_cost`). Salary is not
+  allocated to sessions (future Overheads).
+- **Overrides:**
+  - Final Coach Cost must equal the Cost Override.
+  - An override needs a reason **or** a Slice 6 outcome (Partial /
+    Unpaid write the override).
+  - The read model shows: standard amount (rate x units), override amount,
+    reason, outcome, decided by / at.
+  - **Gap (documented):** an `/allocate` override stores no approver; only
+    its reason. `approverRecorded` says so.
+
+### FIN12.4 Blockers (finalisation is refused while any exist)
+
+- **Item blockers:**
+
+  | Code | Meaning |
+  |---|---|
+  | `multiple_people` | one allocation names several people |
+  | `duplicate_allocation` | same person + same occurrence twice |
+  | `cost_not_confirmed` | Cost Status is not Confirmed / Exported |
+  | `outcome_undecided` | cancelled / postponed occurrence with no outcome |
+  | `not_yet_worked` | the work date has not passed |
+  | `invalid_cost_basis` | not one of the three bases |
+  | `missing_historical_rate` | a frozen snapshot is missing |
+  | `invalid_units` | units missing, not > 0, or > 2 dp |
+  | `paid_zero_rate` | paid work at a 0.00 rate |
+  | `missing_final_cost` / `invalid_final_cost` | cost missing, negative or not whole pence |
+  | `override_unexplained` | override with no reason or outcome |
+  | `cost_mismatch` | cost does not match rate x units or the override |
+  | `no_cost_basis_with_cost` | a Salaried / Volunteer allocation carries a cost |
+  | `work_summary_missing` / `_queried` / `_not_finalised` / `_stale` / `_ambiguous` | Work Summary coverage (below) |
+
+- **Month blockers:** `month_not_ended`, `payment_day_not_configured`,
+  `nothing_to_finalise`.
+- **Work Summary coverage (by allocation identity, never by matching
+  dates):** the allocation must be on a Work Summary Line whose active
+  summary is **Finalised**, and the line must show the **same amount**.
+  - A Queried, Needs-review (e.g. reopened) or stale summary blocks.
+  - Coverage is **not** a claim that the coach viewed it; the Work Summary
+    records no viewed / acknowledged fact.
+  - **Interpretation applied:** coverage is required for every allocation
+    in the month, including Salaried / Volunteer 0.00 lines. Easy to
+    narrow to Paid only if preferred.
+
+### FIN12.5 Finance Coach Month, states and corrections
+
+- **States:**
+
+  | State | Meaning |
+  |---|---|
+  | Open | no stored month; live totals may change |
+  | Finalised | stored snapshot; live total = snapshot total |
+  | Correction Required | the live allocation total differs from the corrected total, or a live item's **cost** is unresolved; Work Summary review state alone never triggers it |
+  | Corrected | corrections exist and live = corrected total |
+
+- **Finalise** (`POST /coach-costs/{COACH}/{YYYY-MM}/finalise`, Manage, under
+  the Finance write lock):
+  - one database call stores the month, per-allocation frozen items and
+    one audit event;
+  - stored: total, item count, payment day, expected payment date,
+    finalised at / by, reason, and a **sha256 of the canonical snapshot**
+    (re-verified on every read: `integrityVerified`);
+  - a second finalise → 409 `already_finalised` (API and database:
+    UNIQUE org + worker + month).
+- **Corrections** (`POST /coach-summaries/{FCM}/corrections { amount,
+  reason, allocationId? }`):
+  - additive, signed, non-zero, reason required;
+  - corrected total never below 0.00;
+  - optional allocation, which must belong to that month;
+  - the database re-checks the expected current total (`month_changed`);
+  - the original finalised total stays visible forever.
+- **No Finance reopen route exists.** The Work Summary reopen is
+  untouched. A later Work Summary re-finalise or allocation edit only
+  produces Correction Required, plus a drift list (changed / added /
+  removed / unresolved).
+
+### FIN12.6 Supabase (TEST)
+
+- **Tables** (RLS on, all rights revoked from public / anon /
+  authenticated):
+  - `finance_worker_cost_months` (`FCM-…`, UNIQUE org + worker + month);
+  - `finance_worker_cost_items` (frozen per allocation;
+    CHECK `paid` ⇒ rate > 0 + units, non-paid ⇒ cost 0);
+  - `finance_worker_cost_corrections` (`FCX-…`, amount ≠ 0, reason
+    required, resulting total ≥ 0).
+- **Guards:** UPDATE, DELETE and TRUNCATE are refused on all three
+  (`finance_worker_cost_immutable` → `f12:history_is_append_only`).
+- **Functions** (service_role only):
+  - `finance_worker_month_finalise` re-checks total / count and refuses a
+    duplicate month or an allocation already frozen in another month;
+  - `finance_worker_month_correct` locks the month row and re-checks the
+    total.
+
+  Both insert their audit rows (`finance_worker_cost_insert_audit`, which
+  requires at least one event).
+- **Apply note:** applied with `execute_sql` in steps (no DROP) and
+  recorded as migration `20261001150000 finance_f12_worker_cost_months`.
+
+### FIN12.7 API (all under `finance`, F1 rules) + access
+
+| Route | Access | What |
+|---|---|---|
+| `GET /coach-costs[?month=YYYY-MM]` | View | every coach with work that month: state, total, items, blockers, readiness, payment date; plus by programme |
+| `GET /coach-costs/{COACH-…}[?from&to]` | View | one coach, month by month (≤ 12 months, default 6) |
+| `GET /coach-costs/{COACH-…}/{YYYY-MM}` | View | drill-down: items (date, session, programme, basis, rate type, pay unit, units, rate, amount, override detail, Work Summary), blockers, Finance month + frozen items + corrections, drift, payment |
+| `POST /coach-costs/{COACH-…}/{YYYY-MM}/finalise` | Manage | `{ reason? }` |
+| `GET /coach-summaries[?month&state]` | View | stored months (state needs a live read) |
+| `GET /coach-summaries/{FCM-…}` | View | one month: frozen items, corrections, live state, drift, integrity |
+| `POST /coach-summaries/{FCM-…}/corrections` | Manage | `{ amount, reason, allocationId? }` |
+| `GET /coach-cost-facts[?from&to]` | View | reporting facts for F18: one per work item (frozen once finalised) + one per correction |
+
+- **Route deviation from the brief:** finalise is keyed by coach + month,
+  because an open month has no id.
+- **Never exposed by default:** technical ids (only under `technical`).
+- **No route** pays a coach, builds a coach invoice, reopens a month or
+  writes Cash Flow.
+- **Access:**
+  - Coach / Parent → 403 `management_required` (the coach view stays
+    Work Summaries);
+  - no grant → 403 `finance_access_denied`;
+  - View writes → 403 `finance_manage_required`;
+  - module off → 403 `finance_module_disabled`;
+  - a tenant key → 400.
+
+### FIN12.8 Payment timing, programme, reporting
+
+- **Expected payment date** = the configured Coach Payment Day in the
+  month after the work month. A shorter month uses its last day (31 →
+  30 Sep / 28–29 Feb); Dec → next January.
+  - Stored on the Finance month at finalisation.
+  - `paymentState: not_tracked`: never "paid" merely because finalised.
+    No payment execution exists; Cash Flow is not built.
+- **Profitability:** cost belongs to the work month. The expected
+  payment date is a separate fact.
+- **By programme:** grouped by the session's **Finance Service ID**, with
+  labels from the free-text Programme. No service id → `unresolved`, never
+  guessed from the coach or venue. Corrections stay with the coach month,
+  not a programme.
+
+### FIN12.9 Tests
+
+- **`tests/support/finance-coach-costs.test.ts`: 83/83.**
+  - Covers brief items 1–47, Work Summary coverage WS1–WS6, extra cost
+    checks X1–X8 and drift checks Z1–Z9.
+  - The real orchestrator + repository run against an in-memory Airtable,
+    fake PostgREST and fake `finance_worker_month_*` functions (the TEST
+    SQL rules).
+  - Z7 checks Finance's vocabulary equals the Work Summary constants.
+- **Mutation: 24/26 caught.** The two survivors are API pre-checks
+  (`already_finalised`, `corrected_total_negative`) that the database
+  function also refuses with the same code.
+- **Live DB smoke (self-rolling-back) — refused as designed:**
+  - no audit → `audit_missing`;
+  - total mismatch → `snapshot_mismatch`;
+  - paid item with no rate → CHECK;
+  - salaried item with a cost → CHECK;
+  - second month → `already_finalised`;
+  - allocation in two months → `allocation_already_finalised`;
+  - stale correction → `month_changed`;
+  - negative total → `corrected_total_negative`;
+  - zero correction → CHECK;
+  - UPDATE / DELETE on months, items and corrections →
+    `history_is_append_only`.
+
+  The valid finalise and correction each wrote exactly one audit row; all
+  rolled back.
+- **Other suites:**
+  - `financebundletest` B15–B16 added (16/16);
+  - full suite **83/83** files;
+  - both bundle `--check` MATCH;
+  - strict `tsc` clean for the F12 modules.
+
+### FIN12.10 Resting TEST state (checkpoint)
+
+- F12 tables empty; audit **268**.
+- One Manage grant (`1735d938…`); `module_finance` ON; no locks.
+- Stripe disconnected (F11 resting state).
+- `Cost Basis` field exists; no allocation data in TEST.
+- `finance` v18, `needs-attention` v14 deployed.
+- The inert F11 `f2probe` schema remains (operator cleanup).
+
+### FIN12.11 Open items / future debt
+
+- **Deploy v19, then run live proof A–AA** with ZZTEST coaches, sessions,
+  allocations and Work Summaries.
+- **Coach self-service** of Finance figures: later. The Work Summary
+  remains the coach view.
+- **Payment execution / paid state, Cash Flow events, Month Report:** not
+  built.
+- **Override approver:** not recorded by `/allocate` (only a reason). A
+  Coaches change if wanted.
+- **`/allocate` cannot create a Salaried / Volunteer allocation** (it
+  needs a rate). Today the basis is set by Management on the allocation;
+  an `/allocate` option is Coaches debt.
+- **Organisation scoping:** one organisation per Airtable base, as in
+  F10 / F11.
+- **Reads scale:** fixed request count per window. Corrections / months
+  are read per organisation (fine for TEST; paging later).
+- **Boundaries:**
+  - coach normal rates not moved into Finance;
+  - no recalculation from current rates;
+  - no coach invoice, no coach payment, no Cash Flow, no Month Report;
+  - ATT-045 / ATT-046 unchanged;
+  - Coaches Slice 10 unchanged;
+  - production untouched.

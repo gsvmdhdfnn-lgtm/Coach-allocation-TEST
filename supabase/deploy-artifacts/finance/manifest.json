@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "d64957e28b3048557953b3d122104e764e6808113b7fbfbc9a5d6ed59a984d19",
-  "artifactBytes": 444884,
+  "artifactSha256": "5a0d8992d9b26238da9cc361763f83aeb0fdc2ac67466918d0a5fc7512d01545",
+  "artifactBytes": 487768,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "45605785fd33e87ae4faaecdefd1183f7a2e43d5e4ddb5e6164f2256c94bcd99",
+  "sourceSha256": "c57fd87683eff329331a5ec7ba7b35ba3ccd2479399d38d4894e4ff25209c8f5",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -48,6 +48,18 @@
     {
       "path": "supabase/functions-test/finance/finance-billing.ts",
       "sha256": "2108f300f0f902e3968fe9f3cacc870e395db711b7bba13f23d57e66aa2bbb6d"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-coach-costs-orchestrator.ts",
+      "sha256": "73e9d3dc783282b70dea7566152c3d5ceceb9a020b66f49ef348a71882bbf40a"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-coach-costs-repository.ts",
+      "sha256": "a3a9e46a809cd729ee6ab5af80e6e878981931111e83a71871346d7deff933a5"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-coach-costs.ts",
+      "sha256": "ec0e1bcf138c39aa40871a93f16eb532efcded80f2f9bb27d192c5569215d481"
     },
     {
       "path": "supabase/functions-test/finance/finance-commercial-mapping.ts",
@@ -183,7 +195,7 @@
     },
     {
       "path": "supabase/functions-test/finance/index.ts",
-      "sha256": "028bfac33e2b3a7a97d412ef8281eeef357234ba44aaf605d6fc7de58659bfda"
+      "sha256": "84518df9e36c32e88427bf5683e03065ed84acca166da31b57953385eb7774b1"
     },
     {
       "path": "supabase/functions-test/finance/orchestrator.ts",

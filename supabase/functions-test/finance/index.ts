@@ -110,6 +110,18 @@
  *   GET  /revenue-corrections[?from&to]              revenue-correction facts (no cash, no business cost)
  *   No route executes a refund, calls a Stripe write, or creates a discount.
  *
+ * F12 coach cost READ + Finance Coach Month finalisation (Finance read = GET, Finance manage = POST); historical cost
+ * comes only from each Coach Allocation's own frozen values, never the current rate; Airtable is read only:
+ *   GET  /coach-costs[?month=YYYY-MM]                every coach's month: state, total, items, payment date + by programme
+ *   GET  /coach-costs/{COACH-..}[?from&to]           one coach, month by month (at most 12 months)
+ *   GET  /coach-costs/{COACH-..}/{YYYY-MM}           drill-down: items, override detail, blockers, Work Summary coverage
+ *   POST /coach-costs/{COACH-..}/{YYYY-MM}/finalise  { reason? }  freeze the month (refused while anything blocks)
+ *   GET  /coach-summaries[?month&state]              stored Finance Coach Months
+ *   GET  /coach-summaries/{FCM-..}                   one month: frozen items, corrections, live state, integrity
+ *   POST /coach-summaries/{FCM-..}/corrections       { amount, reason, allocationId? }  explicit additive correction
+ *   GET  /coach-cost-facts[?from&to]                 reporting facts (work items + corrections) for later reports
+ *   No route pays a coach, builds a coach invoice, reopens a Finance month or writes a Cash Flow event.
+ *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
  * tenant-looking query parameter or body key is rejected with 400, never
@@ -141,6 +153,8 @@ import { checkReceiptsQuery, checkReceivablesQuery, matchReceivablesRoute, parse
 import { matchXeroRoute, parseContactLink, parseXeroAction, parseXeroSettings } from "./finance-xero.ts";
 import { type XeroDeps, issueToXero, linkXeroContact, readXeroInvoiceState, readXeroStatus, updateXeroSettings } from "./finance-xero-orchestrator.ts";
 import { matchStripeRoute, parseParentLink, parseStripeQuery, parseStripeSettings } from "./finance-stripe.ts";
+import { matchCoachCostRoute, parseCorrection, parseCostQuery, parseFinalise } from "./finance-coach-costs.ts";
+import { type CostDeps, correctFinanceMonth, finaliseWorkerMonth, listCostFacts, listFinanceMonths, readCostMonth, readFinanceMonth, readWorkerMonth, readWorkerMonths } from "./finance-coach-costs-orchestrator.ts";
 import { matchFamilyRoute, parseApply, parseDecision, parseFamilyPayment, parseFamilyQuery, parseReason } from "./finance-family.ts";
 import { applyFamilyCredit, listFamilyCredits, listRefundDecisions, listRevenueCorrections, readFamily, readRefundDecision, readRefundSource, recordFamilyPayment, recordRefundDecision, reverseRefundDecision, voidFamilyCredit } from "./finance-family-orchestrator.ts";
 import { type StripeDeps, linkStripeCustomer, listStripePayments, listStripeRefunds, listStripeSubscriptions, readStripeStatus, readStripeSubscription, updateStripeSettings } from "./finance-stripe-orchestrator.ts";
@@ -229,7 +243,7 @@ async function resolveCaller(authHeader: string | null): Promise<FinanceCaller |
   };
 }
 
-const deps: SettingsDeps & CommercialDeps & XeroDeps & StripeDeps = {
+const deps: SettingsDeps & CommercialDeps & XeroDeps & StripeDeps & CostDeps = {
   airtable: { baseId: AIRTABLE_BASE_ID, token: AIRTABLE_TOKEN },
   grants: { supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY },
   // TEST DEPLOYMENT GUARD (F9): a live Xero connection must reach a Xero Demo Company - TEST never issues into a real Xero organisation.
@@ -515,6 +529,34 @@ async function handleStripe(req: Request, url: URL, match: NonNullable<ReturnTyp
   return commercialResponse(await linkStripeCustomer(deps, caller, r.params.customerId, p.parentId, p.reason));
 }
 
+/** F12 routes: same order as F3-F11 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleCoachCosts(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchCoachCostRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  // Writes take no query parameters at all (parsed as a route with none allowed).
+  const q = parseCostQuery(req.method === "GET" ? r.name : "costs.finalise", url.searchParams, isTenantKey);
+  if (!q.ok) return commercialResponse({ status: "error", ...q });
+  if (r.name === "costs.month") return commercialResponse(await readCostMonth(deps, caller, { month: q.month }));
+  if (r.name === "costs.worker") return commercialResponse(await readWorkerMonths(deps, caller, r.params.workerRef, { from: q.from, to: q.to }));
+  if (r.name === "costs.workerMonth") return commercialResponse(await readWorkerMonth(deps, caller, r.params.workerRef, r.params.month));
+  if (r.name === "costs.facts") return commercialResponse(await listCostFacts(deps, caller, { from: q.from, to: q.to }));
+  if (r.name === "summaries.list") return commercialResponse(await listFinanceMonths(deps, caller, { month: q.month, state: q.state }));
+  if (r.name === "summaries.one") return commercialResponse(await readFinanceMonth(deps, caller, r.params.monthId));
+  const raw = await req.text();
+  if (r.name === "costs.finalise") {
+    const p = parseFinalise(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await finaliseWorkerMonth(deps, caller, r.params.workerRef, r.params.month, p.reason));
+  }
+  const p = parseCorrection(raw, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  return commercialResponse(await correctFinanceMonth(deps, caller, r.params.monthId, p));
+}
+
 /** F11 routes: same order as F3-F10 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
 async function handleFamily(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchFamilyRoute>>): Promise<Response> {
   if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
@@ -576,7 +618,11 @@ Deno.serve(async (req: Request) => {
   try {
     const decoded = decodedPath(route);
     if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
-    // F11 first: it owns only family-credits/..., family-payments, refund-decisions/..., refund-sources/... and revenue-corrections.
+    // F12 first: it owns only coach-costs/..., coach-summaries/... and coach-cost-facts.
+    const coachCosts = matchCoachCostRoute(route, req.method);
+    if (coachCosts) return await handleCoachCosts(req, url, coachCosts);
+
+    // F11 next: it owns only family-credits/..., family-payments, refund-decisions/..., refund-sources/... and revenue-corrections.
     const family = matchFamilyRoute(route, req.method);
     if (family) return await handleFamily(req, url, family);
 
