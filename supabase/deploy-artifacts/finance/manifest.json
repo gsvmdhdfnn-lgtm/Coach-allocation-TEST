@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "18497081d172ca343489d2febfd2391fd04c026050379e9ece1433d939536d21",
-  "artifactBytes": 443883,
+  "artifactSha256": "d64957e28b3048557953b3d122104e764e6808113b7fbfbc9a5d6ed59a984d19",
+  "artifactBytes": 444884,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "77406a311aab6dbc1ef84fdcea70363e6a57b2294d4936b7d57f6c12271b925a",
+  "sourceSha256": "45605785fd33e87ae4faaecdefd1183f7a2e43d5e4ddb5e6164f2256c94bcd99",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -71,15 +71,15 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-family-orchestrator.ts",
-      "sha256": "786b9cf4245969648229315f93428a2879dcf2c303a204ca254d57d71e0e2662"
+      "sha256": "2e45d1a07e8f532abb053e1c9cc5edc9326d7e439ed98f96dae2f01dc085f508"
     },
     {
       "path": "supabase/functions-test/finance/finance-family-repository.ts",
-      "sha256": "8e44891388ac5da9ef9f5cfb05e077e40b666535361922283249ee4e203d2843"
+      "sha256": "d23d1923fdbde3b8a47d0730e9913f2a743c5a7e6be000c8e7bff2a36f8bcaef"
     },
     {
       "path": "supabase/functions-test/finance/finance-family.ts",
-      "sha256": "69c7cd40f2f90966432263845dba6714d9006e0a4bc65dda2900e17e12a28450"
+      "sha256": "2a098a8a7df4d9df3a1acfbd7943a53ebea2324a4355ba46f904508c9755a372"
     },
     {
       "path": "supabase/functions-test/finance/finance-invoicing-mapping.ts",

@@ -17717,15 +17717,22 @@ SQL calls, and writes were sent one at a time (org write lock).
 
 > **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
 >
+>
+> **REPLACEMENT CHECKPOINT (owner fields + history guards, FIN11.16).** It
+> supersedes the earlier undeployed artifact `18497081…`, which must NOT be
+> deployed.
+>
 > - **TEST schema is applied:**
 >   - `finance_f11_family_credit_refund_bridge`;
->   - `finance_f11_credit_apply_error_codes`.
+>   - `finance_f11_credit_apply_error_codes`;
+>   - `finance_f11_owner_fields_and_history_guards`.
 >
->   Its database rules were exercised live in a self-rolling-back smoke
->   block (FIN11.13). Nothing persisted: all F11 tables are empty and the
+>   Its database rules were exercised live in self-rolling-back smoke
+>   blocks (FIN11.13). Nothing persisted: all F11 tables are empty and the
 >   audit count is still 223.
-> - **The `finance` bundle is 443,883 bytes**, sha256
->   `18497081d172ca343489d2febfd2391fd04c026050379e9ece1433d939536d21`.
+> - **The `finance` bundle is 444,884 bytes**, sha256
+>   `d64957e28b3048557953b3d122104e764e6808113b7fbfbc9a5d6ed59a984d19`
+>   (manifest `36677a86…`).
 >   That is too large for this session to deploy. The exact artifact is
 >   committed at `supabase/deploy-artifacts/finance/index.js` and needs
 >   deployment assistance, exactly as for F7–F10.
@@ -17821,6 +17828,19 @@ SQL calls, and writes were sent one at a time (org write lock).
 | `finance_family_credit_applications` (`FFA-…`, batch `FFB-…`) | Credit used against a family payment: amount, order in the batch, applied at / by |
 | `finance_refund_decisions` (`FRD-…`) | The decision (FIN11.5) |
 | `finance_family_sources` | One version row per refund source, for optimistic concurrency |
+
+- **Owner vs history (FIN11.16).** Payments, credits, applications and
+  decisions each carry `owner_type` (`guardian_account` | `household`) +
+  `owner_key`: who owns the value.
+  - Their `family_parent_record_id` / `family_parent_id` columns are
+    immutable guardian-account context.
+  - `CHECK`: `owner_type = 'guardian_account'` ⇒
+    `owner_key = family_parent_record_id`.
+  - F11 only ever writes `guardian_account`.
+  - **All ownership logic uses the owner:** balance, oldest-first scope,
+    application, cross-family refusal (API + database), decisions
+    (decision, its credit and a family-payment source must share one
+    owner), and read models.
 
 - **Balance** = Σ (original − applications) over non-voided credits.
 - **Status** (available / partially used / used / voided) is derived.
@@ -18004,7 +18024,20 @@ original returnable value (credit-funded + card-funded)
   - cross-family refused;
   - used credit cannot be voided or reversed;
   - CHECK constraints on every amount identity;
-  - DELETE refused on history tables.
+  - DELETE refused on history tables;
+  - **UPDATE guards** (`finance_family_guard_update` /
+    `finance_family_immutable` triggers):
+
+    | Table | What may change |
+    |---|---|
+    | payments | nothing |
+    | applications | nothing |
+    | credits | only the void fields, set once |
+    | decisions | only the reversal fields (set once) + F21's `stripe_refund_id` (set once) and `refund_state` |
+
+    Guardian-history fields can never be rewritten. Owner fields move only
+    inside an explicit `guardian_account → household` transfer
+    (FIN11.16).
 - **Audit events** (`finance_audit_events`):
 
   | Write | Events |
@@ -18045,14 +18078,33 @@ original returnable value (credit-funded + card-funded)
 
   A valid oldest-first application (£30 + £2 of £15) succeeded inside the
   block, and everything rolled back.
+- **Owner / guard smoke (self-rolling-back) — all refused as designed:**
+  - an owner ≠ guardian on a guardian_account row → CHECK violation;
+  - a credit with another owner than its decision → `cross_family`;
+  - cross-owner apply → `cross_family`;
+  - the retired 9-argument apply → `superseded_use_owner_keyed_apply`;
+  - rewriting a payment's amount or guardian, an application, a credit's
+    amount, or a decision's amount → `history_is_append_only`;
+  - moving an owner without a transfer → `owner_change_requires_transfer`;
+  - resetting `stripe_refund_id` → refused;
+  - a household → guardian "reverse transfer" → refused;
+  - an amount rewrite during a transfer → refused;
+  - rewriting a void reason → refused.
+
+  F21's `refund_state` change and first `stripe_refund_id` were accepted.
+  A simulated `guardian_account → household` transfer moved only the
+  owner fields of the credit, payment and decision; the application
+  (owner + amount), all amounts and all guardian fields were unchanged.
+  The smoke first exposed a guard bug (a NULL argument list on the
+  payments trigger) that was fixed before this checkpoint.
 - **Tests:**
-  - `tests/support/finance-family.test.ts`: **62/62**. Covers brief items
-    1–41 + reversal / identity / summary + drift checks, against the real
-    orchestrator, repository and F10 HTTP adapter, with fake database
-    functions using the same rules as the SQL.
-  - Mutation **15/16** caught by assertions. The 16th (removing the API's
-    used-credit void pre-check) is still refused by the database function
-    with the same code.
+  - `tests/support/finance-family.test.ts`: **67/67**. Covers brief items
+    1–41 + reversal / identity / summary + owner checks OW1–OW4 + drift
+    checks, against the real orchestrator, repository and F10 HTTP
+    adapter, with fake database functions using the same rules as the SQL.
+  - Mutation **19/20** caught by assertions, including 4 owner-logic
+    mutations. The 20th (removing the API's used-credit void pre-check) is
+    still refused by the database function with the same code.
   - F10 suite 64/64.
   - `financebundletest` B13–B14 added (14/14).
   - Full suite **82/82**.
@@ -18101,10 +18153,34 @@ original returnable value (credit-funded + card-funded)
 - **Boundaries:** no Stripe refund execution; F21 not started; no
   subscription write; Cash Flow not started; production untouched.
 
-### FIN11.16 Owner-migration readiness (guardian account → Family / Household) — NOT CLEAN at this checkpoint
+### FIN11.16 Owner-migration readiness (guardian account → Family / Household) — FIXED (approved by David, 2026-10-01)
 
-Assessed before deployment, at David's request. **The checkpoint schema
-cannot migrate the credit owner cleanly**, for three reasons:
+**Resolution:** the fix below was approved and applied before deployment
+(`finance_f11_owner_fields_and_history_guards` + code / tests); it is part
+of F11.
+
+- **No Household entity was created and no owner was migrated.**
+- **A future migration** is ONE explicit audited ownership-transfer
+  operation, still to be built with the Family / Household entity. It
+  will:
+  - set `finance.f11_owner_transfer = 'guardian_to_household'` for its
+    transaction;
+  - move `owner_type` / `owner_key` from the guardian account to the
+    Household ID on the guardian's credits, payments and decisions;
+  - write one audit event per transfer.
+- **It cannot change:** original amounts, applications (which keep the
+  owner that spent), decision contents, source payment history or
+  guardian context. The guards refuse that, as the live smoke proved.
+- **Apply note:** `apply_migration` and any `DROP` statement await an
+  interactive confirmation that does not reach this session, so the
+  migration was applied with `execute_sql` in steps and recorded in
+  `supabase_migrations.schema_migrations`. Consequences:
+  - the obsolete index `finance_family_credits_family` is kept (unused);
+  - the pre-owner 9-argument `finance_family_credit_apply` is retired in
+    place (it raises and has no grants).
+
+Original finding (kept for history) — the earlier checkpoint schema could
+not migrate the credit owner cleanly, for three reasons:
 
 1. **The owner key and the guardian provenance are the same column.**
    `family_parent_record_id` is both "the guardian account this
@@ -18161,5 +18237,7 @@ pre-deployment; all F11 tables are empty.
     `18497081…` would be superseded);
   - the focused suite + full regression re-run.
 
-**Deployment of the checkpoint artifact is on hold** until David decides.
+~~Deployment of the checkpoint artifact is on hold until David decides.~~
+Superseded: the fix is applied, and the replacement artifact (`d64957e2…`)
+is the one to deploy.
 

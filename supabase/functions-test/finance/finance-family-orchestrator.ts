@@ -51,6 +51,7 @@ import {
   familyByParentId,
   m,
   newId,
+  ownerOf,
   parentSummary,
   paymentFunding,
   planApplication,
@@ -58,6 +59,7 @@ import {
   refundStateOf,
   returnableOf,
   revenueCorrectionsOf,
+  sameOwner,
 } from "./finance-family.ts";
 import { LedgerRefusal, applyCredit, loadHubFamilies, loadLedger, recordDecision, recordPayment, reverseDecision, voidCredit } from "./finance-family-repository.ts";
 
@@ -231,8 +233,9 @@ async function resolveSource(deps: FamilyDeps, caller: FinanceCaller, ctx: Ctx, 
   }
   const payment = ctx.ledger.payments.find((p) => p.paymentId === ref);
   if (!payment) return fail(404, "family_payment_not_found", `No family payment ${ref}`);
-  const family = ctx.families.get(payment.familyRecordId);
-  if (!family) return fail(409, "family_missing", `The guardian record behind ${ref} no longer exists`);
+  // TRANSITIONAL: the owner is a guardian account; a household owner needs the future Family / Household entity.
+  const family = payment.ownerType === "guardian_account" ? ctx.families.get(payment.ownerKey) : undefined;
+  if (!family || !sameOwner(payment, ownerOf(family))) return fail(409, "family_missing", `The credit owner behind ${ref} is not a guardian account the Hub can resolve`);
   const fund = paymentFunding(payment, ctx.ledger.applications);
   if (fund.unfundedMinor !== 0) return fail(409, "funding_incomplete", `${m(fund.unfundedMinor)} of ${ref} has no recorded funding (neither family credit nor a Stripe payment) - the Hub will not guess how it was paid`, { due: m(fund.dueMinor), creditFunded: m(fund.creditFundedMinor), cardFunded: m(fund.cardFundedMinor) });
   let charge: ChargeFacts | null = null;
@@ -270,17 +273,18 @@ function sourceView(src: Source) {
 export async function listFamilyCredits(deps: FamilyDeps, caller: FinanceCaller, q: { parentId?: string }): Promise<Ok | FFail> {
   const ctx = await readCtx(deps, caller);
   if (isFail(ctx)) return ctx;
-  let only: string | null = null;
+  let only: ReturnType<typeof ownerOf> | null = null;
   if (q.parentId) {
     const f = familyByParentId(ctx.families, q.parentId);
     if (!f.ok) return fromRefusal(f);
-    only = f.family.recordId;
+    only = ownerOf(f.family);
   }
-  const owners = [...new Set(ctx.ledger.credits.map((c) => c.familyRecordId))].filter((r) => !only || r === only);
-  const families = owners.map((rec) => {
-    const fam = ctx.families.get(rec);
-    const credits = ctx.ledger.credits.filter((c) => c.familyRecordId === rec);
-    return { parentId: fam?.parentId ?? credits[0].familyParentId, name: fam?.name ?? null, verified: fam?.verified ?? false, creditAvailable: m(familyBalanceMinor(rec, ctx.ledger)), credits: credits.map((c) => creditView(c, ctx.ledger.applications)) };
+  const owners = [...new Map(ctx.ledger.credits.map((c) => [`${c.ownerType}:${c.ownerKey}`, { ownerType: c.ownerType, ownerKey: c.ownerKey }])).values()].filter((o) => !only || sameOwner(o, only));
+  const families = owners.map((owner) => {
+    const credits = ctx.ledger.credits.filter((c) => sameOwner(c, owner));
+    // TRANSITIONAL: a guardian_account owner is its guardian record; nothing else exists yet.
+    const fam = owner.ownerType === "guardian_account" ? ctx.families.get(owner.ownerKey) : undefined;
+    return { owner: { type: owner.ownerType, key: owner.ownerKey }, parentId: fam?.parentId ?? credits[0].familyParentId, name: fam?.name ?? null, verified: fam?.verified ?? false, creditAvailable: m(familyBalanceMinor(owner, ctx.ledger)), credits: credits.map((c) => creditView(c, ctx.ledger.applications)) };
   });
   return { status: "ok", httpStatus: 200, body: { ...head(ctx), currency: "GBP", families, rule: "Balances are derived from each credit's original amount minus its applications; used oldest first; not a discount" } };
 }
@@ -291,18 +295,20 @@ export async function readFamily(deps: FamilyDeps, caller: FinanceCaller, parent
   const f = familyByParentId(ctx.families, parentId);
   if (!f.ok) return fromRefusal(f);
   const fam = f.family;
-  const credits = ctx.ledger.credits.filter((c) => c.familyRecordId === fam.recordId);
-  const payments = ctx.ledger.payments.filter((p) => p.familyRecordId === fam.recordId);
-  const decisions = ctx.ledger.decisions.filter((d) => d.familyRecordId === fam.recordId);
+  const owner = ownerOf(fam);
+  const credits = ctx.ledger.credits.filter((c) => sameOwner(c, owner));
+  const payments = ctx.ledger.payments.filter((p) => sameOwner(p, owner));
+  const decisions = ctx.ledger.decisions.filter((d) => sameOwner(d, owner));
   return {
     status: "ok",
     httpStatus: 200,
     body: {
       ...head(ctx),
       family: { parentId: fam.parentId, name: fam.name, active: fam.active, verified: fam.verified, eligibleChildren: fam.eligiblePlayers.map((p) => ({ playerId: p.playerId, name: p.name })) },
+      owner: { type: owner.ownerType, key: owner.ownerKey, transitional: "verified guardian account - no Family / Household entity exists yet" },
       /** What a parent would see. */
-      parentSummary: parentSummary(fam.recordId, ctx.ledger),
-      creditAvailable: m(familyBalanceMinor(fam.recordId, ctx.ledger)),
+      parentSummary: parentSummary(owner, ctx.ledger),
+      creditAvailable: m(familyBalanceMinor(owner, ctx.ledger)),
       credits: credits.map((c) => creditView(c, ctx.ledger.applications)),
       payments: payments.map((p) => {
         const fd = paymentFunding(p, ctx.ledger.applications);
@@ -320,7 +326,8 @@ export async function listRefundDecisions(deps: FamilyDeps, caller: FinanceCalle
   if (q.parentId) {
     const f = familyByParentId(ctx.families, q.parentId);
     if (!f.ok) return fromRefusal(f);
-    rows = rows.filter((d) => d.familyRecordId === f.family.recordId);
+    const owner = ownerOf(f.family);
+    rows = rows.filter((d) => sameOwner(d, owner));
   }
   if (q.state) rows = rows.filter((d) => (q.state === "reversed" ? !!d.reversedAt : !d.reversedAt && (d.executionState === q.state || d.refundState === q.state)));
   const views = rows.map((d) => decisionView(d, ctx.ledger.credits.find((c) => c.originDecisionId === d.decisionId) ?? null, ctx.families.get(d.familyRecordId), ctx.org.timezone));
@@ -419,6 +426,7 @@ export function recordFamilyPayment(deps: FamilyDeps, caller: FinanceCaller, inp
       paymentId: id(deps, "FFP"),
       familyRecordId: fam.recordId,
       familyParentId: fam.parentId,
+      ...ownerOf(fam),
       playerRecordId,
       bookingRef: input.bookingRef,
       description: input.description,
@@ -446,22 +454,23 @@ export function applyFamilyCredit(deps: FamilyDeps, caller: FinanceCaller, input
     const f = familyByParentId(ctx.families, input.parentId);
     if (!f.ok) return fromRefusal(f);
     const fam = f.family;
-    if (fam.recordId !== pay.familyRecordId) return fail(409, "cross_family_refused", `${fam.parentId}'s credit cannot pay ${pay.familyParentId}'s payment - one family never spends another family's credit`);
+    const owner = ownerOf(fam);
+    if (!sameOwner(owner, pay)) return fail(409, "cross_family_refused", `${fam.parentId}'s credit cannot pay ${pay.familyParentId}'s payment - one family never spends another family's credit`);
     if (!fam.verified) return fail(409, "family_not_verified", `${fam.parentId} has no verified child - its credit cannot be used`);
     if (pay.playerRecordId && !fam.eligiblePlayers.some((p) => p.recordId === pay.playerRecordId)) return fail(409, "player_not_eligible", "The payment's child is no longer a verified child of this family - credit cannot be used for it");
     if (ctx.ledger.decisions.some((d) => d.sourceRef === pay.paymentId)) return fail(409, "payment_has_decisions", LEDGER_MESSAGES.payment_has_decisions);
     const fd = paymentFunding(pay, ctx.ledger.applications);
     if (fd.unfundedMinor <= 0) return fail(409, "payment_fully_funded", `${pay.paymentId} is already fully paid`);
-    const balance = familyBalanceMinor(fam.recordId, ctx.ledger);
+    const balance = familyBalanceMinor(owner, ctx.ledger);
     if (balance === 0) return fail(409, "insufficient_credit", `${fam.parentId} has no family credit available`);
     const amount = input.amountMinor ?? Math.min(fd.unfundedMinor, balance);
     if (amount > fd.unfundedMinor) return fail(409, "over_application", `Only ${m(fd.unfundedMinor)} of ${pay.paymentId} is still unpaid`);
-    const plan = planApplication(fam.recordId, ctx.ledger, amount);
+    const plan = planApplication(owner, ctx.ledger, amount);
     if (!plan.ok) return fromRefusal(plan);
     const at = now(deps).toISOString();
     const batchId = id(deps, "FFB");
     const allocations = plan.allocations.map((a) => ({ ...a, applicationId: id(deps, "FFA") }));
-    await applyCredit(deps.grants, { organisationId: ctx.org.organisationId, paymentId: pay.paymentId, familyRecordId: fam.recordId, batchId, allocations, at, by: caller.userId, reason: input.reason }, [
+    await applyCredit(deps.grants, { organisationId: ctx.org.organisationId, paymentId: pay.paymentId, owner, batchId, allocations, at, by: caller.userId, reason: input.reason }, [
       familyAudit({
         organisationId: ctx.org.organisationId,
         actorUserId: caller.userId,
@@ -496,7 +505,7 @@ export function recordRefundDecision(deps: FamilyDeps, caller: FinanceCaller, in
     const src = await resolveSource(deps, caller, ctx, input.source, "manage");
     if (isFail(src)) return src;
     const fam = src.family;
-    if (named.family.recordId !== fam.recordId) return fail(409, "family_mismatch", `${input.source} belongs to ${fam.parentId}, not ${input.parentId} - nothing was decided`);
+    if (!sameOwner(ownerOf(named.family), ownerOf(fam))) return fail(409, "family_mismatch", `${input.source} belongs to ${fam.parentId}, not ${input.parentId} - nothing was decided`);
     let playerRecordId = src.payment?.playerRecordId ?? null;
     if (input.playerId) {
       const p = eligiblePlayer(fam, input.playerId);
@@ -514,6 +523,7 @@ export function recordRefundDecision(deps: FamilyDeps, caller: FinanceCaller, in
       decisionId,
       familyRecordId: fam.recordId,
       familyParentId: fam.parentId,
+      ...ownerOf(fam),
       playerRecordId,
       sourceType: src.funding.sourceType,
       sourceRef: src.funding.sourceRef,
@@ -540,7 +550,7 @@ export function recordRefundDecision(deps: FamilyDeps, caller: FinanceCaller, in
     };
     const credited = a.creditRestoredMinor + a.cardToCreditMinor;
     const credit: FamilyCredit | null = credited > 0
-      ? { organisationId: d.organisationId, creditId: id(deps, "FFC"), familyRecordId: fam.recordId, familyParentId: fam.parentId, currency: "GBP", originalMinor: credited, creditFundedMinor: a.creditRestoredMinor, cardFundedMinor: a.cardToCreditMinor, originDecisionId: decisionId, sourceRef: d.sourceRef, createdAt: at, createdBy: caller.userId, reason: input.reason, voidedAt: null, voidedBy: null, voidKind: null, voidReason: null }
+      ? { organisationId: d.organisationId, creditId: id(deps, "FFC"), familyRecordId: fam.recordId, familyParentId: fam.parentId, ...ownerOf(fam), currency: "GBP", originalMinor: credited, creditFundedMinor: a.creditRestoredMinor, cardFundedMinor: a.cardToCreditMinor, originDecisionId: decisionId, sourceRef: d.sourceRef, createdAt: at, createdBy: caller.userId, reason: input.reason, voidedAt: null, voidedBy: null, voidKind: null, voidReason: null }
       : null;
     const route = "POST /refund-decisions";
     const base = { organisationId: d.organisationId, actorUserId: caller.userId, reason: input.reason, route };
@@ -582,7 +592,7 @@ export function voidFamilyCredit(deps: FamilyDeps, caller: FinanceCaller, credit
     await voidCredit(deps.grants, { organisationId: ctx.org.organisationId, creditId, at, by: caller.userId, reason }, [
       familyAudit({ organisationId: ctx.org.organisationId, actorUserId: caller.userId, eventType: FAMILY_EVENTS.creditVoided, entityType: ENTITY.credit, recordId: `${ctx.org.organisationId}:${creditId}`, before: { status: st, remaining: m(c.originalMinor) }, after: { status: "voided", remaining: m(0), kind: "manual_void" }, reason, route: `POST /family-credits/${creditId}/void` }),
     ]);
-    return { status: "ok", httpStatus: 200, body: { ...head(ctx), credit: creditView({ ...c, voidedAt: at, voidedBy: caller.userId, voidKind: "manual_void", voidReason: reason }, ctx.ledger.applications), creditAvailable: m(familyBalanceMinor(c.familyRecordId, ctx.ledger) - c.originalMinor) } };
+    return { status: "ok", httpStatus: 200, body: { ...head(ctx), credit: creditView({ ...c, voidedAt: at, voidedBy: caller.userId, voidKind: "manual_void", voidReason: reason }, ctx.ledger.applications), creditAvailable: m(familyBalanceMinor(c, ctx.ledger) - c.originalMinor) } };
   });
 }
 

@@ -18,6 +18,14 @@
  * Parent-Player Links. A family is never inferred from surname, address,
  * email or a Stripe customer's name; two guardian accounts are never merged.
  *
+ * OWNER vs HISTORY: every ledger row carries an explicit credit owner
+ * (owner_type + owner_key) separate from its guardian-account context
+ * (family_parent_*). ALL ownership logic (balance, oldest first, application,
+ * cross-family refusal, decisions, read models) uses the owner. Today the
+ * owner is always the verified guardian account (TRANSITIONAL - no Family /
+ * Household entity exists yet); a later Household migration moves only the
+ * owner fields, through one explicit audited transfer, never the history.
+ *
  * Money is integer pence (GBP). A family's credit balance is DERIVED:
  * original amount minus applications, per credit. Credit is used oldest
  * first (created_at, then credit id), partial balances are kept, nothing is
@@ -49,6 +57,14 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const CONTROL_RE = /[\u0000-\u0009\u000B-\u001F\u007F]/;
 const TENANT_ERROR = "The organisation is taken from your profile and cannot be chosen in the request";
 export const MAX_WINDOW_DAYS = 366;
+
+/** "household" is reserved for the future Family / Household migration; F11 only ever writes "guardian_account". */
+export const OWNER_TYPES = ["guardian_account", "household"] as const;
+export type OwnerType = (typeof OWNER_TYPES)[number];
+export interface CreditOwner {
+  ownerType: OwnerType;
+  ownerKey: string;
+}
 
 export const DECISION_TYPES = ["refund_to_card", "family_credit", "split", "no_return"] as const;
 export type DecisionType = (typeof DECISION_TYPES)[number];
@@ -92,6 +108,8 @@ export interface FamilyPayment {
   paymentId: string;
   familyRecordId: string;
   familyParentId: string;
+  ownerType: OwnerType;
+  ownerKey: string;
   playerRecordId: string | null;
   bookingRef: string | null;
   description: string;
@@ -109,6 +127,8 @@ export interface FamilyCredit {
   creditId: string;
   familyRecordId: string;
   familyParentId: string;
+  ownerType: OwnerType;
+  ownerKey: string;
   currency: "GBP";
   originalMinor: number;
   creditFundedMinor: number;
@@ -131,6 +151,8 @@ export interface CreditApplication {
   creditId: string;
   paymentId: string;
   familyRecordId: string;
+  ownerType: OwnerType;
+  ownerKey: string;
   amountMinor: number;
   appliedAt: string;
   appliedBy: string;
@@ -141,6 +163,8 @@ export interface RefundDecision {
   decisionId: string;
   familyRecordId: string;
   familyParentId: string;
+  ownerType: OwnerType;
+  ownerKey: string;
   playerRecordId: string | null;
   sourceType: "stripe_charge" | "family_payment";
   sourceRef: string;
@@ -241,6 +265,10 @@ export function eligiblePlayer(family: Family, playerId: string): { ok: true; pl
   return p ? { ok: true, player: p } : refuse(409, "player_not_eligible", `${playerId} is not a verified child of ${family.parentId} - family credit and refunds are only for this family's verified children`);
 }
 
+/** The credit owner for a family. TRANSITIONAL: the verified guardian account itself (no Family / Household entity yet). */
+export const ownerOf = (f: Family): CreditOwner => ({ ownerType: "guardian_account", ownerKey: f.recordId });
+export const sameOwner = (a: CreditOwner, b: CreditOwner) => a.ownerType === b.ownerType && a.ownerKey === b.ownerKey;
+
 // ---------------------------------------------------------------------
 // Family credit ledger (balances derived, oldest first)
 // ---------------------------------------------------------------------
@@ -257,17 +285,17 @@ export function creditStatus(c: FamilyCredit, apps: CreditApplication[]): "avail
 /** The locked order: oldest eligible credit first (created_at, then credit id - deterministic). */
 export const oldestFirst = (a: FamilyCredit, b: FamilyCredit) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.creditId < b.creditId ? -1 : a.creditId > b.creditId ? 1 : 0);
 
-export function familyBalanceMinor(familyRecordId: string, l: Pick<Ledger, "credits" | "applications">): number {
-  return sum(l.credits.filter((c) => c.familyRecordId === familyRecordId).map((c) => creditRemaining(c, l.applications)));
+export function familyBalanceMinor(owner: CreditOwner, l: Pick<Ledger, "credits" | "applications">): number {
+  return sum(l.credits.filter((c) => sameOwner(c, owner)).map((c) => creditRemaining(c, l.applications)));
 }
 
 export type Allocation = { creditId: string; amountMinor: number; sequence: number; remainingAfterMinor: number };
 
-/** Uses `amountMinor` of the family's credit, oldest first, never more than a credit holds; partial balances stay. */
-export function planApplication(familyRecordId: string, l: Pick<Ledger, "credits" | "applications">, amountMinor: number): { ok: true; allocations: Allocation[] } | Refusal {
+/** Uses `amountMinor` of the owner's credit, oldest first, never more than a credit holds; partial balances stay. */
+export function planApplication(owner: CreditOwner, l: Pick<Ledger, "credits" | "applications">, amountMinor: number): { ok: true; allocations: Allocation[] } | Refusal {
   if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) return refuse(400, "invalid_input", "The amount to apply must be more than zero");
   const usable = l.credits
-    .filter((c) => c.familyRecordId === familyRecordId && !c.voidedAt)
+    .filter((c) => sameOwner(c, owner) && !c.voidedAt)
     .sort(oldestFirst)
     .map((c) => ({ c, left: creditRemaining(c, l.applications) }))
     .filter((x) => x.left > 0);
@@ -443,6 +471,7 @@ export function creditView(c: FamilyCredit, apps: CreditApplication[]) {
   return {
     creditId: c.creditId,
     parentId: c.familyParentId,
+    owner: { type: c.ownerType, key: c.ownerKey },
     currency: c.currency,
     original: m(c.originalMinor),
     remaining: m(creditRemaining(c, apps)),
@@ -463,6 +492,7 @@ export function decisionView(d: RefundDecision, credit: FamilyCredit | null, fam
   return {
     decisionId: d.decisionId,
     family: { parentId: d.familyParentId, name: family?.name ?? null },
+    owner: { type: d.ownerType, key: d.ownerKey },
     player: d.playerRecordId ? { playerId: player?.playerId ?? null, name: player?.name ?? null } : null,
     source: { type: d.sourceType, ref: d.sourceRef, originalPaid: m(d.sourceTotalMinor), creditFunded: m(d.sourceCreditFundedMinor), cardFunded: m(d.sourceCardFundedMinor), returnableBefore: m(d.returnableBeforeMinor) },
     decisionType: d.decisionType,
@@ -484,10 +514,10 @@ export function decisionView(d: RefundDecision, credit: FamilyCredit | null, fam
 }
 
 /** The simple parent-facing summary ("Credit available: 25.00 / Refund: 40.00 awaiting processing"). */
-export function parentSummary(familyRecordId: string, l: Ledger) {
-  const awaiting = l.decisions.filter((d) => d.familyRecordId === familyRecordId && !d.reversedAt && d.refundState === "awaiting_refund_action");
+export function parentSummary(owner: CreditOwner, l: Ledger) {
+  const awaiting = l.decisions.filter((d) => sameOwner(d, owner) && !d.reversedAt && d.refundState === "awaiting_refund_action");
   return {
-    creditAvailable: m(familyBalanceMinor(familyRecordId, l)),
+    creditAvailable: m(familyBalanceMinor(owner, l)),
     refunds: awaiting.map((d) => ({ amount: m(d.cardRefundMinor), status: "awaiting processing" })),
   };
 }

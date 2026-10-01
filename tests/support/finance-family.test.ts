@@ -179,6 +179,11 @@ function audit(events: any[]) {
   world.audit.push(...events.map((e) => ({ ...e, occurred_at: NOW.toISOString() })));
 }
 const T_ = (t: string) => world.sb[t];
+/** The tables' owner CHECK: owner_type in (guardian_account, household); a guardian_account owner IS the guardian record. */
+function ownerCheck(row: any, provenance = true) {
+  if (!["guardian_account", "household"].includes(row.owner_type) || !/^[A-Za-z0-9_-]{1,64}$/.test(row.owner_key ?? "")) throw new Error("owner check violation");
+  if (provenance && row.owner_type === "guardian_account" && row.owner_key !== row.family_parent_record_id) throw new Error("owner check violation");
+}
 function rpcFn(fn: string, a: any): unknown {
   // Each call is one transaction: work on copies, commit at the end.
   const snap = JSON.stringify({ sb: world.sb, audit: world.audit });
@@ -200,6 +205,7 @@ function rpcBody(fn: string, a: any): unknown {
       if (T_("finance_family_payments").some((x) => x.organisation_id === p.organisation_id && x.stripe_charge_id === p.stripe_charge_id)) no("charge_already_recorded");
       if (T_("finance_refund_decisions").some((x) => x.organisation_id === p.organisation_id && x.source_ref === p.stripe_charge_id)) no("charge_already_a_refund_source");
     }
+    ownerCheck(p);
     T_("finance_family_payments").push({ ...p });
     audit(a.p_events);
     return p.payment_id;
@@ -207,7 +213,7 @@ function rpcBody(fn: string, a: any): unknown {
   if (fn === "finance_family_credit_apply") {
     const pay = T_("finance_family_payments").find((x) => x.organisation_id === a.p_org && x.payment_id === a.p_payment_id);
     if (!pay) no("payment_not_found");
-    if (pay.family_parent_record_id !== a.p_family_record_id) no("cross_family");
+    if (pay.owner_type !== a.p_owner_type || pay.owner_key !== a.p_owner_key) no("cross_family");
     if (T_("finance_refund_decisions").some((x) => x.source_ref === a.p_payment_id)) no("payment_has_decisions");
     const funded = T_("finance_family_credit_applications").filter((x) => x.payment_id === a.p_payment_id).reduce((s, x) => s + x.amount_minor, 0);
     const allocs = a.p_allocations as any[];
@@ -217,7 +223,7 @@ function rpcBody(fn: string, a: any): unknown {
     let left = total;
     let i = 0;
     const credits = T_("finance_family_credits")
-      .filter((c) => c.organisation_id === a.p_org && c.family_parent_record_id === a.p_family_record_id && !c.voided_at)
+      .filter((c) => c.organisation_id === a.p_org && c.owner_type === a.p_owner_type && c.owner_key === a.p_owner_key && !c.voided_at)
       .sort((x, y) => (x.created_at < y.created_at ? -1 : x.created_at > y.created_at ? 1 : x.credit_id < y.credit_id ? -1 : 1));
     for (const c of credits) {
       if (left === 0) break;
@@ -230,7 +236,7 @@ function rpcBody(fn: string, a: any): unknown {
       if (x.amount_minor > rem) no("insufficient_credit");
       const expect = Math.min(rem, left);
       if (x.amount_minor !== expect) no("not_oldest_first");
-      T_("finance_family_credit_applications").push({ organisation_id: a.p_org, application_id: x.application_id, batch_id: a.p_batch_id, sequence: i, credit_id: c.credit_id, payment_id: a.p_payment_id, family_parent_record_id: a.p_family_record_id, amount_minor: expect, applied_at: a.p_applied_at, applied_by: a.p_applied_by, reason: a.p_reason });
+      T_("finance_family_credit_applications").push({ organisation_id: a.p_org, application_id: x.application_id, batch_id: a.p_batch_id, sequence: i, credit_id: c.credit_id, payment_id: a.p_payment_id, family_parent_record_id: pay.family_parent_record_id, owner_type: a.p_owner_type, owner_key: a.p_owner_key, amount_minor: expect, applied_at: a.p_applied_at, applied_by: a.p_applied_by, reason: a.p_reason });
       left -= expect;
     }
     if (left !== 0 || i !== allocs.length) no("insufficient_credit");
@@ -243,6 +249,13 @@ function rpcBody(fn: string, a: any): unknown {
     if (src.version !== a.p_expected_version) no("source_changed");
     if (a.p_source_ref.startsWith("ch_") && T_("finance_family_payments").some((x) => x.stripe_charge_id === a.p_source_ref)) no("charge_belongs_to_family_payment");
     const d = a.p_decision;
+    if (a.p_source_ref.startsWith("FFP-")) {
+      const pay = T_("finance_family_payments").find((x) => x.payment_id === a.p_source_ref);
+      if (!pay || pay.owner_type !== d.owner_type || pay.owner_key !== d.owner_key) no("cross_family");
+    }
+    if (a.p_credit && (a.p_credit.owner_type !== d.owner_type || a.p_credit.owner_key !== d.owner_key)) no("cross_family");
+    ownerCheck(d);
+    if (a.p_credit) ownerCheck(a.p_credit);
     // The table's CHECK constraints.
     const ok =
       d.source_total_minor === d.source_credit_funded_minor + d.source_card_funded_minor &&
@@ -458,7 +471,7 @@ async function main() {
       { creditId: "FFC-00000000000A", familyRecordId: A_REC, createdAt: "2026-03-01T00:00:00.000Z", originalMinor: 500, voidedAt: null },
       { creditId: "FFC-000000000000", familyRecordId: A_REC, createdAt: "2026-04-01T00:00:00.000Z", originalMinor: 500, voidedAt: null },
     ] as any[];
-    const pl = planApplication(A_REC, { credits, applications: [] }, 700) as any;
+    const pl = planApplication({ ownerType: "guardian_account", ownerKey: A_REC }, { credits: credits.map((c) => ({ ...c, ownerType: "guardian_account", ownerKey: A_REC })), applications: [] }, 700) as any;
     ck("FC4b. Equal creation times break ties by credit id; the newest credit is used last", pl.ok && pl.allocations.map((x: any) => x.creditId).join(",") === "FFC-00000000000A,FFC-00000000000B" && pl.allocations[1].amountMinor === 200);
     // Cross-family.
     const pB = await pay({ parentId: "PARENT-ZZB", amount: "5.00" });
@@ -467,7 +480,7 @@ async function main() {
     const x2 = await apply({ parentId: "PARENT-ZZB", paymentId: p.body.payment.paymentId });
     let dbRefused = "";
     try {
-      rpcFn("finance_family_credit_apply", { p_org: ORG, p_payment_id: pB.body.payment.paymentId, p_family_record_id: A_REC, p_batch_id: "FFB-000000000099", p_allocations: [{ application_id: "FFA-000000000099", credit_id: feb.body.familyCredit.creditId, amount_minor: 100, sequence: 1 }], p_applied_at: NOW.toISOString(), p_applied_by: MGR, p_reason: null, p_events: [{}] });
+      rpcFn("finance_family_credit_apply", { p_org: ORG, p_payment_id: pB.body.payment.paymentId, p_owner_type: "guardian_account", p_owner_key: A_REC, p_batch_id: "FFB-000000000099", p_allocations: [{ application_id: "FFA-000000000099", credit_id: feb.body.familyCredit.creditId, amount_minor: 100, sequence: 1 }], p_applied_at: NOW.toISOString(), p_applied_by: MGR, p_reason: null, p_events: [{}] });
     } catch (e) {
       dbRefused = (e as Error).message;
     }
@@ -676,6 +689,32 @@ async function main() {
     const r = returnableOf({ sourceType: "family_payment", sourceRef: "FFP-000000000001", totalMinor: 1001, creditFundedMinor: 333, cardFundedMinor: 668 }, [], []);
     const pd = planDecision(r, { decisionType: "refund_to_card", amountMinor: 500, cardRefundMinor: null }, true) as any;
     ck("XR5. Proportional partial split is exact in pence (credit share rounded down, the penny stays with the card share)", pd.ok && pd.amounts.creditRestoredMinor === 166 && pd.amounts.cardRefundMinor === 334 && pd.amounts.returnMinor === 500);
+  }
+
+  // ===== OW. Owner fields (separate from guardian history) =====
+  reset();
+  {
+    await decide({ source: "ch_C40", parentId: "PARENT-TEST-001", decisionType: "family_credit" });
+    const p = await pay({ amount: "15.00" });
+    await apply({ paymentId: p.body.payment.paymentId });
+    const rows = [...world.sb.finance_family_payments, ...world.sb.finance_family_credits, ...world.sb.finance_family_credit_applications, ...world.sb.finance_refund_decisions];
+    ck("OW1. Every F11 row carries owner_type = guardian_account and owner_key = the verified guardian account, beside its (separate) guardian-account history fields", rows.length === 4 && rows.every((r) => r.owner_type === "guardian_account" && r.owner_key === A_REC && r.family_parent_record_id === A_REC));
+    const f0 = await fam();
+    ck("OW2. Read models expose the owner (transitional: the verified guardian account)", f0.body.owner.type === "guardian_account" && f0.body.owner.key === A_REC && f0.body.credits[0].owner.key === A_REC && f0.body.refundDecisions[0].owner.key === A_REC);
+    // Simulate the FUTURE explicit transfer (guardian_account -> household) on credit + payment + decision rows only.
+    for (const t of ["finance_family_credits", "finance_family_payments", "finance_refund_decisions"]) for (const r of world.sb[t]) Object.assign(r, { owner_type: "household", owner_key: "HH-ZZTEST-1" });
+    const f1 = await fam();
+    const list = await listFamilyCredits(deps, mgr, {}) as any;
+    const p2 = await pay({ amount: "5.00" });
+    const ap2 = await apply({ paymentId: p2.body.payment.paymentId });
+    const ap3 = await apply({ paymentId: p.body.payment.paymentId });
+    const app = world.sb.finance_family_credit_applications[0];
+    ck("OW3. All ownership logic follows the OWNER, not the guardian history: after a (simulated) transfer the guardian account no longer sees or spends the credit; the owner group shows it with its history intact", f1.body.creditAvailable === "0.00" && f1.body.credits.length === 0 && list.body.families.length === 1 && list.body.families[0].owner.type === "household" && list.body.families[0].creditAvailable === "25.00" && list.body.families[0].credits[0].applications.length === 1 && ap2.httpStatus === 409 && ap2.code === "insufficient_credit" && ap3.httpStatus === 409 && ap3.code === "cross_family_refused");
+    const moved = [{ creditId: "FFC-0000000000AA", familyRecordId: A_REC, ownerType: "household", ownerKey: "HH-ZZTEST-1", createdAt: "2026-03-01T00:00:00.000Z", originalMinor: 900, voidedAt: null }] as any[];
+    const byOwner = planApplication({ ownerType: "household", ownerKey: "HH-ZZTEST-1" }, { credits: moved, applications: [] }, 300) as any;
+    const byGuardian = planApplication({ ownerType: "guardian_account", ownerKey: A_REC }, { credits: moved, applications: [] }, 300) as any;
+    ck("OW3b. Oldest-first selection is scoped by owner (not by the guardian history on the row)", byOwner.ok && byOwner.allocations[0].creditId === "FFC-0000000000AA" && !byGuardian.ok && byGuardian.code === "insufficient_credit");
+    ck("OW4. A transfer leaves history untouched: the application keeps its original owner, amount and guardian; the credit keeps its original amount and guardian context", app.owner_type === "guardian_account" && app.owner_key === A_REC && app.amount_minor === 1500 && world.sb.finance_family_credits[0].original_minor === 4000 && world.sb.finance_family_credits[0].family_parent_record_id === A_REC);
   }
 
   // ===== Z. Code / drift checks =====
