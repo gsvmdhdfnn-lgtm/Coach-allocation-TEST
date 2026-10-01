@@ -18848,24 +18848,28 @@ and `build-needs-attention-bundle --check` MATCH.
     removes the helpers).
 - **Deployed:** `finance` v19, `needs-attention` v14. Production untouched.
 
-## Finance Foundation — F13 (suppliers / venues / outgoing agreements + payment schedules) — REPLACEMENT DEPLOY NEEDED (v21) — NOT LIVE-PROVEN — TEST only — 2026-10-01
+## Finance Foundation — F13 (suppliers / venues / outgoing agreements + payment schedules) — LIVE-PROVEN on `finance` v21 (one grant step pending, see FIN13.15) — TEST only — 2026-10-01
 
-> **CHECKPOINT: decision 5 change made; replacement deploy needed; NOT
-> live-proven.**
+> **DEPLOYED + LIVE-PROVEN in TEST** (`finance` v21, 2026-10-01; live proof
+> A–Z in FIN13.14, resting state in FIN13.15).
 >
-> - **History:** `finance` v20 (commit `f8c17b3`, 544,522 bytes, sha256
->   `f0c069de…f6dc`) was deployed by the operator and verified
->   byte-identical. It was **not** live-proven, because the locked product
->   decisions (FIN13.13) required a code change first: decision 5 allows
->   historical effective dates for versions.
-> - **Replacement artifact:** `supabase/deploy-artifacts/finance/index.js`,
->   544,861 bytes, sha256
->   `8ae50aa66647f4044300d139e46901cd75ee641822567bcfbf4d4b72f1aec059`. It
->   needs an operator deploy as **`finance` v21**: the exact committed
->   artifact, `verify_jwt` true, one `index.js`. The live proof A–Z must run
->   against v21, not v20.
-> - **TEST schema is applied** (FIN13.6) and unchanged by decision 5. The
->   F13 tables are empty and the audit count is unchanged at **274**.
+> - **Deployed artifact:** `finance` v21 is ACTIVE, `verify_jwt` true, one
+>   `index.js`, deployed from commit `6fd3257` by the operator.
+>   Independently re-verified: 544,861 bytes, sha256
+>   `8ae50aa66647f4044300d139e46901cd75ee641822567bcfbf4d4b72f1aec059`,
+>   byte-identical to `supabase/deploy-artifacts/finance/index.js`.
+>   `needs-attention` v14 was not redeployed and is byte-identical to its
+>   artifact (166,807 bytes).
+> - **History:** v20 (commit `f8c17b3`) was deployed but never live-proven.
+>   The locked product decisions (FIN13.13) required the decision 5 change
+>   first.
+> - **TEST schema:** Supabase `finance_f13_suppliers` (FIN13.6), unchanged
+>   by decision 5.
+> - **Pending (operator):** the MCP destructive-statement gate held the
+>   UPDATE that ends the temporary View grant. So **R (no grant) was not
+>   re-proven live in F13**, and the manager's resting **Manage grant is not
+>   yet restored**. The TEST manager currently has View only. The two
+>   statements are in FIN13.15.
 > - **Not built:** supplier credits (F14), Overheads / Salaries (F15), Cash
 >   Flow, Month Report, Needs Attention changes. F14 has not been started.
 > - **Production untouched.**
@@ -19165,7 +19169,7 @@ The order is the same as F3–F12: 404 / 405 → 401 → 403
   - `needs-attention --check` MATCH;
   - **full `node tests/run-all.js` 84/84 files.**
 
-### FIN13.10 Resting TEST state (checkpoint)
+### FIN13.10 Resting TEST state (checkpoint, superseded by FIN13.15)
 
 - F13 tables empty; audit **274**; `finance` v19 deployed (no F13 routes).
 - F12 resting fixtures unchanged (FIN12.13).
@@ -19575,3 +19579,119 @@ grant execute on function public.finance_supplier_write(jsonb, integer, jsonb), 
      agreement. VP8a is now the `profitability_history_conflict` case.
 6. **Paid-instalment corrections:** NOT built. Paid instalments stay
    frozen; future debt (FIN13.11).
+
+### FIN13.14 Live TEST proof on `finance` v21 (2026-10-01)
+
+**Method:**
+- Calls went through the real deployed `finance` v21, using real TEST
+  logins (manager / coach A / parent A).
+- They used the existing TEST-only `pg_net` harness (`f2probe`). Two
+  read-only probe helpers were added: the view `f2probe.f13_hash` (md5 per
+  F13 table + audit count) and the tables `f2probe.f13_snap` /
+  `f2probe.f13_rows`, holding the before-images.
+- Today = **2026-10-01** (Europe/London).
+- Audit at the start: **274**.
+
+**Fixtures (TEST Airtable, all labelled ZZTEST F13; sessions Inactive so
+no generator touches them):**
+
+- **Sessions:**
+  - `ZZTEST-F13-V` (`recW3W7rCfLiLEjo6`): Academy, `FSV-B2A5C5275835`;
+  - `ZZTEST-F13-W` (`rec2l4rI4LC4gYt1G`): After School, `FSV-681F9A8704C8`;
+  - `ZZTEST-F13-N` (`recacZ96UTQ7kYlUT`): Holiday Camp, no Finance Service
+    ID.
+- **Occurrences of V:**
+  - 15 / 22 / 29 Sep (Completed);
+  - 6 / 13 / 20 / 27 Oct and 3 / 10 / 17 Nov (Scheduled);
+  - 24 Nov **already Cancelled**;
+  - 30 Oct **already Postponed**;
+  - 8 Dec (outside the term).
+- **Occurrences of W:** 7 / 14 / 21 Oct.
+- **Occurrences of N:** 8 / 15 Oct.
+- 13 Oct (`rec4nTbNti4diJrWL`) was set to **Cancelled after** the venue
+  agreement was made (proof E).
+
+**Suppliers:**
+
+| Supplier | Id | Type |
+|---|---|---|
+| ZZTEST F13 Venue Hall | `FSU-C4C4ABBCB248` | venue, linked to `VEN-TEST-A` |
+| ZZTEST F13 Office Landlord | `FSU-1BBA6D54940C` | other |
+| ZZTEST F13 Booking Software | `FSU-F15FF112F43A` | software_service |
+| ZZTEST F13 Kit Supplier | `FSU-0567E1252C8F` | other |
+| ZZTEST F13 Safeguarding Consultant | `FSU-49151BB8D750` | contractor |
+| ZZTEST F13 School Hall B | `FSU-A80A9A2B2C28` | venue |
+
+**Results:**
+
+| # | Proof | Result |
+|---|---|---|
+| — | Deployed artifact | `finance` v21 ACTIVE, `verify_jwt` true, 1 file, byte-identical (sha256 `8ae50aa6…`); `needs-attention` v14 byte-identical |
+| A | Supplier create | 201 `FSU-C4C4ABBCB248` (Venue, contact, `vat_included`, venue link). Same name + type → 409 `supplier_exists`; unknown type → 400; tenant key → 400. Update → revision 2, `changed: [contactPhone]` |
+| B / C | Venue agreement + custom instalments (**new agreement starting historically**) | `FSA-8061D263ADB9`, direct, linked to `ZZTEST-F13-V`, **effective from 15 Sep** (in the past) to 30 Nov. Custom instalments of **different amounts**: 400.00 on 20 Sep (shown overdue) + 600.00 on 20 Nov; source document kept |
+| D | Frozen profitability allocation | **10 × 100.00 = 1000.00** across the originally agreed occurrences. Excluded: the already-Cancelled 24 Nov, the already-Postponed 30 Oct and 8 Dec (outside). Shown by Finance Service `FSV-B2A5C5275835` "Academy" |
+| E | Cancellation does not redistribute | 13 Oct cancelled in Airtable afterwards → still 10 × 100.00 = 1000.00. The item shows `statusNow: Cancelled`, `cancelledSinceAgreement: true`, `counts: true`; the 10 stored allocation rows are unchanged |
+| F | Estimated instalment | Kit 80.00 one-off, `amountIsEstimate` → state Estimated. Payment → 409 `amount_still_estimated` (no payment row) |
+| G | Use Estimate | `confirm-estimate {useEstimate:true}` → Confirmed 80.00, **paid 0.00**, remaining 80.00, no payment row; "Nothing has been paid - Paid is a separate action" |
+| H | Partial payment | 150.00 of 400.00 (paid date 21 Sep, bank transfer, ref) → Partially Paid, **remaining 250.00**; planned 400.00 / original due 20 Sep preserved; `FSP-4A0831E1D57E` `remainingAfter: 250.00`, `management_confirmed` |
+| I | Move remaining due date | Due 20 Sep → **5 Oct** (reason kept), `moved: true`, original due date kept, still 1 payment row. Overpay 300.00 → 409 `overpayment`; future paid date → 400 |
+| J | Split future instalment | V2's 750.00 → 300.00 stays (due 25 Oct, planned 750.00 kept) + child `FSI-7D71D57FCF42` 450.00 due 25 Nov (`splitFrom`). Parts adding to 700.00 → 409 `split_mismatch`. V2 total due stays 750.00 |
+| K | Cancel unpaid future instalment | Quarterly support 1 Jul 2027 → Cancelled, remaining 0.00, reason + actor kept |
+| L | Paid history immutable (API) | Retry pay / cancel / move / split on the paid 400.00 instalment → 409 `instalment_paid` (4/4) |
+| — | **Decision 5: version refused over frozen history** | Version of V1 from **20 Sep** → 409 `profitability_history_conflict`, `occurrenceDates: ["2026-09-22","2026-09-29"]` (sessions that already happened); every F13 table hash + audit count unchanged |
+| — | **Decision 5: version refused over paid history** | Office rent (historical, from 1 Jun, 6 × 400.00; June paid 1 Jul, August paid 31 Aug — real past paid dates). Version from **1 Aug** → 409 `paid_instalment_after_change`, `instalmentIds: [FSI-6FBCE43232B7]` (the paid 30 Aug); nothing changed |
+| — | **Decision 5: historical version allowed** | Same rent, version from **1 Sep** (past) → 201 `FSA-310395CCF46C` 450.00 × 3. Only the unpaid 30 Sep / 30 Oct / 30 Nov cancelled ("Superseded by FSA-310395CCF46C from 2026-09-01"); the unpaid July (before the change) stays open. Old agreement row, both paid instalments and both payments **byte-identical** |
+| — | **Today / future versioning as before** | Venue V2 from **10 Oct** → 201 `FSA-06AE9CF42E32`: 5 × 150.00 (13 Oct, already Cancelled, and 30 Oct Postponed excluded). V1's unpaid 600.00 cancelled with reason. V1: effective end 9 Oct, chain V1 → V2, counted **400.00** (4 sessions, = the 400.00 paid), 6 later items superseded (kept). V1 agreement row, 10 allocations, paid instalment and 2 payments **byte-identical**. A second version of V1 → 409 `agreement_already_versioned`. Software licence version from **today** (1 Oct) → 201, cancels only the instalments due from 1 Oct |
+| M | Contractor forecast / actual | Consultant (Contractor / Consultant): hourly 30.00 × 10.50 h = **315.00 Estimated** × 3 months. October confirmed at **292.50** (planned 315.00 kept; audit `315.00 -> 292.50`, `usedEstimate: false`); no timesheet |
+| — | Schedules | Monthly 120.00 from 31 Jul (31 Jul … 31 Dec); quarterly 300.00 (1 Oct, 1 Jan, 1 Apr, 1 Jul); annual 1200.00 (1 Dec 2026 / 2027) |
+| N | Stable session / Finance Service attribution | Agreement by `FSV-681F9A8704C8` → 4 occurrences × 22.50 = 90.00: W's 3 **plus** the existing TEST session "TEST F4 Breakfast club (lifecycle proof)" (20 Oct), which genuinely carries that id — attribution by stable id only. Session without a Finance Service ID (`ZZTEST-F13-N`) → linked, programme bucket `resolved: false` (2 × 25.00) |
+| O | Unresolved stays unresolved | Unknown Session ID, unknown Finance Service ID (`FSV-0000000000AA`), and one good + one unknown Session ID → `link_state: unresolved`, nothing allocated, "never guessed" note. Facts list them under `unresolvedDirectAgreements` |
+| — | Read models | Facts Sep–Nov: profitability by Finance Service (FSV-B2A5 1150.00 = V1 400.00 + V2 750.00, 9 occurrences; FSV-681F 90.00; unresolved programme 50.00), cash due 19 rows and paid 400.00 reported separately ("not a Cash Flow event"). Supplier record: getting 2 / paying (paid 400.00, outstanding 750.00, next due 300.00 on 25 Oct) / when 3 / who / payment history 2. Instalment history: created → partially_paid → moved → paid |
+| P | Finance View | Temporary View grant: 7 reads → 200 `access: view`; 6 writes → 403 `finance_manage_required` |
+| Q | Finance Manage | Every successful write above was made with the Manage grant |
+| R | No grant / Coach / Parent | Coach 4/4 and Parent 3/3 (reads + writes) → 403 `management_required`. **No-grant was not re-proven live in F13**: ending the View grant needs an UPDATE that the MCP destructive-statement gate held (3 attempts, never executed; not bypassed). The path is F1's `authorizeFinance` (proven live in F1–F12) and covered by AC31 in the focused suite |
+| S | Module off | `module_finance` off → 4/4 403 `finance_module_disabled`; restored ON → 200 |
+| T | Tenant rejection | `organisationId` / `tenant` query, `org_id` / `organisationId` / `organisation_id` body → 400 `tenant_param_rejected` (5/5) |
+| U | Concurrency | Two simultaneous 250.00 payments on the 250.00 remaining → one 201, one 409 `finance_commercial_busy`; paid 400.00 / 400.00, 2 payment rows (never 650.00). Two simultaneous splits → one 201, one 409; V2 total still 750.00 |
+| V | Exact audit | 274 → **351 (+77)** = exactly the successful writes: 6 supplier.created, 1 supplier.updated, 12 agreement.created, 3 agreement.versioned, 38 instalment.created (= 38 instalment rows), 2 estimate_confirmed, 1 moved, 2 split, 1 partially_paid, 3 paid (4 payment events = 4 payment rows), 8 cancelled (1 explicit + 7 supersede). Every row has actor = manager, `ORG:FS?-…` record id, contract `finance-suppliers-v1`, route; no secret-shaped value. Reads, refusals, busy and denied requests audited **nothing** (non-F13 audit rows still 274) |
+| W | Database immutability (live rows) + no supplier credits | Self-rolling-back block: UPDATE / DELETE on a live payment, paid instalment, planned amount, cancelled instalment, agreement, allocations and supplier → `f13:history_is_append_only` (9/9); hashes unchanged. `supplier-credits`, `…/apply-credit`, `suppliers/{id}/credits` → 404; no credit table / field |
+| X | No Cash Flow / Month Report | `cash-flow`, `supplier-cash-flow`, `month-report` → 404; facts state "Nothing here is a Cash Flow event" |
+| Y | F12 + earlier Finance unchanged | F12 month `FCM-626821C7ABFA` reads as before (with its correction); `coach-summaries?month=2026-08` lists its months; settings revision 15; clients and receivables 200. No non-F13 audit row added. Regression suites below |
+| Z | Production untouched | Production `bkkukymqaxawnudoxdjs`: the same 9 functions, no `finance`, last update 2026-09-26. No production Airtable / Stripe / Xero / Sheets call |
+
+**No genuine product contradiction was found.**
+
+**Observation:** `FSV-681F9A8704C8` is also carried by the existing TEST
+session "TEST F4 Breakfast club", so a by-Finance-Service agreement
+includes it. That is the intended behaviour (the stable id decides), but
+real data should keep Finance Service IDs accurate.
+
+### FIN13.15 Resting TEST state (after the F13 live proof)
+
+- **F13 data (append-only, kept as deliberate ZZTEST fixtures, like
+  F12's):**
+  - 6 suppliers;
+  - 15 agreements (12 created + 3 versions);
+  - 38 instalments (8 cancelled);
+  - 4 payments (venue 150.00 + 250.00, rent June 400.00 + August
+    400.00; the kit 80.00 was confirmed but deliberately not paid);
+  - 21 frozen allocation rows.
+- **ZZTEST F13 Airtable fixtures** (3 Inactive sessions, 18 occurrences,
+  13 Oct cancelled) are kept so the frozen allocations stay readable.
+- **Audit:** **351**.
+- **`module_finance`:** ON.
+- **Harness tokens:** cleared (`cleared-after-f13-proof`).
+- F12 resting fixtures unchanged (FIN12.13).
+- **PENDING operator action (the MCP gate held these; not bypassed).** The
+  TEST manager currently has **View only**: grant
+  `9857494d-f85c-40b4-95c2-0d671c58b195` is open; the Manage grant
+  `fc8b0f47…` ended in proof P. To restore the deliberate baseline and
+  finish proof R, run in TEST:
+  ```sql
+  update finance_access_grants set revoked_at = now(), revoked_by = 'f13-live-proof',
+    revoke_note = 'F13 proof R: View probe finished' where id = '9857494d-f85c-40b4-95c2-0d671c58b195' and revoked_at is null;
+  -- (optional, proof R: with no grant, any F13 read / write -> 403 finance_access_denied)
+  insert into finance_access_grants (user_id, organisation_id, access_level, granted_at, granted_by, grant_note)
+    values ('285f819e-e0d4-4257-8121-5f16781e97ba', 'ORG-TEST-001', 'manage', now(), 'f13-live-proof',
+            'F13: deliberate TEST Manage grant restored after the View / no-grant probes');
+  ```
