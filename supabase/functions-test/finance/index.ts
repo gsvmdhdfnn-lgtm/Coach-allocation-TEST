@@ -173,6 +173,16 @@
  *   POST /cash-flow/balance                         { amount, asAtDate, note? }  record the current bank balance (audited)
  *   The cash safety threshold is the F2 setting cashSafetyThresholdMinor (POST /settings).
  *
+ * F18 Month Report + Finance Overview (Finance read = GET; READ ONLY, never audited, nothing stored): reporting by
+ * ECONOMIC month (session / work / due / employment / credit date - never a cash date) and ACTUAL / EXPECTED state
+ * (revenue Actual = the trusted-receipt portion of an issued invoice line, spread proportionally over the invoice's
+ * post-credit lines); Stripe / parent revenue is visibly excluded from totals:
+ *   GET  /month-report[?month=YYYY-MM][&mode=actual|expected]   overall result, previous-month comparison, programmes
+ *                                                                (by Finance Service ID), overheads (by category), reconciliation
+ *   GET  /overview[?month=YYYY-MM]                               ACTUAL-only headline figures + Needs Attention counts (one call
+ *                                                                to needs-attention as the caller) + Upcoming Payments + optional
+ *                                                                F17 cash summary (F2 setting overviewCashSummaryVisible)
+ *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
  * tenant-looking query parameter or body key is rejected with 400, never
@@ -228,6 +238,8 @@ import {
 } from "./finance-overheads-orchestrator.ts";
 import { matchCashFlowRoute, parseBalance, parseCashQuery } from "./finance-cash-flow.ts";
 import { readBalanceHistory, readCashFlow, recordBankBalance } from "./finance-cash-flow-orchestrator.ts";
+import { matchMonthReportRoute, parseMonthReportQuery } from "./finance-month-report.ts";
+import { type NeedsAttentionSummary, readFinanceOverview, readMonthReport } from "./finance-month-report-orchestrator.ts";
 import { type SupplierDeps, changeInstalmentAction, createAgreement, createSupplier, listAgreements, listCostFacts as listSupplierCostFacts, listInstalments, listSuppliers, readAgreement, readInstalment, readSupplier, updateSupplier, versionAgreement } from "./finance-suppliers-orchestrator.ts";
 import { matchFamilyRoute, parseApply, parseDecision, parseFamilyPayment, parseFamilyQuery, parseReason } from "./finance-family.ts";
 import { applyFamilyCredit, listFamilyCredits, listRefundDecisions, listRevenueCorrections, readFamily, readRefundDecision, readRefundSource, recordFamilyPayment, recordRefundDecision, reverseRefundDecision, voidFamilyCredit } from "./finance-family-orchestrator.ts";
@@ -757,6 +769,35 @@ async function handleCashFlow(req: Request, url: URL, match: NonNullable<ReturnT
   return commercialResponse(await recordBankBalance(deps, caller, p.req));
 }
 
+/**
+ * F18: the Overview's ONE Needs Attention call - the caller's own Authorization (never a service key), counts only.
+ * Any failure (status, timeout, shape) is "unavailable" and never fails the financial figures.
+ */
+function needsAttentionSummary(authHeader: string | null): NeedsAttentionSummary {
+  return async () => {
+    if (!authHeader) return { status: "unavailable", reason: "no_authorization" };
+    const res = await fetch(`${SUPABASE_URL.replace(/\/+$/, "")}/functions/v1/needs-attention/cases`, { headers: { Authorization: authHeader, apikey: SUPABASE_ANON_KEY }, signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return { status: "unavailable", reason: `needs_attention_http_${res.status}` };
+    const b = await res.json();
+    const s = b?.summary;
+    if (!s || typeof s.total !== "number" || typeof s.state !== "string") return { status: "unavailable", reason: "needs_attention_unexpected_response" };
+    return { status: "ok", state: s.state, total: s.total, counts: s.counts ?? {}, suppressed: typeof s.suppressed === "number" ? s.suppressed : 0, complete: b.complete === true };
+  };
+}
+
+/** F18 routes: same order as F3-F17 - 405, 401, 403 management_required, 400 query, then authorisation inside the orchestrator. */
+async function handleMonthReport(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchMonthReportRoute>>): Promise<Response> {
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  const q = parseMonthReportQuery(r.name, url.searchParams, isTenantKey);
+  if (!q.ok) return commercialResponse({ status: "error", ...q });
+  if (r.name === "month.report") return commercialResponse(await readMonthReport(deps, caller, { month: q.month, mode: q.mode }));
+  return commercialResponse(await readFinanceOverview(deps, caller, { month: q.month }, needsAttentionSummary(req.headers.get("Authorization"))));
+}
+
 /** F11 routes: same order as F3-F10 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
 async function handleFamily(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchFamilyRoute>>): Promise<Response> {
   if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
@@ -818,7 +859,11 @@ Deno.serve(async (req: Request) => {
   try {
     const decoded = decodedPath(route);
     if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
-    // F17 first: it owns only cash-flow, cash-flow/balance-history and cash-flow/balance.
+    // F18 first: it owns only month-report and overview (Finance Overview).
+    const monthReport = matchMonthReportRoute(route, req.method);
+    if (monthReport) return await handleMonthReport(req, url, monthReport);
+
+    // F17 next: it owns only cash-flow, cash-flow/balance-history and cash-flow/balance.
     const cashFlow = matchCashFlowRoute(route, req.method);
     if (cashFlow) return await handleCashFlow(req, url, cashFlow);
 

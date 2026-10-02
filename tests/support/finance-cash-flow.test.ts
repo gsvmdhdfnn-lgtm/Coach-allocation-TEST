@@ -477,7 +477,7 @@ async function main() {
   ck("Z2. index.ts routes cash-flow first (before F13) through handleCashFlow; the orchestrator imports no Stripe module and no source write - its only write is recordBalance (the F17 balance function)", /const cashFlow = matchCashFlowRoute\(route, req\.method\);/.test(idx) && idx.indexOf("matchCashFlowRoute(route") < idx.indexOf("matchSupplierRoute(route") && !/stripe|xero|family/i.test(orchImports) && !/(changeInstalment|recordAgreement|changeItem|finaliseMonth|correctMonth|create\w*Row|patch\w*Row|insertAuditEvent)/.test(orch));
   const engine = readFileSync(join(CANON, "finance", "finance-cash-flow.ts"), "utf8");
   ck("Z3. The engine never uses profitability dates (work dates, occurrence dates, billing periods): only invoice due dates, received / paid dates, instalment due dates, expected pay dates and F12 expected payment dates", !/workDate|occurrenceDate|periodFrom|periodTo|work_date/.test(engine));
-  ck("Z4. No Month Report: no month-report route or module was added", matchCashFlowRoute("month-report", "GET") === null && !/month-report/.test(idx.replace(/Month Report/g, "")));
+  ck("Z4. Month Report is not F17's: cash-flow never matches month-report (F18 owns it, routed before F17) and F17 reads no reporting month", matchCashFlowRoute("month-report", "GET") === null && idx.indexOf("matchMonthReportRoute(route") < idx.indexOf("matchCashFlowRoute(route"));
 
   // totals helper sanity
   ck("TL-T. totalsOf: actual / expected / estimated / overdue / included are disjoint where they should be", (() => {

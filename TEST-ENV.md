@@ -22603,13 +22603,17 @@ cleanup.
   - `finance` and `needs-attention` `--check` MATCH.
 - **Not started:** F18 Month Report.
 
-## Finance Foundation — F18 (Month Report + Finance Overview engine) — AUDIT ONLY, STOPPED FOR DECISIONS — TEST only — 2026-10-02
+## Finance Foundation — F18 (Month Report + Finance Overview engine) — CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN — TEST only — 2026-10-02
 
-> **No F18 code, schema, setting or deployment exists yet.** The source
-> audit found reporting definitions that no existing foundation decides.
-> Per the brief ("if a required calculation lacks an authoritative source:
-> STOP and report"), F18 stopped here. Live TEST is unchanged: `finance`
-> v26 / `needs-attention` v17. Production is untouched.
+> **Status: CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN.**
+> The audit (FIN18.1–18.3) stopped for decisions D1–D12, which were locked
+> on 2026-10-02 (FIN18.4). F18 was then built against them. The finance
+> bundle (703,547 bytes) is too large for this session's deploy tool, so
+> F18 stops at the deployment checkpoint (FIN18.13) for the operator.
+> Live TEST is still `finance` v26 / `needs-attention` v17. The only TEST
+> change is one blank Airtable field (FIN18.13). Production is untouched.
+> F19 (Google Sheets writer) and F20 (Legacy Finance History) were not
+> started.
 
 ### FIN18.1 Source audit (2026-10-02)
 
@@ -22690,3 +22694,336 @@ cleanup.
 - Each source family can be loaded once per report (F5's
   services → sessions → occurrences window read; F12 / F13 / F14 / F15
   fact builders; F7 snapshot).
+
+### FIN18.4 Locked decisions (2026-10-02) and three separate concepts
+
+F18 keeps three things apart:
+
+1. **Economic month**: which month a value belongs to in management
+   reporting.
+2. **Actual / Expected state**: how certain the value is.
+3. **Cash date**: when money moved. Cash dates belong to F17 only and are
+   never used for F18 attribution. A receipt changes a line's state, never
+   its month.
+
+The decisions:
+
+- **D1 Actual client revenue.**
+  - Actual = money genuinely received (a trusted receipt). Delivered or
+    invoiced but unpaid = Expected.
+  - The month is the line's occurrence (session) month, never the payment
+    date.
+  - A partial receipt is spread over the invoice's current (not credited)
+    lines in proportion to each line's gross:
+    - penny-exact, largest remainder, ties to the lower line id;
+    - the same proportion applies to VAT (rounded half away from zero) and
+      net (net = the rest);
+    - Actual + Expected = the line exactly.
+  - Manual Billing delivered value stays Expected, never promoted to
+    Actual; the limitation is exposed.
+- **D2 Stripe / parent revenue.** Never in report totals; shown as
+  "Parent / Stripe revenue: Not included in report totals". Where F10 can
+  read it, the informational excluded gross is shown: GBP succeeded charges
+  by charge date. The report is NOT complete while excluded Stripe revenue
+  exists, or when Stripe cannot be read.
+- **D3 Coach cost.**
+  - Actual = finalised Coach Month frozen items + corrections.
+  - Expected = an open month's live allocation cost.
+  - Salaried / Volunteer = 0.00. Payment state is irrelevant.
+  - An unpriced live item is never 0.00: it is surfaced.
+- **D4 Venue / direct supplier.** A frozen F13 share is Actual when its
+  date is in the month, the agreement amount is confirmed (not estimated)
+  and the date has passed (on or before the organisation's today);
+  otherwise Expected. Never the payment date; never redistributed.
+- **D5 Overheads.**
+  - Supplier overhead: month = instalment due month. Estimated = Expected;
+    Confirmed / Partially Paid / Paid = Actual.
+  - Employment: its own YYYY-MM. Estimated = Expected; Confirmed / Paid =
+    Actual.
+  - Supplier credit: Actual in its credit month. Gross is never rewritten;
+    the credit is a separate adjustment.
+- **D6 VAT on costs.** The recorded amount; no input-VAT recovery
+  (stated in the report).
+- **D7 Needs Attention.** One call to `needs-attention/cases` with the
+  caller's own Authorization; compact counts only. `status: unavailable`
+  on any failure, never failing the figures.
+- **D8 Upcoming Payments.**
+  - Included: every unresolved Confirmed overdue outgoing, plus Confirmed
+    outgoing due today..today+13.
+    - Supplier: Confirmed / Partially Paid, remaining payable only.
+    - Employment: Confirmed and unpaid.
+    - Coach: finalised months with an expected payment date of today or
+      later only. Never "overdue" (F12 has no Paid lifecycle).
+  - Not included: estimated items and open Coach Months.
+  - Source refs and routes are exposed; no new ledger.
+- **D9 Cash summary.** F2 setting "Show Cash Summary on Finance Overview":
+  - default ON (blank = shown);
+  - not part of setup completeness;
+  - F17's own figures when shown; hidden entirely when off.
+- **D10 Expected revenue.** One item per occurrence, with precedence
+  invoice line > Included draft line > F4.
+  - F4 includes delivered-not-invoiced and future client-paid sessions.
+  - Cancelled / postponed / not billable / commercially inactive / parent /
+    subscription / other models are excluded, with the reason.
+  - Missing service / terms or no trustworthy value are unresolved: never
+    guessed. They make an expected-mode report incomplete.
+- **D11.** No Management Notes storage. Export-ready metadata only; PDF
+  is later reporting / UI work (F22 is the invoice PDF).
+- **D12.** A credit note reduces revenue in the ORIGINAL line's month,
+  never as an overhead. A credited line contributes 0 and is not revived
+  from a draft line or F4.
+- **Interpretation recorded (not a new decision):** applied F7 client
+  credit counts towards a trusted receipt. F7 creates client credit only
+  from cash already paid (overpayment) or a paid credit note's excess. The
+  receipt is capped at the invoice's post-credit value, so an overpayment
+  never becomes revenue.
+
+### FIN18.5 Sources, supersession, attribution
+
+**Revenue (economic month = the line's occurrence date):**
+- F6 invoice lines of every invoice touching the window:
+  - genuinely Issued → received portion Actual, rest Expected;
+  - awaiting external issue (Xero) → Expected only.
+- F5 Included draft lines → Expected.
+- F4 expected billing for client-paid services' sessions → Expected.
+- Occurrence ID links the three layers, so supersession needs no new
+  linkage.
+
+**Direct costs (by stable Finance Service ID, never by name):**
+- F12 frozen items: Finance Service ID per item. F12 corrections stay
+  with the Coach Month → **Unattributed**.
+- F13 profitability shares (not superseded by a later version).
+- F14 credits:
+  - session-attributed rows → their programme;
+  - an agreement-level credit with no single service, or the unattributed
+    remainder of a partly attributed credit → **Unattributed**.
+
+**Overheads (by category id):**
+- F13 general instalments (F15 category assignment).
+- F15 employment months (their category).
+- F14 credits on general agreements → their category.
+- Supplier-only credits (no agreement) → **Uncategorised** (reason
+  stated).
+- Salary is an overhead only, never in a programme.
+
+**Sessions without a Finance Service ID:** counted
+(`sessions_without_finance_service`); no revenue is invented for them.
+
+### FIN18.6 Reconciliation (no balancing line)
+
+Overall totals are summed from the facts. Programme and category groups
+are summed separately and checked. There is no balancing, "other" or
+rounding row. Eight equations, each with left / right / holds:
+
+1. Σ programme Net + unattributed = Net Revenue
+2. Σ Gross = Gross Revenue
+3. Σ VAT = VAT
+4. Gross − VAT = Net
+5. Σ programme Direct + unattributed = Direct Costs
+6. Σ categories + uncategorised = Overheads
+7. Net − Direct = Contribution
+8. Net − Direct − Overheads = Final Business Profit
+
+A failed equation adds the `reconciliation_failed` (incomplete) item.
+
+**Margin:** 2 dp, half away from zero. It is `null` with a reason when
+Net Revenue is zero (`no_net_revenue`) or negative
+(`net_revenue_negative`): never divided by zero, never shown as 0%.
+
+### FIN18.7 Previous-month comparison
+
+The previous calendar month is compared in the report's own mode, for Net
+Revenue, Final Business Profit and Final Margin. Money metrics give
+current, previous, change and change % (of |previous|). Margin gives the
+change in percentage points. A zero previous month gives `null` with a
+reason (`previous_month_zero` / `previous_no_net_revenue`). There is no
+narrative (`narrative: null`).
+
+### FIN18.8 API (under `finance`, F1 rules, GET only)
+
+- `GET /finance/month-report?month=YYYY-MM&mode=actual|expected`
+  (default: the organisation's current month, Actual).
+  - Contract: `finance-month-report-v1`.
+  - Locked structure: overall Gross Revenue, VAT, Net Revenue, Direct
+    Costs, Programme Contribution, Overheads, Final Business Profit, Final
+    Margin.
+  - Also: `programmes[]` (by Finance Service ID) + `unattributed`;
+    `overheads` (categories + uncategorised, gross / credit adjustment /
+    net with items); `revenueCorrections`; `reconciliation`; `comparison`;
+    `completeness`; `excluded.parentStripeRevenue`; `exportMetadata`.
+  - Every detail row carries its state and source refs.
+- `GET /finance/overview?month=YYYY-MM`: Finance Overview, **Actual only**.
+  - Contract: `finance-overview-v1`.
+  - Returns: metrics (Net Revenue, Direct Costs, Overheads, Profit,
+    margin) = the Actual report's figures; incomplete items; Needs
+    Attention counts; Upcoming Payments; cash summary; routes. It does
+    not duplicate the report.
+  - `mode` is refused (400, "Finance Overview is Actual only").
+  - Path note: a route starting with `finance` would be swallowed by the
+    shared path rule `^.*\/finance\/?` (greedy). The route is therefore
+    `overview`, not `finance-overview`. The artifact test caught this
+    (B25).
+- **Query:** month YYYY-MM (2000–2100) and mode only. A tenant key gives
+  400 `tenant_param_rejected`; any other key gives 400 `unexpected_query`.
+- **Access:** Finance View or Manage read both. No grant: 403
+  `finance_access_denied`. Coach / Parent: 403 `management_required`.
+  Module off: 403 `finance_module_disabled`.
+- **Failures:** a source read failure gives 503 `month_report_unavailable`
+  (no partial figures). Inconsistent stored data gives 409
+  `month_report_data_invalid`, naming the record.
+- **Never audited; nothing stored.** No route writes anything.
+
+### FIN18.9 Performance
+
+Window = first day of the previous month .. last day of the selected
+month. Each source family is read once per request through its owning
+slice's repository:
+- F2 settings; F3 snapshot; F7 receivables snapshot;
+- F13 / F14 / F15 ledgers; F12 months / items / corrections;
+- F12 cost world (window);
+- F6 invoice lines in the window, then all lines of the touched invoices
+  (chunks of 40);
+- F5 Included draft lines in the window;
+- F4 sessions for the client-paid services → occurrences in the window →
+  overrides.
+
+New reads are date-bounded formulas re-checked in code. The test proves:
+- 31 more invoices (+ lines + payments) cost **zero** extra Airtable or
+  Supabase reads (identical per-table counts);
+- each Airtable table is read at most twice per report.
+
+The Overview adds the F12 cost world for F17's 3-month range and the
+balance history (only when the cash summary is shown), plus one Needs
+Attention call.
+
+### FIN18.10 Data quality / completeness
+
+`completeness.items[]` lists `{code, severity, message, count?, amount?}`.
+The report is `complete` only when no item is `incomplete`.
+
+**Incomplete:**
+- excluded Stripe revenue, or Stripe unreadable;
+- unresolved revenue, unpriced coach items or unresolved direct
+  agreements (expected mode only);
+- reconciliation failed.
+
+**Info:**
+- Stripe not connected;
+- sessions without a Finance Service ID;
+- Manual Billing expected only;
+- F4 exclusions;
+- revenue corrections;
+- a finalised Coach Month needing correction (F12 drift);
+- unattributed direct costs;
+- uncategorised overheads;
+- supplier credit adjustments;
+- cost VAT basis.
+
+### FIN18.11 Code, tests
+
+**Code:**
+- `finance/finance-month-report.ts`: pure engine (facts, aggregation,
+  reconciliation, comparison, completeness, Upcoming Payments, routes,
+  query parsing).
+- `finance/finance-month-report-repository.ts`: the two new read-only
+  reads.
+- `finance/finance-month-report-orchestrator.ts`: loads, normalises
+  through the owning slices' builders, F17 cash summary via F17's own
+  `buildCashFlow` + `cashFlowView`, Stripe via F10's
+  `listStripePayments`.
+- `finance/finance-settings.ts`: `overviewCashSummaryVisible`, stored as
+  Shown / Hidden.
+- `finance/index.ts`: F18 matched first, then the NA call helper.
+
+**Tests:**
+- `tests/support/finance-month-report.test.ts`, **124/124**:
+  - Part 1: a hand-computed October 2026 scenario on the pure engine
+    (every figure worked in comments).
+  - Part 2: the REAL orchestrator on the in-memory world, with:
+    - F3 / F5 / F6 / F7 rows from those slices' own create-field
+      builders;
+    - F13 / F14 / F15 data through their real routes;
+    - F12 rows.
+  - Covers brief tests 1–70, D1–D12 and drift (mirrors, routes, setting).
+- Mutation pass: 12 mutations, all killed. One ("awaiting issue is
+  Actual" in the orchestrator) can't change behaviour, because F7 gives
+  awaiting-issue invoices no settlement. X2 covers the behaviour.
+- Updated:
+  - `finance-cash-flow.test.ts` Z4 (month-report now exists, routed
+    before F17);
+  - `finance-settings.test.ts` (fixture + SV1–SV3, 103/103);
+  - `tests/e2e/financebundletest.js` B23 (no longer forbids
+    month-report) + new B25 (F18 routes live in the artifact).
+- **Regression:**
+  - `npm test` 89/89 files.
+  - Every finance suite: F1–F18, all passing.
+  - Every Needs Attention suite, all passing.
+  - Bundle `--check` MATCH for both functions.
+
+### FIN18.12 Live proof plan A–AW (after the operator deploys `finance` v27 / `needs-attention` v18)
+
+Not run: F18 is not deployed. Planned against existing ZZTEST facts in
+the isolated TEST organisation, with additive fixtures only where needed:
+- **A–C:** the current, previous and Expected + Actual reports.
+- **D–K:** each overall metric recomputed by hand from the source records.
+- **L–Q:** a programme with revenue, coach, venue, F14 credit and other
+  direct cost.
+- **R:** an unattributed correction.
+- **S–W:** overhead category, supplier overhead, employment, overhead
+  credit, salary never in a programme.
+- **X–Y:** an invoice line superseding draft / F4.
+- **Z–AA:** a credit note in the original month; Refund Due has no
+  effect.
+- **AB–AD:** comparison.
+- **AE:** reconciliation.
+- **AF–AI:** Overview: Actual only, NA counts vs `GET /needs-attention`,
+  Upcoming Payments vs F13 / F15 / F12, cash summary vs
+  `GET /cash-flow?range=3m`.
+- **AJ–AK:** explicit month; a London midnight boundary.
+- **AL–AQ:** the access matrix and tenant rejection.
+- **AR:** `finance_audit_events` count unchanged.
+- **AS:** earlier finance smoke.
+- **AT:** no F17 logic copied.
+- **AU–AV:** no F19 / F20 route.
+- **AW:** production untouched.
+
+### FIN18.13 Deployment checkpoint + resting TEST state
+
+- **Source:** the F18 commit on `foundation/test-base-isolation`.
+- **Artifacts** (deterministic; `--check` MATCH):
+
+  | Artifact | Bytes | sha256 | Note |
+  |---|---|---|---|
+  | `supabase/deploy-artifacts/finance/index.js` | 703,547 | `4eca8ecc5a781787fc2e8600197fbc382e027dc4ae9d4b92d50835a86c9ec7bc` | was 656,429 on v26 |
+  | `supabase/deploy-artifacts/needs-attention/index.js` | 214,784 | `6c1daba1f4885faf1d986dcae1f99494ce3ff39f9e69f24d330a7a7b2e2bc805` | changed only because it bundles `finance/finance-settings.ts` (new key); no NA behaviour change |
+
+- **Deploy as** `finance` v27 / `needs-attention` v18, both from the
+  committed artifacts, then verify the deployed hashes against the
+  manifests.
+- **Airtable TEST** (`appQktredAuGa1X7e`, Finance Settings
+  `tblbQDDt3cgQmfCwB`):
+  - new field **Show Cash Summary on Finance Overview**
+    (`fldatAs7o4hCT0EOf`, single select Shown / Hidden), blank (=
+    shown);
+  - safe for v26 / v17, which only read known keys.
+- **Supabase TEST:** no schema change, no data written.
+- **Deployed:** still `finance` v26 / `needs-attention` v17. Until v27
+  exists, `POST /finance/settings` refuses the new key.
+- **Production** (Airtable `apprptFotQuVL1mhs`, Supabase
+  `bkkukymqaxawnudoxdjs`): untouched.
+- `f2probe` cleanup remains an operator item.
+
+### FIN18.14 Future debt
+
+- **Stripe / parent revenue mapping:** subscription / charge → Finance
+  Service + VAT. Until then it is excluded and the report is incomplete.
+- **Manual Billing:** a trusted receipt linkage before any Actual.
+- **Input-VAT recovery:** for VAT-registered organisations (costs are at
+  the recorded amount).
+- **Management Notes:** a storage model; Month Report PDF / export (UI /
+  reporting work); F19 Google Sheets writer; F20 Legacy Finance History.
+- **Supplier-only credits:** cannot be classified direct / overhead
+  without an agreement, so they stay uncategorised overhead.
+- **Shared path rule:** `^.*\/finance\/?` is greedy. Any future route
+  starting with `finance` must not be added (or the rule made
+  non-greedy, as its own reviewed change).

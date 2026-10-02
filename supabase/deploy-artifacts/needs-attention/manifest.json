@@ -2,8 +2,8 @@
   "function": "needs-attention",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/needs-attention/index.js",
-  "artifactSha256": "b3a8d2f8ca0a0fb58e7c0fbecb31aac375c4ab65e460d3d167a78f5571d3dbb9",
-  "artifactBytes": 214404,
+  "artifactSha256": "6c1daba1f4885faf1d986dcae1f99494ce3ff39f9e69f24d330a7a7b2e2bc805",
+  "artifactBytes": 214784,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "3a83593b5a23a635bfb064a2d4f287cce96dc17841d25f67493e2fb16573d791",
+  "sourceSha256": "3a4a29bb1aa56536f6c5c319e9446128ddf42317a920a90e09b505bec53e6986",
   "sources": [
     {
       "path": "supabase/functions-test/needs-attention/cash-flow.ts",
@@ -139,7 +139,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-settings.ts",
-      "sha256": "e9e30ff90182205b48b9fab5a2ac512702dda84c6a9165ffa9fa85fcb1fdf70e"
+      "sha256": "c2c7d8abf8c021202ec8e44508638daafd0f6a8e48fb192582582e35f0fac456"
     },
     {
       "path": "supabase/functions-test/finance/finance-overheads.ts",

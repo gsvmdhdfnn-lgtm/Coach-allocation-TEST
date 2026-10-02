@@ -153,9 +153,13 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   const cbd405 = await call('DELETE', 'cash-flow/balance');
   const cbx404 = await call('POST', 'cash-flow/balance/FBB-0123456789AB');
   const crec404 = await call('POST', 'cash-flow/reconcile');
-  const cmr404 = await call('GET', 'month-report');
-  ck('B23. F17 Cash Flow routes are live in the artifact: cash-flow / balance-history GET-only, balance POST-only (401 without a token, 405 otherwise); a balance is never edited / deleted in place, no reconcile route and no F18 month-report route (404)', [cf401, cfq401, ch401, cb401].every((r) => r.status === 401) && [cfp405, chp405, cbg405, cbd405].every((r) => r.status === 405) && [cbx404, crec404, cmr404].every((r) => r.status === 404), [cf401, cfq401, cfp405, ch401, chp405, cb401, cbg405, cbd405, cbx404, crec404, cmr404].map((r) => r.status).join('/'));
+  ck('B23. F17 Cash Flow routes are live in the artifact: cash-flow / balance-history GET-only, balance POST-only (401 without a token, 405 otherwise); a balance is never edited / deleted in place, no reconcile route (404)', [cf401, cfq401, ch401, cb401].every((r) => r.status === 401) && [cfp405, chp405, cbg405, cbd405].every((r) => r.status === 405) && [cbx404, crec404].every((r) => r.status === 404), [cf401, cfq401, cfp405, ch401, chp405, cb401, cbg405, cbd405, cbx404, crec404].map((r) => r.status).join('/'));
   ck('B24. F17 balance writes go through its atomic database function only (finance_bank_balance_record RPC in the artifact)', flat.includes('finance_bank_balance_record'));
+  const mr401 = await call('GET', 'month-report?month=2026-10&mode=expected');
+  const mrp405 = await call('POST', 'month-report');
+  const fo401 = await call('GET', 'overview?month=2026-10');
+  const fop405 = await call('PUT', 'overview');
+  ck('B25. F18 Month Report / Finance Overview routes are live in the artifact: GET only (401 without a token, 405 otherwise); read only - the routes are matched before F17 cash-flow', [mr401, fo401].every((r) => r.status === 401) && [mrp405, fop405].every((r) => r.status === 405) && flat.indexOf('finance-month-report-v1') > -1 && flat.indexOf('finance-overview-v1') > -1);
 
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;

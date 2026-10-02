@@ -64,6 +64,7 @@ export const SETTINGS_KEYS = [
   "invoiceNumberDigits",
   "estimateReminderDays",
   "cashSafetyThresholdMinor",
+  "overviewCashSummaryVisible",
 ] as const;
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 
@@ -85,6 +86,8 @@ export interface FinanceSettings {
   estimateReminderDays: number | null;
   /** F17: the cash safety threshold in pence (null = none, so no cash-risk warning). */
   cashSafetyThresholdMinor: number | null;
+  /** F18: show the compact F17 cash summary on Finance Overview (null = the default, shown). Optional - never part of completeness. */
+  overviewCashSummaryVisible: boolean | null;
 }
 
 /** Who assigns the official (customer-facing) invoice number. Explicit - never inferred from whether a number exists. */
@@ -109,6 +112,7 @@ export const EMPTY_SETTINGS: FinanceSettings = Object.freeze({
   invoiceNumberDigits: null,
   estimateReminderDays: null,
   cashSafetyThresholdMinor: null,
+  overviewCashSummaryVisible: null,
 });
 
 // ---------------------------------------------------------------------
@@ -140,11 +144,15 @@ export const FIELD_NAMES: Record<SettingsKey, string> = {
   invoiceNumberDigits: "Invoice Number Digits",
   estimateReminderDays: "Estimate Reminder Days",
   cashSafetyThresholdMinor: "Cash Safety Threshold (Pence)",
+  overviewCashSummaryVisible: "Show Cash Summary on Finance Overview",
 };
 
 const VAT_REGISTRATION_CHOICES = { registered: "Registered", notRegistered: "Not registered" } as const;
 const TREATMENT_CHOICES: Record<VatTreatment, string> = { plus_vat: "Plus VAT", vat_included: "VAT Included", no_vat: "No VAT" };
 const AUTHORITY_CHOICES: Record<InvoiceNumberAuthority, string> = { hub: "Hub", xero: "Xero" };
+const CASH_SUMMARY_CHOICES = { shown: "Shown", hidden: "Hidden" } as const;
+/** F18: the Overview cash summary is shown unless Management chose to hide it. */
+export const overviewCashSummaryShown = (s: Pick<FinanceSettings, "overviewCashSummaryVisible"> | null): boolean => s?.overviewCashSummaryVisible !== false;
 
 // ---------------------------------------------------------------------
 // Per-field validation (shared by request input AND stored values)
@@ -202,6 +210,7 @@ export const FIELD_VALIDATORS: Record<SettingsKey, (v: unknown) => FieldCheck> =
   invoiceNumberDigits: (v) => int(v, 1, 9),
   estimateReminderDays: (v) => int(v, 0, ESTIMATE_REMINDER_DAYS_MAX),
   cashSafetyThresholdMinor: (v) => int(v, 0, MAX_MINOR),
+  overviewCashSummaryVisible: (v) => (v === null || typeof v === "boolean" ? { ok: true, value: v } : { ok: false, error: "must be true, false or null" }),
 };
 
 /** Rules across fields, checked on the MERGED result of an update. Empty object = consistent. */
@@ -388,6 +397,9 @@ export function fromStoredRow(row: StoredSettingsRow): { ok: true; state: Settin
       const hit = INVOICE_NUMBER_AUTHORITIES.find((a) => AUTHORITY_CHOICES[a] === raw);
       raw = hit ?? { unknown: raw };
     }
+    if (k === "overviewCashSummaryVisible" && raw !== null) {
+      raw = raw === CASH_SUMMARY_CHOICES.shown ? true : raw === CASH_SUMMARY_CHOICES.hidden ? false : { unknown: raw };
+    }
     const r = FIELD_VALIDATORS[k](raw);
     if (r.ok) out[k] = r.value;
     else problems.push(FIELD_NAMES[k]);
@@ -412,6 +424,7 @@ export function toStoredFields(s: FinanceSettings, keys: readonly SettingsKey[])
     if (k === "vatRegistered") out[FIELD_NAMES[k]] = v === null ? null : v ? VAT_REGISTRATION_CHOICES.registered : VAT_REGISTRATION_CHOICES.notRegistered;
     else if (k === "defaultVatTreatment") out[FIELD_NAMES[k]] = v === null ? null : TREATMENT_CHOICES[v as VatTreatment];
     else if (k === "invoiceNumberAuthority") out[FIELD_NAMES[k]] = v === null ? null : AUTHORITY_CHOICES[v as InvoiceNumberAuthority];
+    else if (k === "overviewCashSummaryVisible") out[FIELD_NAMES[k]] = v === null ? null : v ? CASH_SUMMARY_CHOICES.shown : CASH_SUMMARY_CHOICES.hidden;
     else out[FIELD_NAMES[k]] = v;
   }
   return out;
