@@ -22602,3 +22602,91 @@ cleanup.
   - full regression **89/89** files;
   - `finance` and `needs-attention` `--check` MATCH.
 - **Not started:** F18 Month Report.
+
+## Finance Foundation — F18 (Month Report + Finance Overview engine) — AUDIT ONLY, STOPPED FOR DECISIONS — TEST only — 2026-10-02
+
+> **No F18 code, schema, setting or deployment exists yet.** The source
+> audit found reporting definitions that no existing foundation decides.
+> Per the brief ("if a required calculation lacks an authoritative source:
+> STOP and report"), F18 stopped here. Live TEST is unchanged: `finance`
+> v26 / `needs-attention` v17. Production is untouched.
+
+### FIN18.1 Source audit (2026-10-02)
+
+| Source | What it gives | Month signal | Classification |
+|---|---|---|---|
+| F4 occurrence billing | expected net / VAT / gross per occurrence, Finance Service ID, outcome (eligible, not yet delivered, awaiting confirmation, not billable, missing service / terms, deferred parent / subscription / other) | occurrence date | **Expected** (client-paid only). Parent-paid / subscription / other are `deferred_revenue_model`: not reportable |
+| F5 draft lines | per-occurrence lines (service, net / VAT / gross) on Draft / Ready drafts | occurrence date | **Expected**; supersedes F4 for the same occurrence ID |
+| F6 issued invoices + lines; credit notes | immutable lines with occurrence ID / date, Finance Service ID, net / VAT / gross; whole-line credit notes | occurrence date (line); credit note date | Revenue fact. Whether "issued" is Actual is **undecided** (D1); credit note month is **undecided** (D12) |
+| F9 Xero `awaiting_external_issue` | not a receivable, never Actual | — | **Expected** at most |
+| F7 payments / receipts | trusted cash receipts, **per invoice, not per line**; overpayment credit | received date (a cash date) | F7 docs: "delivered but unpaid and issued but unpaid stay Expected". Receipts are cash; using them for revenue month is forbidden by the F18 brief; partial payments cannot be split to lines/programmes without an invented rule (D1) |
+| F7 client credit applied | reduces what is owed, not cash, not revenue | — | Not a revenue fact |
+| F10 Stripe charges | succeeded charge = actual cash; service `unresolved`; VAT only if Stripe recorded tax | charge date (cash) | **Not attributable**: F10.11 says subscription → service mapping needs a product decision (D2) |
+| F11 revenue corrections | family credit / refund due / reversals, `businessCost:false`, parent-side only | decision date | Revenue correction for parent revenue only; depends on D2 |
+| F12 coach costs | per work item (frozen once the Coach Month is finalised, live otherwise) + corrections; Finance Service ID per item | work month | Direct cost; Actual vs Expected **undecided** (D3). Corrections carry no programme: unattributed direct cost |
+| F13 direct agreements | frozen equal shares per originally agreed occurrence, Finance Service ID, `estimated` flag | occurrence date | Direct cost; Actual vs Expected **undecided** (D4). Unresolved agreements listed separately |
+| F13 general agreements (F15 overheads) | instalments with category, VAT figures only where known, state | **due-date month** (F15 `period`) — the only month signal | Overhead; month rule and state mapping need confirming (D5) |
+| F14 supplier credits | separate negative adjustment, gross frozen; session / agreement / supplier-only scope | credit date (locked decision 2) | Direct (attributed or unattributed) or overhead by agreement classification; supplier-wide → uncategorised |
+| F15 employment | monthly items: estimate / confirmed / paid, labelled estimates, no VAT | employed month | Overhead (Salaries & Employment); state mapping D5 |
+| F17 cash position | balance, projected low, threshold | cash dates | **Cash-only**: Overview cash summary only, never Month Report attribution |
+| F2 settings | `vatRegistered`, threshold, coach payment day | — | No Overview cash-summary visibility setting exists (pack requires one: D9) |
+| Needs Attention | separate `needs-attention` function | — | Finance has no NA read path (D7) |
+
+### FIN18.2 Decisions needed before any code (recommendation first)
+
+- **D1 Actual client revenue.** (a, recommended) A genuinely Issued
+  invoice line, less its credit notes, is Actual in its occurrence month;
+  payment is cash only (F7 / F17). (b) Actual only once the invoice is
+  received, which needs a partial-payment allocation rule. Also: Manual
+  Billing services ("commercial values stay in Finance reporting") —
+  Actual when delivered + confirmed, or Expected until invoiced?
+- **D2 Parent / Stripe revenue.** (a, recommended) Not included in v1
+  totals; shown as an explicit "not included" amount until the
+  subscription → service and VAT mapping is decided. (b) Include
+  succeeded charges as unattributed revenue dated by charge date.
+- **D3 Coach cost Actual.** (a, recommended) Finalised / Corrected Coach
+  Months (frozen) + corrections are Actual; open-month live cost is
+  Expected. (b) Delivered + Cost Confirmed is Actual even before
+  finalisation.
+- **D4 Venue / direct supplier cost Actual.** (a, recommended) A frozen
+  share is Actual once its occurrence date has passed and the agreement is
+  not estimated; future or estimated shares are Expected.
+- **D5 Overheads.** Confirm month = instalment due month (F15 `period`)
+  and state mapping: Estimated = Expected; Confirmed / Paid = Actual;
+  employment items likewise; credits Actual in their credit month.
+- **D6 VAT on costs.** (a, recommended) Costs at the recorded amount, VAT
+  treatment shown, no input-VAT recovery modelled in v1. (b) Net of VAT
+  where the organisation is VAT-registered and net is known; unknown net
+  surfaced as unresolved.
+- **D7 Overview Needs Attention.** (a, recommended) Overview calls
+  `needs-attention` once server-side with the caller's own JWT for counts
+  (fails soft, labelled unavailable). (b) The UI composes it; Overview
+  returns only a reference.
+- **D8 Upcoming Payments.** Recommended: overdue + next 14 days of OUT
+  items from F17's existing normalisation (F13 instalments, F15
+  employment, F12 Coach Months with a future expected date only, never
+  "paid" / "overdue"), counts + totals + a short list with source refs.
+  Confirm the window.
+- **D9 Cash summary visibility.** Add one optional F2 setting (show /
+  hide current balance, projected low, threshold on Overview); not part of
+  setup completeness. Confirm the default (recommended: shown).
+- **D10 Expected revenue scope (Expected + Actual mode).** Recommended:
+  F4 eligible-not-invoiced, F5 draft lines, Xero awaiting-issue lines and
+  future not-yet-delivered client-paid occurrences in the month; one item
+  per occurrence ID with precedence invoice line > draft line > F4;
+  cancelled / not billable excluded; missing service / terms surfaced as
+  unresolved.
+- **D11 Management Notes.** No storage model: future debt (no F18 write).
+- **D12 Credit note month.** (a, recommended) A credit note reduces the
+  original line's occurrence month ("reduces the original revenue"). (b)
+  It is dated on its issue date.
+
+### FIN18.3 What is already sufficient
+
+- Occurrence ID links F4 → F5 draft line → F6 invoice line, so
+  supersession needs no new linkage.
+- Finance Service ID is present on F4, F5, F6 lines, F12 items, F13
+  allocations and F14 attributed credits.
+- Each source family can be loaded once per report (F5's
+  services → sessions → occurrences window read; F12 / F13 / F14 / F15
+  fact builders; F7 snapshot).
