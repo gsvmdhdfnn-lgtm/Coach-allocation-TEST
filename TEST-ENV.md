@@ -20545,27 +20545,26 @@ row)**
   - `finance --check` and `needs-attention --check` MATCH;
   - full `node tests/run-all.js` **85/85 files**.
 
-## Finance Foundation — F15 (overheads / contractors / salaries & employment costs) — CODE COMPLETE, NOT DEPLOYED — TEST only — 2026-10-02
+## Finance Foundation — F15 (overheads / contractors / salaries & employment costs) — LIVE-PROVEN on `finance` v23 — TEST only — 2026-10-02
 
-> **CODE COMPLETE / TESTS PASS / TEST SCHEMA APPLIED / NOT DEPLOYED / NOT LIVE-PROVEN.**
+> **DEPLOYED AS `finance` v23 / LIVE-PROVEN (FIN15.14) / TEST BASELINE
+> RESTORED (FIN15.15).**
 >
-> - **Artifact:** `supabase/deploy-artifacts/finance/index.js`, 623,708
+> - **Deployed:** `finance` v23 (operator deploy from commit `4b62596`).
+>   It is ACTIVE with `verify_jwt` true and one `index.js` of 623,708
 >   bytes, sha256
->   `19eeb53414fa986759e2e417836f9e6b5294d216e0218b7c12aeb9d9e511f508`
->   (deterministic; `--check` MATCH). Too large to push through the MCP
->   deploy tool from here, so it waits for an operator deploy (it will be
->   `finance` v23). `finance` v22 is still the live function.
+>   `19eeb53414fa986759e2e417836f9e6b5294d216e0218b7c12aeb9d9e511f508`.
+>   This is byte-identical to the committed artifact (independently
+>   re-verified 2026-10-02; `--check` MATCH).
 > - **`needs-attention`:** unchanged (v14, artifact MATCH, sha256
 >   `0d5df081…9939`).
 > - **TEST schema:** `finance_f15_overheads_employment` applied
->   (FIN15.9 / FIN15.13). It is additive and backward compatible with
->   `finance` v22 (v22 never reads the new tables).
-> - **Also fixed (F14 regression, FIN15.12):** `index.ts` imported
->   `parseCreditCreate` twice. The bundle kept the F14 one, so on v22
->   F7's `POST /credit-notes/{id}/client-credit` and
->   `POST /payments/{id}/overpayment-credit` parse with the supplier-credit
->   parser and refuse a valid `{ amount, reason }` body (400). Fixed by
->   aliasing the F14 import; v23 carries the fix.
+>   (FIN15.9 / FIN15.13).
+> - **F7 parser fix live (FIN15.12, FIN15.14 A):**
+>   - `POST /credit-notes/{id}/client-credit` and
+>     `POST /payments/{id}/overpayment-credit` with `{ amount, reason }`
+>     reach F7's parser and orchestrator on v23;
+>   - the v22 issue created no data.
 > - **Not built:** payroll software, salary allocation to sessions, F16
 >   Needs Attention rules, Cash Flow, Month Report.
 > - **Production untouched.**
@@ -20810,7 +20809,7 @@ finance_employment_versions (FEV, per employment FEM)   append-only, effective f
   messages (the duplicate-import error is gone).
 - Full regression **86/86** files.
 
-### FIN15.11 Resting TEST state (deployment checkpoint)
+### FIN15.11 Resting TEST state at the deployment checkpoint (superseded by FIN15.15)
 
 - F15 tables exist and are **empty**; audit **380** (unchanged).
 - F13 / F14 fixtures (FIN14.15) unchanged; Manage grant `93588584…` open;
@@ -20819,10 +20818,25 @@ finance_employment_versions (FEV, per employment FEM)   append-only, effective f
 
 ### FIN15.12 Open items / future debt
 
-- **Deploy** the committed artifact as `finance` v23 (operator), then live
-  proof A–AD on ZZTEST fixtures, including the F7 parser fix
-  (`POST /payments/{id}/overpayment-credit` with `{ amount, reason }`
-  must reach F7 — 404 for an unknown payment — not 400).
+- ~~Deploy as `finance` v23 + live proof A–AD~~ — **done** (FIN15.14).
+- **F7 observation (pre-existing F7 design, not changed by F15):**
+  `POST /payments/{id}/overpayment-credit` has no upper sanity cap.
+  - The amount is the extra cash Management says was received; it is not
+    checked against the payment itself.
+  - The F15 regression probe sent 100000.00 and expected a refusal. It got
+    201 and created client credit `FCC-912ECB0AEE5E` (TEST Parkside
+    Primary). This was voided 18 s later (status `void`, never applied).
+  - The void reason says the request "should have refused". That wording
+    is inaccurate: F7 behaved as designed.
+  - Candidate F7 debt: cap overpayment credit at a sensible bound, or
+    require an explicit confirmation above one.
+- **`f2probe` helpers added during the F15 proof:**
+  - `done(k)`;
+  - `res(k)`;
+  - `step(prev, key, path, body, login)`, which sends only once the
+    previous call has answered.
+
+  These are TEST harness only (part of the `f2probe` operator cleanup).
 - **F14 regression fixed here:** duplicate `parseCreditCreate` import in
   `index.ts` (FIN15 header). Drift check Z8 now fails on any duplicate
   imported name.
@@ -21131,3 +21145,321 @@ grant execute on function public.finance_overhead_category_write(jsonb, integer,
   public.finance_overhead_version_record(jsonb, jsonb, jsonb, jsonb, jsonb, jsonb), public.finance_employment_version_record(jsonb, jsonb),
   public.finance_employment_item_change(text, jsonb, jsonb, jsonb) to service_role;
 ```
+
+### FIN15.14 Live TEST proof on `finance` v23 (2026-10-02)
+
+Run through the `f2probe` harness: pg_net calls to the deployed function
+with real TEST user tokens (manager `285f819e…`, a TEST Coach and a TEST
+Parent). It used F12 / F13 / F14 ZZTEST fixtures plus new `ZZTEST F15`
+categories and employees. Today = 2026-10-02.
+
+**Before:** 0 categories, 10 suggestions, no employment, audit **380**.
+
+**A. F7 regression (the v22 duplicate-import issue), controlled TEST fixtures only**
+
+| Probe | Result | Proves |
+|---|---|---|
+| `POST /credit-notes/FCN-A5AD9821EA5B/client-credit` `{ amount: "100000.00", reason }` | 409 `no_credit_available` | reached the F7 orchestrator (valid body accepted) |
+| same route, `{}` | 400, F7 field errors (`amount` "Money must be given as a decimal string", `reason` "is required") | the F7 parser, not the supplier-credit parser |
+| same route, `{ amount, reason, supplierId }` | 400 `unexpected_field: supplierId` | F7 allowlist (the supplier-credit parser would accept `supplierId`) |
+| `POST /payments/FPY-94E65420DB85/overpayment-credit` `{ amount: "100000.00", reason }` | 201, credit `FCC-912ECB0AEE5E` | reached F7, which recorded a client credit |
+
+- **No supplier-credit parser error** anywhere in A.
+- **Overpayment credit:**
+  - F7 by design takes the extra cash Management states, with no cap
+    (FIN15.12 observation).
+  - The credit was voided immediately (`POST /client-credits/…/void` →
+    200). It reads back `void`, remaining 100000.00, no applications.
+  - Audit: 1 `finance_client_credit.created` + 1 `.voided`.
+- **v22 produced no bad data:** there are no `finance_client_credit.*` audit
+  events between the v22 deploy (2026-09-30 20:23) and this proof
+  (2026-10-02 07:09).
+
+**B–F. Categories**
+
+- **Created (6, 201):**
+
+  | Key | ID | Name |
+  |---|---|---|
+  | SOFT | `FOC-2284CAE8E5F6` | "ZZTEST F15 Software" |
+  | PREM | `FOC-9532ADD67BF4` | "ZZTEST F15 Premises" |
+  | ADM | `FOC-0B95C5EFC2D2` | "ZZTEST F15 Admin / Contractors" |
+  | SAL | `FOC-F59043EB514E` | "ZZTEST F15 Salaries & Employment" |
+  | IT | `FOC-5ACF564B2F7A` | "ZZTEST F15 IT Systems" |
+  | MISC | `FOC-5162788BD37C` | "ZZTEST F15 Misc" |
+
+  - MISC's first send overlapped another write and got 409
+    `finance_commercial_busy` (write lock); resent → 201.
+- **Rename:** SOFT → "ZZTEST F15 Software & SaaS" (revision 2).
+- **Deactivate / reactivate:** MISC → `active` false (200), then true (200).
+- **Duplicate name:** "zztest f15 premises" (case-insensitive) → 409
+  `category_exists`.
+- **Suggestions only:** all 10 baseline names are still suggestions. No
+  category was written by a read.
+
+**G–K. Overheads = F13 general agreements + one F15 category**
+
+- **Categorised (10, all 201):**
+
+  | Key | Agreement | Category | Note |
+  |---|---|---|---|
+  | a1 | `FSA-7F873AB32001` | SOFT | before the rename (snapshot "ZZTEST F15 Software") |
+  | a2 | `FSA-1B643E7D1EA8` | SOFT | snapshot "…Software & SaaS" |
+  | a3 | `FSA-7A325FAC53E9` | PREM | |
+  | a4 | `FSA-310395CCF46C` | PREM | |
+  | a5 | `FSA-1D6B8366B863` | SOFT | quarterly |
+  | a6 | `FSA-91948B106F07` | SOFT | annual |
+  | a7 | `FSA-C48ABAD1B135` | MISC | one-off |
+  | a8 | `FSA-34DFFDE6EB65` | ADM | contractor, hourly |
+  | a9 | `FSA-17C00137ECE8` | ADM | F14 other supplier |
+  | a10 | `FSA-13ADCA945089` | PREM | F14 KG |
+
+- **Direct/session cost cannot be categorised:**
+  - `FSA-DF2593971966` → 409 `not_an_overhead`;
+  - `GET /overheads/FSA-DF2593971966` → 404 `not_an_overhead`.
+- **Fixed per version:** a second categorisation of a1 → 409
+  `already_categorised`.
+- **Inactive category:** a version with MISC inactive → 409
+  `category_inactive`, and no F13 version was created (one transaction).
+- **New F13 version with a new category (v1):**
+  - Request: `POST /overheads/FSA-1B643E7D1EA8/version` from 2026-12-01,
+    £150, `categoryId` IT → 201.
+  - New agreement `FSA-B8BAE1C174C5`, assignment `FOA-FBD0AA25FE32`.
+  - The future unpaid instalment `FSI-80737249E5BC` was cancelled. New
+    instalments are due 31 Dec, 31 Jan and 28 Feb.
+  - Oct/Nov stay £135 under "Software & SaaS". Historical
+    categorisation was not rewritten.
+- **Version without a category (v2):** `FSA-310395CCF46C` from 2027-01-01,
+  £475 → 201, `FSA-F29806A70DF5`. Category Premises carried over; nothing
+  cancelled.
+- **Traceable history:** `GET /overheads/FSA-B8BAE1C174C5` shows the chain:
+
+  | Version | Amount | State | Category | Name at assignment |
+  |---|---|---|---|---|
+  | v1 | £120 | superseded | "Software & SaaS" | "ZZTEST F15 Software" |
+  | v2 | £135 | active | "Software & SaaS" | |
+  | v3 | £150 | upcoming | "IT Systems" | |
+
+  Category history shows `created` then `updated` (rename).
+- **`GET /overheads?month=2026-10`:**
+
+  | Category | October |
+  |---|---|
+  | Admin / Contractors | 292.50 |
+  | IT Systems | 0.00 |
+  | Misc | 80.00 |
+  | Premises | 450.00 |
+  | Salaries & Employment | 4650.00 (people: Office Manager, Salaried Coach) |
+  | Software & SaaS | 435.00 |
+
+  Uncategorised general agreements: 0.
+
+**L–Q. Salaries / employment costs (F15 ledger; not payroll)**
+
+- **E1** `FEM-75680EBBDA38`:
+  - v1 `FEV-1545CFBB5220`; `personRef` `COACH-ZZTEST-F12S`, resolved to
+    "ZZTEST F12 Salaried Coach".
+  - £30,000/yr = 2,500.00/month; pay day 28; start 2026-08-18.
+  - Pension 75.00 and NI/PAYE 210.00, labelled "Management-entered
+    estimate (not calculated - the Hub is not payroll software)".
+  - Estimate total 2,785.00.
+  - Unknown ref `COACH-ZZTEST-NOBODY` → 404 `person_not_found`.
+- **E2** `FEM-6FE6398F9760`: "ZZTEST F15 Office Manager", no ref,
+  £24,000/yr, pay day 31, start 2026-09-01, v1 `FEV-A30650A1EA05`.
+- **Salary effective-date version:** E1 from 2026-11, £33,000 →
+  `FEV-984532085ECC`. E1's months:
+
+  | Month | Version | Salary | Amount | State |
+  |---|---|---|---|---|
+  | Aug | v1 | 2,500 | 1,100.00 | confirmed (actual), `partMonth` true |
+  | Sep | v1 | 2,500 | 2,785.00 | confirmed → **paid** 2026-09-28 |
+  | Oct | v1 | 2,500 | 2,650.00 | confirmed (actual) |
+  | Nov | v2 | 2,750 | 3,035.00 | confirmed (Use Estimate; concurrency X) |
+  | Dec–Jan | v2 | 2,750 | 3,035.00 | estimated |
+
+  Earlier months keep v1; Nov onward uses v2.
+- **Part month:** flagged. The estimate stays 2,785.00 and is not
+  pro-rated; Management entered the actual (1,100.00).
+- **Estimated → Confirmed:**
+  - Use Estimate (Sep, E2 Oct, Nov) and actual amount (Aug, Oct) both work.
+  - Confirm never marks Paid.
+  - Re-confirm → 409 `already_confirmed`.
+- **Paid (separate step, full only):**
+  - Sep 2,785.00 on 2026-09-28 → 201.
+  - Refusals:
+
+    | Attempt | Result |
+    |---|---|
+    | Future paid date (2026-10-30) | 400 "paidDate cannot be in the future" |
+    | Partial amount | 409 `partial_payment_not_supported` |
+    | Still-estimated month (Dec) | 409 `amount_still_estimated` |
+    | Second payment | 409 `already_paid` |
+
+- **E2 history protection:**
+  - Version from 2026-10 after Oct was confirmed → 409
+    `confirmed_month_after_change`.
+  - Version from 2026-12 with end 2026-12-15 → 201.
+  - Months: Sep estimated (30 Sep); Oct confirmed; Nov estimated with an
+    expected date of 30 Nov (pay day 31 clamped); Dec part month 2,000.00
+    (not pro-rated); Jan absent.
+  - Confirming 2027-01 → 409 `month_not_employed`.
+- **No payroll:** no payslip, deduction, tax/NI calculation or payroll
+  route or table. The employment read carries the `notPayroll` text.
+- **F12 salaried session cost stays £0:**
+  - The E1 read shows `directSessionCost` 0.00 (source F12).
+  - `GET /coach-costs/COACH-ZZTEST-F12S/2026-08` returns both items
+    Salaried, finalisedTotal 0.00, liveTotal 0.00, no drift
+    (`FCM-D1C38B8BEEBE`).
+
+**R. Contractors (no second ledger)**
+
+- `GET /overheads/FSA-34DFFDE6EB65`:
+  - category Admin, contractor true;
+  - F13 `hourlyForecast` rate 30.00, expected hours 10.50,
+    `confirmedMonthly` true, `timesheetsRequired` false;
+  - schedule 292.50 confirmed / 315.00 estimated / 315.00 estimated.
+- Hours and the one confirmed actual remain F13-owned.
+- No F15 contractor or timesheet table exists (checked in
+  `information_schema`: no `payroll|payslip|cash_flow|month_report|deduction|timesheet|contractor`
+  table).
+
+**S. Reporting facts (`GET /overhead-facts`, Aug–Dec)**
+
+- Combines the categorised F13 supplier overhead instalments and the
+  employment months.
+- Each row carries:
+  - category (id + name);
+  - payee / person;
+  - period;
+  - VAT where known;
+  - state;
+  - expected payment date and paid date;
+  - `sourceType`.
+- **VAT:**
+  - employment rows are `not_applicable` (gross = net, VAT 0.00);
+  - `plus_vat` gives net only;
+  - unknown treatment gives no gross / VAT / net guess.
+- **F14 credits:**
+  - agreement-linked credit `FSC-2C15BA71E17B` (on `FSA-13ADCA945089`,
+    £12.00, 2026-10-02, ref ZZ-F15-CN-1) appears as −12.00 under
+    Premises, `sourceType` `supplier_credit`;
+  - supplier-wide F14 credits are absent (documented debt; not guessed
+    into a category).
+- **Absent:** direct agreements and cancelled instalments.
+- **Paid dates appear:** Landlord Aug 2026-08-31; E1 Sep 2026-09-28.
+- **No Cash Flow events:** none exist, and no route creates one.
+
+**T–V. Access**
+
+| Probe | Result |
+|---|---|
+| Coach read/write | 403 `management_required` |
+| Parent read/write | 403 `management_required` |
+| `organisationId` in query/body (xt1–xt3) | 400 `tenant_param_rejected` |
+| Finance View (grant `74d6440e…`), 6 reads | 200, `access` `view` |
+| Finance View, write | 403 `finance_manage_required` |
+| No grant, read and write | 403 `finance_access_denied` |
+| `module_finance` OFF: `GET /overheads`, `POST /overhead-categories` | 403 `finance_module_disabled` |
+
+- After the module-off probe, the module was turned back ON and
+  `GET /overheads` returned 200.
+
+**X. Concurrency**
+
+- Two simultaneous `confirm-estimate` calls for E1 2026-11 gave one 200
+  (`FEI-3B2A8FDC62FF`) and one 409 `finance_commercial_busy`.
+- A retry of the loser → 409 `already_confirmed`.
+- Audit rose by exactly 1.
+
+**Y. Audit (exact; no noise)**
+
+43 events (380 → **423**), all by the manager, each with its slice's
+contract:
+
+| Event | Count | Contract |
+|---|---|---|
+| `finance_client_credit.created` / `.voided` | 1 / 1 | `finance-receivables-v1` |
+| `finance_overhead_category.created` | 6 | `finance-overheads-v1` |
+| `finance_overhead_category.updated` (rename, deactivate, reactivate) | 3 | `finance-overheads-v1` |
+| `finance_overhead.categorised` | 10 | `finance-overheads-v1` |
+| `finance_overhead.versioned` | 2 | `finance-overheads-v1` |
+| `finance_supplier_agreement.versioned` | 2 | `finance-suppliers-v1` |
+| `finance_supplier_instalment.created` / `.cancelled` | 6 / 1 | `finance-suppliers-v1` |
+| `finance_employment_cost.created` / `.versioned` | 2 / 2 | `finance-overheads-v1` |
+| `finance_employment_item.estimate_confirmed` | 5 | `finance-overheads-v1` |
+| `finance_employment_item.paid` | 1 | `finance-overheads-v1` |
+| `finance_supplier_credit.created` | 1 | `finance-supplier-credits-v1` |
+
+- The F13 events are written in the same transaction as the overhead
+  version.
+- No event came from any read or refusal. The count was 422 before the
+  View / no-grant / module-off probes and 422 after them.
+- No key-shaped value appears in any `before` / `after` / `context`.
+
+**Z–AD. Isolation**
+
+- F12 / F13 / F14 changed only by the documented fixture writes:
+  - +2 F13 agreement versions, +6 instalments and 1 instalment cancelled
+    (through the overhead version route);
+  - +1 F14 agreement-scoped credit.
+- `finance` v23 and `needs-attention` v14 are unchanged after the proof
+  (`updated_at` 1790924795312 / 1790837954198).
+- Not built: no payroll, Cash Flow, Month Report or F16 routes or tables.
+- Production (`apprptFotQuVL1mhs`, `bkkukymqaxawnudoxdjs`) not touched.
+
+### FIN15.15 Resting TEST state (after the F15 live proof)
+
+- **F15 data (append-only, kept as deliberate ZZTEST fixtures, like
+  F12–F14):**
+  - 6 categories, all active;
+  - 12 overhead assignments (10 categorised + 2 versions);
+  - 2 employments, 4 employment versions;
+  - 5 employment items:
+    - E1 Aug, Oct and Nov confirmed;
+    - E1 Sep paid;
+    - E2 Oct confirmed.
+- **F13 / F14 totals:** 8 suppliers, 20 agreements, 50 instalments,
+  6 payments; 7 F14 credits (1 voided).
+- **F7:** client credit `FCC-912ECB0AEE5E`, void, never applied.
+- **Audit:** **423**. `f2probe.f14_snap()` hashes at rest:
+
+  | Key | Hash |
+  |---|---|
+  | `a` | `8dde80dd…` |
+  | `c` | `cc4c4849…` |
+  | `i` | `8d5d851f…` |
+  | `p` | `6f43b8b7…` |
+  | `cs` | `53ab50c2…` |
+
+- **Grants:**
+  - Manage grant `93588584…` ended in proof S;
+  - View grant `74d6440e-343b-49f9-86ba-5b17cf32fdec` ended after U;
+  - **Manage grant `28df35d0-72aa-4953-8134-2f614d216e95` open**
+    (`f15-live-proof`).
+- **`module_finance`:** ON (turned off once for proof V, then restored).
+- **Harness tokens:** cleared (`cleared-after-f15-proof`).
+- **Re-run after the live proof (2026-10-02):**
+
+  | Suite | Result |
+  |---|---|
+  | F15 | 74/74 |
+  | F14 | 78/78 |
+  | F13 | 98/98 |
+  | F12 | 83/83 |
+  | bundle | 22/22 |
+  | F1 access | 56/56 |
+  | F2 settings | 97/97 |
+  | F3 commercial | 100/100 |
+  | F4 billing | 105/105 |
+  | F5 invoicing | 147/147 |
+  | F6 issue | 155/155 |
+  | F7 receivables | 80/80 |
+  | F9 Xero | 75/75 |
+  | F10 Stripe | 64/64 |
+  | F11 family | 67/67 |
+  | kernel | 47/47 |
+  | Needs Attention Finance | 64/64 |
+  | Needs Attention Finance drafts | 99/99 |
+
+  - `finance --check` and `needs-attention --check` MATCH;
+  - full `node tests/run-all.js` **86/86 files**.
