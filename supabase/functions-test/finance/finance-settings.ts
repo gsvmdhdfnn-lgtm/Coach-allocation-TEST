@@ -26,13 +26,16 @@
  *   - estimate reminder (F16): how many days before its due date an
  *     Estimated outgoing cost (F13 instalment / F15 employment month) is
  *     raised in Needs Attention. Optional: blank = the Finance baseline
- *     (DEFAULT_ESTIMATE_REMINDER_DAYS, 3 days); never affects completeness.
+ *     (DEFAULT_ESTIMATE_REMINDER_DAYS, 3 days); never affects completeness;
+ *   - cash safety threshold (F17): optional, in pence. When set, Cash Flow
+ *     flags a projected bank balance below it (and Needs Attention ATT-054
+ *     may raise it). Blank = no cash-risk warning; never affects completeness.
  * Optional integration connections (Stripe / Xero / Sheets) are not
  * settings here and never affect completeness (nor does the numbering
  * choice: issuing an invoice checks it). Choosing "xero" connects nothing.
  * No credentials are stored.
  */
-import { type VatTreatment, VAT_TREATMENTS, isRateBasisPoints, isVatTreatment } from "./finance-money.ts";
+import { type VatTreatment, MAX_MINOR, VAT_TREATMENTS, isRateBasisPoints, isVatTreatment } from "./finance-money.ts";
 
 export const SETTINGS_CONTRACT = "finance-settings-v1";
 export const SETTINGS_ENTITY_TYPE = "finance_settings";
@@ -55,6 +58,7 @@ export const SETTINGS_KEYS = [
   "invoiceNumberNext",
   "invoiceNumberDigits",
   "estimateReminderDays",
+  "cashSafetyThresholdMinor",
 ] as const;
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 
@@ -74,6 +78,8 @@ export interface FinanceSettings {
   invoiceNumberDigits: number | null;
   /** F16: how many days before its due date an Estimated outgoing cost is raised in Needs Attention (null = the Finance baseline, DEFAULT_ESTIMATE_REMINDER_DAYS). */
   estimateReminderDays: number | null;
+  /** F17: the cash safety threshold in pence (null = none, so no cash-risk warning). */
+  cashSafetyThresholdMinor: number | null;
 }
 
 /** Who assigns the official (customer-facing) invoice number. Explicit - never inferred from whether a number exists. */
@@ -97,6 +103,7 @@ export const EMPTY_SETTINGS: FinanceSettings = Object.freeze({
   invoiceNumberNext: null,
   invoiceNumberDigits: null,
   estimateReminderDays: null,
+  cashSafetyThresholdMinor: null,
 });
 
 // ---------------------------------------------------------------------
@@ -127,6 +134,7 @@ export const FIELD_NAMES: Record<SettingsKey, string> = {
   invoiceNumberNext: "Next Invoice Number",
   invoiceNumberDigits: "Invoice Number Digits",
   estimateReminderDays: "Estimate Reminder Days",
+  cashSafetyThresholdMinor: "Cash Safety Threshold (Pence)",
 };
 
 const VAT_REGISTRATION_CHOICES = { registered: "Registered", notRegistered: "Not registered" } as const;
@@ -188,6 +196,7 @@ export const FIELD_VALIDATORS: Record<SettingsKey, (v: unknown) => FieldCheck> =
   invoiceNumberNext: (v) => int(v, 1, INVOICE_NUMBER_MAX + 1),
   invoiceNumberDigits: (v) => int(v, 1, 9),
   estimateReminderDays: (v) => int(v, 0, ESTIMATE_REMINDER_DAYS_MAX),
+  cashSafetyThresholdMinor: (v) => int(v, 0, MAX_MINOR),
 };
 
 /** Rules across fields, checked on the MERGED result of an update. Empty object = consistent. */

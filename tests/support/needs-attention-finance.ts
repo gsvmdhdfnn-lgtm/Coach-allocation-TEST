@@ -496,6 +496,7 @@ export const FF = {
     reverses: "Reverses Payment ID",
     invoiceId: "Invoice ID",
     clientId: "Client ID",
+    clientName: "Client Name",
     amount: "Amount (Minor Units)",
     receivedDate: "Received Date",
     source: "Source",
@@ -509,6 +510,10 @@ export const FF = {
     sourceCreditNoteId: "Source Credit Note ID",
     original: "Original (Minor Units)",
     status: "Status",
+    // F17 Cash Flow: who the receipt is from, and when cash kept from an overpayment arrived.
+    clientName: "Client Name",
+    sourcePaymentId: "Source Payment ID",
+    receivedDate: "Received Date",
   },
   application: {
     id: "Application Entry ID",
@@ -627,7 +632,7 @@ export function readPaymentEntry(r: Row): { kind: "payment"; value: Payment } | 
   if (!isIsoDate(receivedDate) || !source) bad(t, r, `${id}: invalid Received Date / Source`);
   return {
     kind: "payment",
-    value: { paymentId: id, invoiceId, clientId, clientName: "", amountMinor, currency: CURRENCY, receivedDate, method: null, reference: null, source, externalProvider: null, externalPaymentId: null, reason: null, recordedBy: "", recordedAt },
+    value: { paymentId: id, invoiceId, clientId, clientName: text(f[x.clientName]) ?? "", amountMinor, currency: CURRENCY, receivedDate, method: null, reference: null, source, externalProvider: null, externalPaymentId: null, reason: null, recordedBy: "", recordedAt },
   };
 }
 
@@ -640,8 +645,10 @@ export function readClientCredit(r: Row): ClientCredit {
   const sourceCreditNoteId = text(f[x.sourceCreditNoteId]);
   if (!creditId || !RE.credit.test(creditId) || !clientId || !RE.client.test(clientId) || !sourceInvoiceId || !RE.invoice.test(sourceInvoiceId) || !source || !status || originalMinor === null) bad(t, r, "invalid client credit");
   if (source === "credit_note" && (!sourceCreditNoteId || !RE.creditNote.test(sourceCreditNoteId))) bad(t, r, `${creditId}: a credit-note credit names its credit note`);
+  const receivedDate = f[x.receivedDate];
+  if (source === "overpayment" && !isIsoDate(receivedDate)) bad(t, r, `${creditId}: cash kept from an overpayment needs its Received Date`);
   return {
-    creditId, clientId, clientName: "", source, sourceInvoiceId, sourceCreditNoteId: source === "credit_note" ? sourceCreditNoteId : null, sourcePaymentId: null, receivedDate: null,
+    creditId, clientId, clientName: text(f[x.clientName]) ?? "", source, sourceInvoiceId, sourceCreditNoteId: source === "credit_note" ? sourceCreditNoteId : null, sourcePaymentId: source === "overpayment" ? text(f[x.sourcePaymentId]) : null, receivedDate: source === "overpayment" ? (receivedDate as string) : null,
     originalMinor, remainingMinor: 0, currency: CURRENCY, status, reason: "", voidReason: null, voidedBy: null, voidedAt: null, createdBy: "", createdAt: "", revision: 1, updatedBy: "", updatedAt: "",
   };
 }
@@ -684,6 +691,12 @@ export interface ReceivablePass {
   invoices: number;
   awaitingExternalIssue: number;
   overdue: OverdueItem[];
+  /** F17: every issued invoice's receivable (any state) + the history Cash Flow needs (receipts after the balance date). */
+  receivables: OverdueItem[];
+  awaitingExternalIssueGrossMinor: number;
+  payments: Payment[];
+  paymentReversals: PaymentReversal[];
+  credits: ClientCredit[];
 }
 
 const passCache = new WeakMap<object, ReceivablePass>();
@@ -739,7 +752,9 @@ export function runReceivablePass(ctx: EvaluatorContext): ReceivablePass {
   const dueChangesOf = by(dueChanges, (d) => d.invoiceId);
 
   let awaitingExternalIssue = 0;
+  let awaitingExternalIssueGrossMinor = 0;
   const overdue: OverdueItem[] = [];
+  const receivables: OverdueItem[] = [];
   for (const invoice of invoices) {
     let rec: Receivable | NotReceivable;
     try {
@@ -761,11 +776,13 @@ export function runReceivablePass(ctx: EvaluatorContext): ReceivablePass {
     }
     if (!rec.receivable) {
       awaitingExternalIssue++;
+      awaitingExternalIssueGrossMinor += invoice.grossMinor;
       continue;
     }
+    receivables.push({ invoice, rec });
     if (rec.dueState === "overdue" && rec.outstandingMinor > 0) overdue.push({ invoice, rec });
   }
-  const out = { today, invoices: invoices.length, awaitingExternalIssue, overdue };
+  const out = { today, invoices: invoices.length, awaitingExternalIssue, overdue, receivables, awaitingExternalIssueGrossMinor, payments, paymentReversals, credits };
   passCache.set(ctx.sources, out);
   return out;
 }

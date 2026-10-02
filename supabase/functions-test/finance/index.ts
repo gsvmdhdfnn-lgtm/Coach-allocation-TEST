@@ -165,6 +165,14 @@
  *   POST /employment-costs/{FEM-..}/months/{YYYY-MM}/payment            { amount (= confirmed, full only), paidDate, method?, reference?, note? }
  *   GET  /overhead-facts[?from&to]                   reporting facts (supplier overheads + credits + employment months)
  *
+ * F17 Cash Position / Cash Flow forecast (Finance read = GET, Finance manage = POST); ONE timeline derived from F7 / F12 /
+ * F13 / F14 / F15 truth - never a second ledger, never stored; Stripe, pre-invoice revenue, Refund Due and tax liabilities
+ * are explicitly not included; no bank verification, reconciliation or Open Banking:
+ *   GET  /cash-flow[?range=30d|3m&view=position|money-in|money-out]   one timeline, projected balance after each movement
+ *   GET  /cash-flow/balance-history                 the append-only Management-entered bank balances
+ *   POST /cash-flow/balance                         { amount, asAtDate, note? }  record the current bank balance (audited)
+ *   The cash safety threshold is the F2 setting cashSafetyThresholdMinor (POST /settings).
+ *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
  * tenant-looking query parameter or body key is rejected with 400, never
@@ -218,6 +226,8 @@ import {
   versionEmployment,
   versionOverhead,
 } from "./finance-overheads-orchestrator.ts";
+import { matchCashFlowRoute, parseBalance, parseCashQuery } from "./finance-cash-flow.ts";
+import { readBalanceHistory, readCashFlow, recordBankBalance } from "./finance-cash-flow-orchestrator.ts";
 import { type SupplierDeps, changeInstalmentAction, createAgreement, createSupplier, listAgreements, listCostFacts as listSupplierCostFacts, listInstalments, listSuppliers, readAgreement, readInstalment, readSupplier, updateSupplier, versionAgreement } from "./finance-suppliers-orchestrator.ts";
 import { matchFamilyRoute, parseApply, parseDecision, parseFamilyPayment, parseFamilyQuery, parseReason } from "./finance-family.ts";
 import { applyFamilyCredit, listFamilyCredits, listRefundDecisions, listRevenueCorrections, readFamily, readRefundDecision, readRefundSource, recordFamilyPayment, recordRefundDecision, reverseRefundDecision, voidFamilyCredit } from "./finance-family-orchestrator.ts";
@@ -731,6 +741,22 @@ async function handleOverheads(req: Request, url: URL, match: NonNullable<Return
   return commercialResponse(await employmentItemAction(deps, caller, r.params.employmentId, r.params.month, r.params.action, p.input));
 }
 
+/** F17 routes: same order as F3-F15 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleCashFlow(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchCashFlowRoute>>): Promise<Response> {
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  const q = parseCashQuery(r.name, url.searchParams, isTenantKey);
+  if (!q.ok) return commercialResponse({ status: "error", ...q });
+  if (r.name === "cash.read") return commercialResponse(await readCashFlow(deps, caller, { range: q.range, view: q.view }));
+  if (r.name === "balance.history") return commercialResponse(await readBalanceHistory(deps, caller));
+  const p = parseBalance(await req.text(), isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  return commercialResponse(await recordBankBalance(deps, caller, p.req));
+}
+
 /** F11 routes: same order as F3-F10 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
 async function handleFamily(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchFamilyRoute>>): Promise<Response> {
   if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
@@ -792,7 +818,11 @@ Deno.serve(async (req: Request) => {
   try {
     const decoded = decodedPath(route);
     if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
-    // F13 first: it owns only suppliers/..., supplier-agreements/..., supplier-instalments/... and supplier-cost-facts.
+    // F17 first: it owns only cash-flow, cash-flow/balance-history and cash-flow/balance.
+    const cashFlow = matchCashFlowRoute(route, req.method);
+    if (cashFlow) return await handleCashFlow(req, url, cashFlow);
+
+    // F13 next: it owns only suppliers/..., supplier-agreements/..., supplier-instalments/... and supplier-cost-facts.
     const suppliers = matchSupplierRoute(route, req.method);
     if (suppliers) return await handleSuppliers(req, url, suppliers);
 

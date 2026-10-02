@@ -2,8 +2,8 @@
   "function": "needs-attention",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/needs-attention/index.js",
-  "artifactSha256": "1d265d794cde3ae308f416a26967c68cc8ce75fd5bd3e95c6aa045486633c742",
-  "artifactBytes": 184460,
+  "artifactSha256": "a43139cef372fca74063f758f58f42ae64879cc531715cdde23648168f28cc86",
+  "artifactBytes": 214286,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,8 +27,12 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "f0f45039a1e469b2434c1be502f459e09ec63798de12fbd697b112c458b08177",
+  "sourceSha256": "5f7dbbf77b885d76ba410b5a7b2c11f6de7e95eef9daaa91d8cbe65653a8173a",
   "sources": [
+    {
+      "path": "supabase/functions-test/needs-attention/cash-flow.ts",
+      "sha256": "e0e739c9c33912eb392f8b047c8da2a110131b969d67701b25de8802cd7e7c0c"
+    },
     {
       "path": "supabase/functions-test/needs-attention/coach-schedule.ts",
       "sha256": "d368d2df705a696aabb2c2c4140eecdba5b12f0f0d3529fe1b5ed6929642f525"
@@ -51,7 +55,7 @@
     },
     {
       "path": "supabase/functions-test/needs-attention/finance.ts",
-      "sha256": "b9a44ab3895015d9b43395cb50faa51c7bf8a1c62c35e57f7c1a5261df275f2b"
+      "sha256": "96494e35e2cf1e105513d60d1baa9fe60dccf45aade3996ec7347a7cc9ae08a2"
     },
     {
       "path": "supabase/functions-test/needs-attention/index.ts",
@@ -75,11 +79,11 @@
     },
     {
       "path": "supabase/functions-test/needs-attention/registry.ts",
-      "sha256": "3daf612195f1874a3413f69a2b70cbbcb99bc716d2a6421caf2a3c2f12456d66"
+      "sha256": "093617266970c549c5b0cf19776707cc33772af18235c2d3a6591e1ad87a22a0"
     },
     {
       "path": "supabase/functions-test/needs-attention/repository.ts",
-      "sha256": "a7537bffd5fe2b49fe9383ab573f9603c690fd45e18c58897174f580a924e3fa"
+      "sha256": "a935aa6275b165f324973d68aadca86753648c2b7ba499f67ee96175fc21d89e"
     },
     {
       "path": "supabase/functions-test/needs-attention/staffing.ts",
@@ -135,7 +139,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-settings.ts",
-      "sha256": "1b5a0f19b1917562ec6b417fb8ba989c58ec71a9d0aa61489a6ce2e2981b8598"
+      "sha256": "e9e30ff90182205b48b9fab5a2ac512702dda84c6a9165ffa9fa85fcb1fdf70e"
     },
     {
       "path": "supabase/functions-test/finance/finance-overheads.ts",
@@ -144,6 +148,14 @@
     {
       "path": "supabase/functions-test/finance/finance-suppliers.ts",
       "sha256": "9e77a886ad53e84b3fd2f902c42bf823cb24c724630de330da0f5fe40cd2a108"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-cash-flow.ts",
+      "sha256": "121d5b033ebe567bfe29f4f534c0366f5a6a65fd27fcc80b69c981fb3b86ef8d"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-coach-costs.ts",
+      "sha256": "ec0e1bcf138c39aa40871a93f16eb532efcded80f2f9bb27d192c5569215d481"
     }
   ],
   "unusedSources": []

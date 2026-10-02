@@ -109,8 +109,7 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   const sl405 = await call('POST', 'supplier-instalments');
   const sx401 = await call('GET', 'supplier-cost-facts');
   const scr404 = await call('POST', 'supplier-instalments/FSI-0123456789AB/apply-credit');
-  const scf404 = await call('GET', 'cash-flow');
-  ck('B17. F13 supplier routes are live in the artifact: reads GET-only (401 without a token), writes POST-only (405), an agreement is never POSTed in place (405), no instalment-level credit route / Cash Flow route (404)', su401.status === 401 && su1.status === 401 && sa401.status === 401 && sv405.status === 405 && sa405.status === 405 && si401.status === 401 && sp405.status === 405 && sl405.status === 405 && sx401.status === 401 && scr404.status === 404 && scf404.status === 404, `${su401.status}/${su1.status}/${sa401.status}/${sv405.status}/${sa405.status}/${si401.status}/${sp405.status}/${sl405.status}/${sx401.status}/${scr404.status}/${scf404.status}`);
+  ck('B17. F13 supplier routes are live in the artifact: reads GET-only (401 without a token), writes POST-only (405), an agreement is never POSTed in place (405), no instalment-level credit route (404)', su401.status === 401 && su1.status === 401 && sa401.status === 401 && sv405.status === 405 && sa405.status === 405 && si401.status === 401 && sp405.status === 405 && sl405.status === 405 && sx401.status === 401 && scr404.status === 404, `${su401.status}/${su1.status}/${sa401.status}/${sv405.status}/${sa405.status}/${si401.status}/${sp405.status}/${sl405.status}/${sx401.status}/${scr404.status}`);
   ck('B18. F13 writes go through its atomic database functions only (finance_supplier_* RPCs in the artifact)', ['finance_supplier_write', 'finance_supplier_agreement_record', 'finance_supplier_instalment_change'].every((f) => flat.includes(f)));
 
   const kl401 = await call('GET', 'supplier-credits');
@@ -143,6 +142,20 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   const of405 = await call('POST', 'overhead-facts');
   ck('B21. F15 overhead / employment routes are live in the artifact (401 without a token); no category delete (405), no overhead payment / confirm route (F13 owns those) and no payroll route (404); facts are read-only (405)', [oc401, op401, ou401, ol401, ov401, el401, ec401, ep401, of401].every((r) => r.status === 401) && od405.status === 405 && of405.status === 405 && [opay404, oconf404, epr404].every((r) => r.status === 404), [oc401, op401, ou401, od405, ol401, ov401, opay404, oconf404, el401, ec401, ep401, epr404, of401, of405].map((r) => r.status).join('/'));
   ck('B22. F15 writes go through its atomic database functions only (finance_overhead_* / finance_employment_* RPCs in the artifact)', ['finance_overhead_category_write', 'finance_overhead_assign', 'finance_overhead_version_record', 'finance_employment_version_record', 'finance_employment_item_change'].every((f) => flat.includes(f)));
+
+  const cf401 = await call('GET', 'cash-flow');
+  const cfq401 = await call('GET', 'cash-flow?range=3m&view=money-out');
+  const cfp405 = await call('POST', 'cash-flow');
+  const ch401 = await call('GET', 'cash-flow/balance-history');
+  const chp405 = await call('POST', 'cash-flow/balance-history');
+  const cb401 = await call('POST', 'cash-flow/balance');
+  const cbg405 = await call('GET', 'cash-flow/balance');
+  const cbd405 = await call('DELETE', 'cash-flow/balance');
+  const cbx404 = await call('POST', 'cash-flow/balance/FBB-0123456789AB');
+  const crec404 = await call('POST', 'cash-flow/reconcile');
+  const cmr404 = await call('GET', 'month-report');
+  ck('B23. F17 Cash Flow routes are live in the artifact: cash-flow / balance-history GET-only, balance POST-only (401 without a token, 405 otherwise); a balance is never edited / deleted in place, no reconcile route and no F18 month-report route (404)', [cf401, cfq401, ch401, cb401].every((r) => r.status === 401) && [cfp405, chp405, cbg405, cbd405].every((r) => r.status === 405) && [cbx404, crec404, cmr404].every((r) => r.status === 404), [cf401, cfq401, cfp405, ch401, chp405, cb401, cbg405, cbd405, cbx404, crec404, cmr404].map((r) => r.status).join('/'));
+  ck('B24. F17 balance writes go through its atomic database function only (finance_bank_balance_record RPC in the artifact)', flat.includes('finance_bank_balance_record'));
 
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;

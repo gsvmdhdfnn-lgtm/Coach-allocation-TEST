@@ -54,6 +54,9 @@ export const SHARED_FINANCE_FILES = [
   // F16 Money Out rules: F13's instalment lifecycle (remainingOf / stateOf) and F15's employment month line.
   "finance-overheads.ts",
   "finance-suppliers.ts",
+  // F17 cash-risk rule (ATT-054): Finance's own Cash Flow engine and F12's coach month work items.
+  "finance-cash-flow.ts",
+  "finance-coach-costs.ts",
 ];
 const FINANCE_DIR = join(ROOT, "supabase/functions-test/finance");
 const PINNED_ESBUILD = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).devDependencies.esbuild;

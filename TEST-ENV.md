@@ -21914,3 +21914,384 @@ ORG-TEST-001, Europe/London. Today 2026-10-02.
   - `finance` `32c23a73…206d`;
   - `needs-attention` `1d265d79…c742`.
 - **Full regression:** **87/87** test files.
+
+## Finance Foundation — F17 (Cash Position / Cash Flow forecast + ATT-054) — CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN — TEST only — 2026-10-02
+
+> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
+>
+> - **What F17 adds:**
+>   - One Cash Position timeline: what is expected to hit the bank, when,
+>     and the projected balance after each movement. Money In and Money
+>     Out are filters of that one timeline.
+>   - A Management-entered bank balance with an append-only history.
+>   - An optional F2 cash safety threshold.
+>   - A derived Needs Attention cash-risk rule (ATT-054).
+>   - Everything is derived on every read. Cash Flow is never stored, never
+>     a second ledger and never a reconciliation.
+> - **Two artifacts changed, both need an operator deploy.** Both are too
+>   large to push through the MCP deploy tool from here.
+>   - `finance` (next: v25): `supabase/deploy-artifacts/finance/index.js`,
+>     656,214 bytes, sha256
+>     `6d45d5e94d69abfd8297030c8211ce1ca247d4ea3cc12d4e6420a0b9edb4944a`
+>     (deterministic; `--check` MATCH).
+>   - `needs-attention` (next: v16):
+>     `supabase/deploy-artifacts/needs-attention/index.js`, 214,286 bytes,
+>     sha256 `a43139cef372fca74063f758f58f42ae64879cc531715cdde23648168f28cc86`
+>     (`--check` MATCH).
+> - **TEST schema (applied, additive):**
+>   - Supabase `finance_f17_cash_flow` (FIN17.11): table
+>     `finance_bank_balances` (0 rows), append-only guards, and the one
+>     write function `finance_bank_balance_record`.
+>   - Airtable: Finance Settings field **Cash Safety Threshold (Pence)**
+>     (`fldmAGtSg3QJEymhu`, number, blank everywhere).
+>   - Catalogue row **ATT-054** `cash_balance_below_threshold`
+>     (`rec7JmoaSOAzas6FJ`): Active, Default Enabled **off**.
+> - **Effect on the deployed v24 / v15 until the operator deploys:**
+>   - `finance` v24 ignores the new field and table.
+>   - `needs-attention` v15 skips ATT-054 as `not_implemented` (no config
+>     issue, default off).
+> - **Not built (by decision):**
+>   - a Stripe forecast;
+>   - a Coach Paid state;
+>   - Open Banking / bank feeds;
+>   - bank reconciliation;
+>   - F18 Month Report.
+> - **Production untouched.**
+
+### FIN17.1 Audit (2026-10-02) — stopped, then decisions approved
+
+The audit stopped before any code on two genuine contradictions:
+
+- **Stripe.** F10 exposes only the gross upcoming amount (pre-tax), an
+  optional fee estimate, and actual charges with `availableOn`. It has no
+  payout or bank date. Any Stripe projection would invent a bank date.
+- **F12 Coach Months.** There is no Paid fact (`paymentState` is always
+  `not_tracked`), so a past payment date cannot be told apart from
+  "unpaid".
+
+Approved decisions (David, 2026-10-02), locked:
+
+1. **Stripe, option (a).** Stripe is excluded from the projected balance.
+   The response carries "Stripe forecast: Not included", reason "Stripe
+   bank payout timing is not currently available." It is not an error. No
+   fee estimate, no payout delay, and the charge date is never used as a
+   bank date.
+2. **Coach Months:**
+   - finalised with a payment date today or later → **Confirmed OUT**
+     (finalised total + corrections, on the F12 expected payment date);
+   - open with a future payment date → **Estimated OUT** (live allocation
+     cost; "may change until the month is finalised");
+   - payment date passed → **not projected and not Overdue**. It is listed
+     separately as **Payment not tracked**, with the month / source ID,
+     coach, amount, expected payment date and the explanation. No Coach
+     Paid state is invented.
+3. **Overdue OUT** is a requirement now: it counts on today and keeps its
+   true due date and days overdue. **Overdue IN** is visible and totalled
+   but never added to the balance.
+4. **Starting point.** The latest balance is the start. Actual movements
+   dated **after** its as-at date are applied; anything on or before that
+   date is assumed to be in the balance.
+5. **Same-day order:** cash date, OUT before IN, source type, source ID.
+6. **Ranges:**
+   - **30d** = today .. today + 29;
+   - **3m** = today .. the day before the same date three months later,
+     with last-day-of-month clamping.
+7. **Sources:** as FIN17.3. Client credit and supplier credit are never
+   cash. Employer NI / PAYE estimate stays an F15 limitation.
+8. **ATT-054** `cash_balance_below_threshold`: derived, no stored case,
+   disappears when the projection no longer breaches.
+
+### FIN17.2 Balance model
+
+- **Table** `finance_bank_balances` (Supabase, append-only).
+  - **Columns:** organisation, `FBB-` id, sequence, amount (pence, may be
+    negative: overdrawn), as-at date, optional note (≤ 500), recorded at /
+    by (profile user).
+  - **Never updated or deleted:** triggers refuse UPDATE / DELETE /
+    TRUNCATE with `f17:history_is_append_only`.
+- **Latest** = latest as-at date, then highest sequence. A back-dated
+  entry is kept in the history but does not replace a later as-at date.
+- **Label:** always "Management-entered bank balance", described as
+  "Entered by Management - not bank verified and not reconciled".
+- **Write:** `POST /cash-flow/balance`, body
+  `{ amount: "1234.56", asAtDate: "YYYY-MM-DD", note? }`.
+  - **Access:** Finance Manage only; F1 rules.
+  - **Lock:** the existing Finance write lock `commercial:<org>`.
+  - **Plan checks:** the as-at date may not be after the organisation's
+    today (`as_at_in_future` 409).
+  - **One database function** (`finance_bank_balance_record`) re-checks
+    under an advisory transaction lock that the latest sequence is still
+    the one read (`f17:balance_changed` → 409). It inserts the row and its
+    audit event in one transaction (`f17:audit_missing` if no event).
+  - **Backstops:** a unique `(organisation_id, sequence)` index; a CHECK
+    that the as-at date is at most the UTC recording date + 1.
+- **History:** `GET /cash-flow/balance-history` returns `current` plus
+  the full `history` in entry order (sequence ascending). Each entry is
+  marked `isProjectionStart`, and each carries its label, verification
+  text, and who / when.
+
+### FIN17.3 Sources (included / excluded)
+
+**Included**
+
+| Source | In / Out | State | Cash date |
+|---|---|---|---|
+| F7 issued receivables, outstanding only (gross − credit notes − credit applied − cash) | IN | Confirmed / Overdue (never in the balance) | F7 due date (after any due-date change) |
+| F7 receipts: active payments + overpayment kept as client credit (not void), dated after the as-at date | IN | Actual | received date |
+| F13 / F14 supplier instalments: remaining = due − cash paid − credit applied (0 → nothing) | OUT | Confirmed / Estimated / Overdue | instalment due date (overdue → counted today) |
+| F13 supplier payments dated after the as-at date | OUT | Actual | paid date |
+| F15 overheads (they are F13 instalments) | OUT | as F13 | as F13 |
+| F15 employment months (`chainOf` / `monthLine` / `asInstalment` / `remainingOf`); payments after the as-at date | OUT | Estimated / Confirmed / Overdue / Actual | F15 expected pay date / paid date |
+| F12 Coach Months | OUT | Confirmed (finalised) / Estimated (open) / Payment not tracked (date passed) | F12 expected payment date (F2 Coach Payment Day) |
+
+**Excluded** (listed in `notIncluded` with counts / amounts where known; never guessed)
+
+| Excluded | Why |
+|---|---|
+| Stripe | no bank payout timing |
+| F4 / F5 expected revenue before invoicing | no billing schedule, so no cash date |
+| invoices awaiting issue in Xero | no due date until genuinely issued |
+| invoices without a due date | no cash date |
+| F11 Refund Due | no cash date until F21 |
+| VAT / PAYE liabilities | no structured source |
+| client credit and supplier credit | never cash: they only reduce what is owed |
+
+### FIN17.4 Projection algorithm (pure: `finance/finance-cash-flow.ts`)
+
+1. Every source is normalised into `CashEvent`s, each with:
+   - key, direction, sourceType, sourceId, sourceRoute;
+   - cash date, state, amount, `amountIsEstimate`;
+   - `daysOverdue`, `included` / `notIncludedReason`.
+2. **Dedupe:** each event key is unique; a duplicate key is a data error
+   (409 `cash_flow_data_invalid`, never silently merged).
+3. **Supersession:**
+   - one live line per instalment (remaining only);
+   - one employment month line per chain;
+   - one Coach Month per coach and month (finalised wins over live);
+   - a paid / settled source contributes only its Actual payment events.
+4. **Sort once** with `compareEvents` (cash date, OUT before IN, source
+   type, source id, key), so the order never depends on storage order.
+5. **Project once:**
+   - `balanceAfter` is the running balance from the opening balance over
+     included events;
+   - `balanceToday` = opening + Actual events;
+   - the projected low and its date come from today's position forward,
+     over non-Actual included events;
+   - the first breach date is the first date the running balance falls
+     below the threshold (today if `balanceToday` is already below it);
+   - `thresholdBreached` = low < threshold (a low exactly at the threshold
+     is not a breach).
+6. **No balance recorded:** the timeline and totals are still shown;
+   projected values are null, with the message "Record the current bank
+   balance to see a projected balance".
+7. **Response** (`finance-cash-flow-v1`):
+   - summary (balance, as-at, today's position, projected end / low /
+     date, threshold, breach, headroom);
+   - totals;
+   - reconciliation (position = money-in + money-out);
+   - timeline;
+   - `paymentNotTracked` (Coach Months, last 3 months);
+   - `notIncluded`;
+   - the ordering and overdue rule texts.
+
+### FIN17.5 API (under `finance`, F1 rules)
+
+| Route | Access | Notes |
+|---|---|---|
+| `GET /cash-flow?range=30d\|3m&view=position\|money-in\|money-out` | View or Manage | default 30d / position; anything else 400 |
+| `GET /cash-flow/balance-history` | View or Manage | |
+| `POST /cash-flow/balance` | Manage | 201; 403 `finance_manage_required` for View |
+
+- **Refusals and errors:**
+  - Organisation keys in the query or body → 400 `tenant_param_rejected`.
+  - Wrong method → 405. A balance is never edited or deleted (no route,
+    404 / 405).
+  - **Fail closed:** no grant → 403; module off → 403; Coach / Parent →
+    403; a load failure → 503 `cash_flow_unavailable`; bad stored data →
+    409.
+  - Settings: more than one row → 409 `finance_settings_invalid`.
+- **Threshold:** set through the existing F2 `PUT /settings`
+  (`cashSafetyThresholdMinor`, whole pence 0..MAX, null clears it; Finance
+  Manage; F2's own lock and audit).
+
+### FIN17.6 Needs Attention ATT-054 `cash_balance_below_threshold`
+
+- **Evaluator:** `needs-attention/cash-flow.ts`. It calls the **same**
+  `buildCashFlow` on the 3m range, with inputs read by the NA Finance
+  loader (`FINANCE_SOURCES` + 4: F13 supplier payments, F12 months /
+  corrections, F17 balances) and F7 / F12 Airtable tables.
+- **One case per organisation** (subject `cash_position:<org>`), raised
+  only when a balance and threshold exist and the 3m projection breaches.
+  - Title: "Projected bank balance below the cash safety threshold".
+  - Severity: Warning.
+  - Destination: `finance/cash-flow {range:"3m", view:"position"}`.
+  - Context: projected low and date, threshold, below-by, first breach
+    date, balance and as-at, range, projected end, `stripeIncluded:false`.
+- **Lifecycle:** the case disappears naturally when the projection no
+  longer breaches. It uses the F8a Finance access filter (no grant = no
+  case) and the existing snooze.
+- **Shared code:** copied row readers (5 blocks) are drift-tested. Parity
+  tests prove the NA projection equals the Finance route's projection on
+  the same data.
+- **Real bug fixed:** parity found that NA's F7 readers dropped
+  `clientName` and the overpayment-credit `receivedDate`. Both are now
+  read; F8a stays 64/64.
+
+### FIN17.7 Audit
+
+- `finance_bank_balance.recorded` is written inside the database function
+  (actor, organisation, after = the entry).
+- Threshold changes are audited through F2's settings audit.
+- Reads write nothing.
+
+### FIN17.8 Code, tests
+
+- **New:**
+  - `finance/finance-cash-flow.ts` (pure);
+  - `finance-cash-flow-repository.ts`;
+  - `finance-cash-flow-orchestrator.ts`;
+  - `needs-attention/cash-flow.ts`.
+- **Changed:**
+  - `finance/index.ts` (routes);
+  - `finance-settings.ts` (threshold);
+  - NA `repository.ts` (`FINANCE_SOURCES` + 4);
+  - NA `finance.ts` (`ReceivablePass` exposes receivables / receipts;
+    reader fix);
+  - NA `registry.ts`;
+  - the NA bundle allowlist (+ `finance-cash-flow.ts`,
+    `finance-coach-costs.ts`, both pure).
+- **Tests:**
+  - `finance-cash-flow.test.ts` **89/89**, groups:
+
+    | Group | Covers |
+    |---|---|
+    | BA, DB | balance model / write, DB rules |
+    | AC, AU | access, audit |
+    | MI | Money In |
+    | MO | Money Out |
+    | CO | Coach Months |
+    | RG, TH | ranges, threshold |
+    | SO, DD | ordering, dedupe |
+    | VW | views |
+    | PR | parsing |
+    | TL | totals |
+    | MB | boundaries |
+    | Z | drift / scope |
+
+  - `needs-attention-cash-flow.test.ts` **26/26** (CR, RS, AC, SN, PAR,
+    PF, DQ, DR).
+  - Shims: `financecashflowtest.js`, `needsattentioncashflowtest.js`.
+- **Updated for the new counts:**
+  - catalogue snapshot / fixture: 46 rows, 22 Active;
+  - NA foundation (78/78), engine (113/113), compliance, coach-schedule,
+    money-out (DR3 / DR4) and bundle (B5);
+  - finance bundle (B17; new B23 / B24 for the F17 routes);
+  - F2 settings (100/100, incl. ST1–ST3).
+- **Full regression:** **89/89** files (87 + the two F17 shims).
+  `finance --check` and `needs-attention --check` MATCH.
+- **Strict `tsc`:** no errors in the F17 files.
+- **Mutation:** 16 mutants; **14 killed**. The two survivors are
+  equivalent: dropping the `thresholdBreached` / balance guards in
+  `cashRiskCase` changes nothing, because `firstBreachDate` /
+  `projectedLowMinor` are then null.
+  - The first pass left M6 (on the as-at date), M7 (today as the low) and
+    M8 / M13 (low exactly at the threshold) alive. Tests MB1–MB3 now kill
+    them.
+
+### FIN17.9 Resting TEST state (deployment checkpoint)
+
+- **Supabase TEST:** `finance_bank_balances` exists, with 0 rows and RLS
+  on. anon / authenticated have no access; service_role only executes the
+  function. No other change and no data written.
+- **Airtable TEST:**
+  - Cash Safety Threshold (Pence) field, blank;
+  - ATT-054 row Active, Default Enabled off, no Settings row (off for
+    every organisation).
+- **Deployed:** still `finance` v24 / `needs-attention` v15.
+- `f2probe` cleanup remains an operator item.
+
+### FIN17.10 Live proof plan A–AU (after the operator deploys `finance` v25 / `needs-attention` v16)
+
+1. Byte-verify both against the committed artifacts.
+2. Record balances: Manage succeeds; View → 403; Coach / Parent / no grant
+   / module off → 403. Check a future as-at date, a back-dated entry, a
+   concurrent write (`balance_changed`), append-only (UPDATE / DELETE
+   refused by the DB), and the audit row.
+3. Set and clear the threshold through F2.
+4. ZZTEST F7 invoices / payments / overpayment, F13 instalments (overdue,
+   estimated, credited, partial), F15 employment, and F12 open +
+   finalised + past Coach Months.
+5. Read 30d / 3m × position / money-in / money-out. Check reconciliation,
+   ordering, overdue handling, Payment not tracked, `notIncluded` (Stripe),
+   traceability routes and organisation-local today.
+6. ATT-054: enable a Settings row. Breach → one case with the same low /
+   date as the Finance route; raise the balance → the case disappears;
+   snooze; access filter.
+7. Confirm F7–F16 are unchanged and production is untouched.
+8. Restore the baseline: disable ATT-054, clear the threshold, revoke the
+   snooze, clear tokens. Balance rows remain: append-only by design, kept
+   as ZZTEST.
+
+### FIN17.11 Applied SQL (`finance_f17_cash_flow`, TEST `dkqubldmfyeuudecxmvh`, 2026-10-02)
+
+```sql
+-- finance_f17_cash_flow. Step 1: the Management-entered bank balance history (append-only).
+create table public.finance_bank_balances (
+  organisation_id text not null,
+  balance_id text not null check (balance_id ~ '^FBB-[0-9A-F]{12}$'),
+  sequence integer not null check (sequence >= 1),
+  amount_minor bigint not null check (abs(amount_minor) <= 100000000000),
+  as_at_date date not null,
+  note text check (note is null or length(btrim(note)) between 1 and 500),
+  recorded_at timestamptz not null,
+  recorded_by uuid not null,
+  primary key (organisation_id, balance_id),
+  -- the as-at date is never after the organisation's today (backstop: at most one day after the UTC recording date)
+  check (as_at_date <= (recorded_at at time zone 'UTC')::date + 1)
+);
+-- one row per sequence per organisation: two writes can never both become "latest"
+create unique index finance_bank_balances_sequence on public.finance_bank_balances (organisation_id, sequence);
+alter table public.finance_bank_balances enable row level security;
+revoke all on public.finance_bank_balances from public, anon, authenticated;
+
+-- finance_f17_cash_flow. Step 2: guards - history is never rewritten.
+create or replace function public.finance_bank_balance_append_only() returns trigger language plpgsql set search_path = '' as $$
+begin
+  raise exception 'f17:history_is_append_only';
+end $$;
+create trigger finance_bank_balances_immutable before update or delete on public.finance_bank_balances for each row execute function public.finance_bank_balance_append_only();
+create trigger finance_bank_balances_no_truncate before truncate on public.finance_bank_balances for each statement execute function public.finance_bank_balance_append_only();
+
+-- finance_f17_cash_flow. Step 3: the only write (service_role only). Inserts the NEXT row when nobody recorded one in between, plus its audit row, in one transaction.
+create or replace function public.finance_bank_balance_record(p_balance jsonb, p_expected_sequence integer, p_events jsonb) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_org text := p_balance->>'organisation_id'; v_max integer;
+begin
+  if p_events is null or jsonb_typeof(p_events) <> 'array' or jsonb_array_length(p_events) = 0 then raise exception 'f17:audit_missing'; end if;
+  perform pg_advisory_xact_lock(hashtext('finance_bank_balances:' || v_org));
+  select coalesce(max(sequence), 0) into v_max from finance_bank_balances where organisation_id = v_org;
+  if v_max <> p_expected_sequence or (p_balance->>'sequence')::integer <> v_max + 1 then raise exception 'f17:balance_changed'; end if;
+  insert into finance_bank_balances select * from jsonb_populate_record(null::finance_bank_balances, p_balance);
+  perform finance_supplier_insert_audit(p_events);
+  return jsonb_build_object('balance_id', p_balance->>'balance_id', 'sequence', v_max + 1);
+end $$;
+revoke all on function public.finance_bank_balance_record(jsonb, integer, jsonb), public.finance_bank_balance_append_only() from public, anon, authenticated;
+grant execute on function public.finance_bank_balance_record(jsonb, integer, jsonb) to service_role;
+```
+
+### FIN17.12 Open items / future debt
+
+- **Deploy (operator):** `finance` v25 and `needs-attention` v16, then the
+  FIN17.10 live proof.
+- **Stripe payout integration:** payouts / balance transactions, giving a
+  real bank date and net amount.
+- **F12 Coach Paid lifecycle:** without it, past Coach Months stay
+  "Payment not tracked".
+- **F21 refunds:** gives Refund Due a cash date.
+- **VAT / PAYE:** structured liabilities with HMRC due dates.
+- **Employer NI / PAYE estimate:** remains an F15 limitation.
+- **Pre-invoice revenue:** needs a billing schedule (invoice date → due
+  date) before it can be forecast.
+- **Balance history over 1000 rows** fails loudly (bounded read). Paging
+  would be needed only at very high volume.
+- **No bank reconciliation / Open Banking:** the balance is always
+  Management-entered.

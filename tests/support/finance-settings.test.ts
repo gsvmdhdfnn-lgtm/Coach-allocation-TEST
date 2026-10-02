@@ -70,6 +70,7 @@ const FULL: FinanceSettings = {
   invoiceNumberNext: 1001,
   invoiceNumberDigits: 4,
   estimateReminderDays: null,
+  cashSafetyThresholdMinor: 500000,
 };
 const storedRow = (s: FinanceSettings, over: Record<string, unknown> = {}, id = "recSettingsRow001") => ({
   id,
@@ -225,6 +226,10 @@ async function main() {
     ck("SN3. Next number: whole 1..1,000,000,000 (the value after the last assignable 999,999,999); digits 1..9", pu({ invoiceNumberNext: 1 }).ok && pu({ invoiceNumberNext: 1_000_000_000 }).ok && [0, -1, 1.5, "1001", 1_000_000_001].every((v) => pu({ invoiceNumberNext: v }).fields?.invoiceNumberNext) && pu({ invoiceNumberDigits: 9 }).ok && [0, 10, 2.5].every((v) => pu({ invoiceNumberDigits: v }).fields?.invoiceNumberDigits));
     ck("SN4. Stored authority is a select label (Hub / Xero); an unknown label fails closed", (fromStoredRow(storedRow({ ...FULL, invoiceNumberAuthority: "xero" })) as any).state.settings.invoiceNumberAuthority === "xero" && storedRow(FULL).fields[FIELD_NAMES.invoiceNumberAuthority] === "Hub" && !(fromStoredRow(storedRow(FULL, { [FIELD_NAMES.invoiceNumberAuthority]: "Sage" })) as any).ok && !(fromStoredRow(storedRow(FULL, { [FIELD_NAMES.invoiceNumberNext]: 0 })) as any).ok);
     ck("SN5. Numbering never changes completeness (Xero is optional; issuing checks numbering itself)", completeness({ ...FULL, invoiceNumberAuthority: null, invoiceNumberPrefix: null, invoiceNumberNext: null, invoiceNumberDigits: null }).complete && completeness(FULL).requiredTotal === 8);
+    // F17: optional cash safety threshold (pence)
+    ck("ST1. Cash safety threshold: whole pence 0..MAX accepted, null clears it; negative / fractional / text refused", pu({ cashSafetyThresholdMinor: 0 }).ok && pu({ cashSafetyThresholdMinor: 500000 }).patch?.cashSafetyThresholdMinor === 500000 && pu({ cashSafetyThresholdMinor: null }).ok && [-1, 1.5, "500000", true].every((v) => pu({ cashSafetyThresholdMinor: v }).fields?.cashSafetyThresholdMinor));
+    ck("ST2. Stored threshold round-trips through its own Airtable number field; a fractional / negative stored value fails closed; a blank cell reads as null", storedRow(FULL).fields[FIELD_NAMES.cashSafetyThresholdMinor] === 500000 && FIELD_NAMES.cashSafetyThresholdMinor === "Cash Safety Threshold (Pence)" && !(fromStoredRow(storedRow(FULL, { [FIELD_NAMES.cashSafetyThresholdMinor]: 1.5 })) as any).ok && !(fromStoredRow(storedRow(FULL, { [FIELD_NAMES.cashSafetyThresholdMinor]: -1 })) as any).ok && (fromStoredRow(storedRow({ ...FULL, cashSafetyThresholdMinor: null })) as any).state.settings.cashSafetyThresholdMinor === null);
+    ck("ST3. The threshold is optional: it never changes completeness", completeness({ ...FULL, cashSafetyThresholdMinor: null }).complete && completeness(FULL).requiredTotal === 8);
     ck("S16. changedKeys lists only real differences; applyPatch touches only patched keys", changedKeys(FULL, applyPatch(FULL, { defaultPaymentTermsDays: 30, vatNumber: "GB123456789" })).join() === "defaultPaymentTermsDays" && applyPatch(FULL, {}).invoiceLegalName === FULL.invoiceLegalName);
     const ev = buildSettingsAuditEvent({ organisationId: ORG, actorUserId: MGR, recordId: "recX", before: { configured: false, recordId: null, revision: 0, updatedAt: null, settings: EMPTY_SETTINGS }, after: FULL, revision: 1, changed: ["invoiceLegalName"], reason: "r" });
     ck("S17. Audit event for a first write: created, before null, after + revision, context lists changed fields, no client timestamp", ev.event_type === "finance_settings.created" && ev.before === null && (ev.after as any).revision === 1 && JSON.stringify((ev.context as any).changedFields) === '["invoiceLegalName"]' && !("occurred_at" in ev));

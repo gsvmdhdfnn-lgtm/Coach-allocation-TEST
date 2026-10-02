@@ -36,7 +36,10 @@
  * build time from ../finance). Finance F16 adds the five Money Out rules
  * (money-out.ts, ATT-049..053): one shared pass over F13 / F14 supplier
  * instalments and F15 employment months (Supabase, organisation-scoped) +
- * Finance Settings. Later slices append their own
+ * Finance Settings. Finance F17 adds the cash-risk rule (cash-flow.ts,
+ * ATT-054): the projected bank balance from Finance's own Cash Flow engine
+ * (bundled from ../finance) falls below the cash safety threshold.
+ * Later slices append their own
  * registrations; gated-off rules never cause any domain read.
  *
  * Drift protection: validateRegistry() (needs-attention.ts) reports
@@ -53,5 +56,6 @@ import { WORK_SUMMARY_EVALUATORS } from "./needs-attention-work-summaries.ts";
 import { FINANCE_EVALUATORS } from "./needs-attention-finance.ts";
 import { INVOICE_DRAFT_BLOCKED_EVALUATOR } from "./needs-attention-finance-drafts.ts";
 import { MONEY_OUT_EVALUATORS } from "./needs-attention-money-out.ts";
+import { CASH_FLOW_EVALUATORS } from "./needs-attention-cash-flow.ts";
 
-export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS, COVER_EVALUATOR, ...COMPLIANCE_EVALUATORS, ...COACH_SCHEDULE_EVALUATORS, ...WORK_SUMMARY_EVALUATORS, ...FINANCE_EVALUATORS, INVOICE_DRAFT_BLOCKED_EVALUATOR, ...MONEY_OUT_EVALUATORS];
+export const IMPLEMENTED_EVALUATORS: readonly EvaluatorRegistration[] = [...STAFFING_EVALUATORS, COVER_EVALUATOR, ...COMPLIANCE_EVALUATORS, ...COACH_SCHEDULE_EVALUATORS, ...WORK_SUMMARY_EVALUATORS, ...FINANCE_EVALUATORS, INVOICE_DRAFT_BLOCKED_EVALUATOR, ...MONEY_OUT_EVALUATORS, ...CASH_FLOW_EVALUATORS];

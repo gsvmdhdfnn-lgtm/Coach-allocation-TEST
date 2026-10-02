@@ -186,7 +186,7 @@ const ACTIVE_RULES = [
   "non_compliant_coach_assigned", "cover_open", "compliance_verification_pending", "coach_outcome_pending", "work_summary_queried", "work_summary_ready_to_finalise", "work_summary_blocked",
 ];
 /** Finance F8a: the one Finance rule with a live evaluator (module_finance; Default Enabled off; never runs in this world - no module_finance row). */
-const FINANCE_ACTIVE_RULES = ["invoice_overdue", "invoice_draft_blocked", "outgoing_payment_due_today", "outgoing_payment_overdue", "outgoing_estimate_due_soon", "outgoing_estimate_due_today", "outgoing_estimate_overdue"];
+const FINANCE_ACTIVE_RULES = ["invoice_overdue", "invoice_draft_blocked", "outgoing_payment_due_today", "outgoing_payment_overdue", "outgoing_estimate_due_soon", "outgoing_estimate_due_today", "outgoing_estimate_overdue", "cash_balance_below_threshold"];
 const ALL_ACTIVE_RULES = [...ACTIVE_RULES, ...FINANCE_ACTIVE_RULES];
 const OVERRIDEABLE = new Set(["no_lead_coach", "learning_coach_only", "session_understaffed", "session_no_coach", "coach_compliance_expiry", "coach_schedule_conflict", "assigned_coach_unavailable"]);
 const EXPECTED_COUNTS: Record<string, number> = {
@@ -230,16 +230,16 @@ async function main() {
   {
     const rows = RULES.map((r) => r.fields);
     const reg = new Map(IMPLEMENTED_EVALUATORS.map((e) => [e.ruleKey, e]));
-    ck("CAT1. Snapshot = the live TEST catalogue: 45 rows (F8a ATT-047 / ATT-048 + F16 ATT-049..053), unique Rule Keys and Rule IDs", rows.length === 45 && new Set(rows.map((f) => f["Rule Key"])).size === 45 && new Set(rows.map((f) => f["Rule ID"])).size === 45);
+    ck("CAT1. Snapshot = the live TEST catalogue: 46 rows (F8a ATT-047 / ATT-048 + F16 ATT-049..053 + F17 ATT-054), unique Rule Keys and Rule IDs", rows.length === 46 && new Set(rows.map((f) => f["Rule Key"])).size === 46 && new Set(rows.map((f) => f["Rule ID"])).size === 46);
     const oldOk = OLD_FIXTURE.rules.every((o: any) => {
       const f = rows.find((x) => x["Rule Key"] === o.ruleKey);
       return f && f["Rule ID"] === o.ruleId && f["Evaluation Status"] === o.evaluationStatus && f["Required Module"] === o.requiredModule && !!f["Default Enabled"] === o.defaultEnabled && !!f.Active === o.active;
     });
-    ck("CAT2. The older 6-field catalogue fixture used by the per-slice suites agrees with the full snapshot", oldOk && OLD_FIXTURE.rules.length === 45);
+    ck("CAT2. The older 6-field catalogue fixture used by the per-slice suites agrees with the full snapshot", oldOk && OLD_FIXTURE.rules.length === 46);
     const activeStatus = rows.filter((f) => f["Evaluation Status"] === "Active").map((f) => f["Rule Key"]);
-    ck("CAT3. Registry = exactly the 14 frozen active rules + the F8a invoice_overdue + F8b invoice_draft_blocked + the five F16 Money Out rules, each Rule ID matching its catalogue row", IMPLEMENTED_EVALUATORS.length === 21 && sameSet([...reg.keys()], ALL_ACTIVE_RULES) && IMPLEMENTED_EVALUATORS.every((e) => ruleRow(e.ruleKey).fields["Rule ID"] === e.ruleId));
-    ck("CAT4. Active means a live evaluator exists: the 21 Evaluation Status = Active rows are exactly the 21 registered evaluators (no Active row lacks one)", activeStatus.length === 21 && sameSet(activeStatus, [...reg.keys()]) && activeStatus.every((k) => reg.has(k)));
-    ck("CAT5. No Planned / Retired row has an evaluator (24 Planned rows stay dormant)", rows.filter((f) => f["Evaluation Status"] !== "Active").every((f) => !reg.has(f["Rule Key"])) && rows.filter((f) => f["Evaluation Status"] === "Planned").length === 24 && rows.filter((f) => f["Evaluation Status"] === "Retired").length === 0 && reg.has("invoice_draft_blocked") && reg.has("outgoing_payment_overdue"));
+    ck("CAT3. Registry = exactly the 14 frozen active rules + the F8a invoice_overdue + F8b invoice_draft_blocked + the five F16 Money Out rules + the F17 cash_balance_below_threshold rule, each Rule ID matching its catalogue row", IMPLEMENTED_EVALUATORS.length === 22 && sameSet([...reg.keys()], ALL_ACTIVE_RULES) && IMPLEMENTED_EVALUATORS.every((e) => ruleRow(e.ruleKey).fields["Rule ID"] === e.ruleId));
+    ck("CAT4. Active means a live evaluator exists: the 22 Evaluation Status = Active rows are exactly the 22 registered evaluators (no Active row lacks one)", activeStatus.length === 22 && sameSet(activeStatus, [...reg.keys()]) && activeStatus.every((k) => reg.has(k)));
+    ck("CAT5. No Planned / Retired row has an evaluator (24 Planned rows stay dormant)", rows.filter((f) => f["Evaluation Status"] !== "Active").every((f) => !reg.has(f["Rule Key"])) && rows.filter((f) => f["Evaluation Status"] === "Planned").length === 24 && rows.filter((f) => f["Evaluation Status"] === "Retired").length === 0 && reg.has("invoice_draft_blocked") && reg.has("outgoing_payment_overdue") && reg.has("cash_balance_below_threshold"));
     const vm = ruleRow("venue_missing").fields;
     ck("CAT13. venue_missing (ATT-018) is Planned (deferred to the Venue foundation), unregistered, and otherwise unchanged (module_schedule, Normal, 7 Days / 48 Hours Before, overrideable)", vm["Evaluation Status"] === "Planned" && !reg.has("venue_missing") && vm["Rule ID"] === "ATT-018" && vm["Required Module"] === "module_schedule" && vm["Default Base Severity"] === "Normal" && vm["Default Warning Threshold"] === 7 && vm["Default Warning Timing"] === "Days Before" && vm["Default Urgent Threshold"] === 48 && vm["Default Urgent Timing"] === "Hours Before" && vm["Supports Override"] === true);
     ck("CAT6. Every registered rule: Active, Default Enabled, module_coaches, Destination Area set, Action Label set", ACTIVE_RULES.every((k) => { const f = ruleRow(k).fields; return f.Active === true && f["Default Enabled"] === true && f["Required Module"] === "module_coaches" && !!f["Destination Area"] && !!f["Action Label"]; }));
@@ -264,7 +264,7 @@ async function main() {
   {
     const counts = Object.fromEntries(ACTIVE_RULES.map((k) => [k, byRule(full, k).length]));
     ck("COV1. All 14 active rules fire in one request with the exact expected counts (18 cases)", JSON.stringify(counts) === JSON.stringify(Object.fromEntries(ACTIVE_RULES.map((k) => [k, EXPECTED_COUNTS[k]]))) && full.cases.length === 18, JSON.stringify(counts));
-    ck("COV2. complete = true, no config issues, 14 evaluated, 31 skipped - 24 planned (incl. venue_missing) + the 7 Finance rules (invoice_overdue, invoice_draft_blocked, the five F16 Money Out rules) module_off (no module_finance row here), none not_implemented; Finance access never looked up", full.complete === true && full.configIssues.length === 0 && full.diagnostics.evaluated.length === 14 && full.diagnostics.skipped.length === 31 && full.diagnostics.skipped.filter((s: any) => s.reason === "module_off").length === 7 && full.diagnostics.skipped.filter((s: any) => s.reason === "planned").length === 24 && full.diagnostics.skipped.find((s: any) => s.ruleKey === "invoice_overdue")?.reason === "module_off" && full.diagnostics.skipped.find((s: any) => s.ruleKey === "invoice_draft_blocked")?.reason === "module_off" && full.diagnostics.skipped.some((s: any) => s.ruleKey === "venue_missing") && full.diagnostics.financeAccess === "not_checked");
+    ck("COV2. complete = true, no config issues, 14 evaluated, 32 skipped - 24 planned (incl. venue_missing) + the 8 Finance rules (invoice_overdue, invoice_draft_blocked, the five F16 Money Out rules, the F17 cash_balance_below_threshold rule) module_off (no module_finance row here), none not_implemented; Finance access never looked up", full.complete === true && full.configIssues.length === 0 && full.diagnostics.evaluated.length === 14 && full.diagnostics.skipped.length === 32 && full.diagnostics.skipped.filter((s: any) => s.reason === "module_off").length === 8 && full.diagnostics.skipped.filter((s: any) => s.reason === "planned").length === 24 && full.diagnostics.skipped.find((s: any) => s.ruleKey === "invoice_overdue")?.reason === "module_off" && full.diagnostics.skipped.find((s: any) => s.ruleKey === "invoice_draft_blocked")?.reason === "module_off" && full.diagnostics.skipped.some((s: any) => s.ruleKey === "venue_missing") && full.diagnostics.financeAccess === "not_checked");
   }
 
   // ===================================================================
@@ -366,11 +366,11 @@ async function main() {
     const CONFIG = Object.values(CONFIG_TABLES);
     reset((t) => { t[CONFIG_TABLES.features] = [{ id: id("FeatCoach"), fields: { "Feature Key": "module_coaches" } }]; });
     const off = await run({ debug: true });
-    ck("G1. module_coaches OFF -> all 14 rules skipped module_off (+ the 7 Finance rules - invoice_overdue / invoice_draft_blocked / five F16 Money Out: no module_finance row), nothing evaluated, Clear, NO config noise", off.diagnostics.evaluated.length === 0 && off.diagnostics.skipped.filter((s: any) => s.reason === "module_off").length === 21 && off.summary.state === "Clear" && off.configIssues.length === 0);
+    ck("G1. module_coaches OFF -> all 14 rules skipped module_off (+ the 8 Finance rules - invoice_overdue / invoice_draft_blocked / five F16 Money Out / F17 cash risk: no module_finance row), nothing evaluated, Clear, NO config noise", off.diagnostics.evaluated.length === 0 && off.diagnostics.skipped.filter((s: any) => s.reason === "module_off").length === 22 && off.summary.state === "Clear" && off.configIssues.length === 0);
     ck("G2. ... and ONLY the 5 config tables are read (no domain table at all)", sameSet(reads(), CONFIG));
     reset((t) => { t[CONFIG_TABLES.features] = []; });
     const missing = await run({ debug: true });
-    ck("G3. Missing Feature Controls row = module OFF (fail closed), same 5 reads, no config issue", missing.diagnostics.skipped.filter((s: any) => s.reason === "module_off").length === 21 && sameSet(reads(), CONFIG) && missing.configIssues.length === 0);
+    ck("G3. Missing Feature Controls row = module OFF (fail closed), same 5 reads, no config issue", missing.diagnostics.skipped.filter((s: any) => s.reason === "module_off").length === 22 && sameSet(reads(), CONFIG) && missing.configIssues.length === 0);
     reset((t) => { t[CONFIG_TABLES.features] = [{ id: id("FeatC1"), fields: { "Feature Key": "module_coaches", Enabled: true } }, { id: id("FeatC2"), fields: { "Feature Key": "module_coaches" } }]; });
     const conflicting = await run({ debug: true });
     ck("G4. Conflicting Feature Controls rows -> module OFF (fail closed)", conflicting.diagnostics.skipped.filter((s: any) => s.reason === "module_off" && /conflicting/.test(s.detail)).length === 14 && sameSet(reads(), CONFIG));

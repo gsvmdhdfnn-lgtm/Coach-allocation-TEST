@@ -1,5 +1,5 @@
 {
- "_comment": "Full snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e / tblyawQ8vSEN945Qp) taken 2026-09-29 for Needs Attention Slice 9 (foundation freeze). Airtable REST shape: fields by name, selects as names, unticked checkboxes absent. Description text omitted (non-behavioural). ATT-018 venue_missing corrected Active -> Planned on 2026-09-29 (catalogue status correction: Active means a live evaluator exists). F8a (2026-09-30): + ATT-047 invoice_overdue (Active, module_finance, Default Enabled off, base Warning, no thresholds) and ATT-048 invoice_draft_blocked (Planned until F8b) - 40 rows: 15 Active, 25 Planned, 0 Retired. F8b (2026-10-01): ATT-048 invoice_draft_blocked Planned -> Active (module_finance, Default Enabled off, base Normal) - 40 rows: 16 Active, 24 Planned, 0 Retired. F16 (2026-10-02): + ATT-049 outgoing_payment_due_today, ATT-050 outgoing_payment_overdue, ATT-051 outgoing_estimate_due_soon, ATT-052 outgoing_estimate_due_today, ATT-053 outgoing_estimate_overdue (module_finance, Default Enabled off, Client Customisable, Supports Override, no thresholds; Active from the F16 code checkpoint, as F8b did) - 45 rows: 21 Active, 24 Planned, 0 Retired.",
+ "_comment": "Full snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e / tblyawQ8vSEN945Qp) taken 2026-09-29 for Needs Attention Slice 9 (foundation freeze). Airtable REST shape: fields by name, selects as names, unticked checkboxes absent. Description text omitted (non-behavioural). ATT-018 venue_missing corrected Active -> Planned on 2026-09-29 (catalogue status correction: Active means a live evaluator exists). F8a (2026-09-30): + ATT-047 invoice_overdue (Active, module_finance, Default Enabled off, base Warning, no thresholds) and ATT-048 invoice_draft_blocked (Planned until F8b) - 40 rows: 15 Active, 25 Planned, 0 Retired. F8b (2026-10-01): ATT-048 invoice_draft_blocked Planned -> Active (module_finance, Default Enabled off, base Normal) - 40 rows: 16 Active, 24 Planned, 0 Retired. F16 (2026-10-02): + ATT-049 outgoing_payment_due_today, ATT-050 outgoing_payment_overdue, ATT-051 outgoing_estimate_due_soon, ATT-052 outgoing_estimate_due_today, ATT-053 outgoing_estimate_overdue (module_finance, Default Enabled off, Client Customisable, Supports Override, no thresholds; Active from the F16 code checkpoint, as F8b did) - 45 rows: 21 Active, 24 Planned, 0 Retired. F17 (2026-10-02): + ATT-054 cash_balance_below_threshold (module_finance, Default Enabled off, base Warning, Client Customisable, Supports Override, no thresholds; Active from the F17 code checkpoint) - 46 rows: 22 Active, 24 Planned, 0 Retired.",
  "records": [
   {
    "id": "rec7MaSdZV4VE02uL",
@@ -891,6 +891,24 @@
     "Rule Key": "outgoing_estimate_overdue",
     "Rule Name": "Estimate overdue",
     "Sort Order": 53,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "rec7JmoaSOAzas6FJ",
+   "fields": {
+    "Action Label": "Review Cash Flow",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Active",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-054",
+    "Rule Key": "cash_balance_below_threshold",
+    "Rule Name": "Projected cash below safety threshold",
+    "Sort Order": 54,
     "Supports Override": true
    }
   }

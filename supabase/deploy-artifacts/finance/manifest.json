@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "32c23a7317e0486425678fd0f8b02bc407253a619884ca6f826d7e06a59e206d",
-  "artifactBytes": 623858,
+  "artifactSha256": "6d45d5e94d69abfd8297030c8211ce1ca247d4ea3cc12d4e6420a0b9edb4944a",
+  "artifactBytes": 656214,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "00faff076b4f1a475d3cfab3b5c3d701d4e3beabb36b6e914474f367f782829e",
+  "sourceSha256": "1ad5903b4a2832895faf991a76645bdb7bb689bfe6046ef27830c287ae7d4532",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -48,6 +48,18 @@
     {
       "path": "supabase/functions-test/finance/finance-billing.ts",
       "sha256": "2108f300f0f902e3968fe9f3cacc870e395db711b7bba13f23d57e66aa2bbb6d"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-cash-flow-orchestrator.ts",
+      "sha256": "fc0dbf2b08dac0d777636120dcb62050c98906fb2caae1fc3073cb174401709b"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-cash-flow-repository.ts",
+      "sha256": "062652996e50a34ee34a92e772c5541e729890216352dc9531431cc569607194"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-cash-flow.ts",
+      "sha256": "121d5b033ebe567bfe29f4f534c0366f5a6a65fd27fcc80b69c981fb3b86ef8d"
     },
     {
       "path": "supabase/functions-test/finance/finance-coach-costs-orchestrator.ts",
@@ -171,7 +183,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-settings.ts",
-      "sha256": "1b5a0f19b1917562ec6b417fb8ba989c58ec71a9d0aa61489a6ce2e2981b8598"
+      "sha256": "e9e30ff90182205b48b9fab5a2ac512702dda84c6a9165ffa9fa85fcb1fdf70e"
     },
     {
       "path": "supabase/functions-test/finance/finance-stripe-orchestrator.ts",
@@ -227,7 +239,7 @@
     },
     {
       "path": "supabase/functions-test/finance/index.ts",
-      "sha256": "9c914fb70a517f809efc33779dd5fb733a51a485fed88be2f095997375c06455"
+      "sha256": "e7043f4dd74009a8add9642b1489455277b4d6ab2374690599bef20f07cedf1b"
     },
     {
       "path": "supabase/functions-test/finance/orchestrator.ts",

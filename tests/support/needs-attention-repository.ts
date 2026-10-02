@@ -250,6 +250,11 @@ export const FINANCE_SOURCES: Readonly<Record<string, { table: string; filter: s
   "supabase:finance_supplier_instalments": { table: "finance_supplier_instalments", filter: "cancelled_at=is.null", order: "instalment_id.asc" },
   "supabase:finance_employment_versions": { table: "finance_employment_versions", filter: null, order: "version_id.asc" },
   "supabase:finance_employment_items": { table: "finance_employment_items", filter: null, order: "item_id.asc" },
+  // F17 cash-risk rule (ATT-054): actual supplier payments, Finance Coach Months + corrections, Management-entered bank balances.
+  "supabase:finance_supplier_payments": { table: "finance_supplier_payments", filter: null, order: "payment_id.asc" },
+  "supabase:finance_worker_cost_months": { table: "finance_worker_cost_months", filter: null, order: "month_id.asc" },
+  "supabase:finance_worker_cost_corrections": { table: "finance_worker_cost_corrections", filter: null, order: "correction_id.asc" },
+  "supabase:finance_bank_balances": { table: "finance_bank_balances", filter: null, order: "balance_id.asc" },
 });
 export const FINANCE_PAGE_SIZE = 1000;
 /** A bounded read: more than this many pages of one table fails loudly instead of growing silently. */
