@@ -21915,23 +21915,25 @@ ORG-TEST-001, Europe/London. Today 2026-10-02.
   - `needs-attention` `1d265d79…c742`.
 - **Full regression:** **87/87** test files.
 
-## Finance Foundation — F17 (Cash Position / Cash Flow forecast + ATT-054) — LIVE-PROVEN on `finance` v25 / `needs-attention` v16; D1 FIXED IN CODE, NOT DEPLOYED (next `finance` v26 / `needs-attention` v17, see FIN17.15) — TEST only — 2026-10-02
+## Finance Foundation — F17 (Cash Position / Cash Flow forecast + ATT-054) — COMPLETE IN TEST: LIVE-PROVEN on `finance` v26 / `needs-attention` v17 (D1 fixed and live-proven) — TEST only — 2026-10-02
 
-> **LIVE-PROVEN (2026-10-02); defect D1 fixed in code, NOT DEPLOYED.**
+> **F17 COMPLETE IN TEST (2026-10-02).**
 >
-> - **Deployed by the operator** from commit `5670592`: `finance` v25 and
->   `needs-attention` v16. Both are ACTIVE with verify_jwt, one `index.js`
->   each, byte-identical to the committed artifacts.
-> - **Live proof A–AU:** FIN17.13. Resting state: FIN17.14.
-> - **Defect D1 (FIN17.15): fix approved and in code, NOT DEPLOYED.** On
->   today's date, an actual movement could sort after a forecast row, so
->   the projected low and the breach could be optimistic. On TODAY only,
->   Actual movements now come first, then today's forecasts in the approved
->   order. **Deployment checkpoint:** `finance` v26 (656,429 B, sha256
->   `ce34776a3abb062646a92a2e24cde88490c5bdc524f25234bfda0b6b4b71236d`)
->   and `needs-attention` v17 (214,404 B, sha256
->   `b3a8d2f8ca0a0fb58e7c0fbecb31aac375c4ab65e460d3d167a78f5571d3dbb9`).
->   Until they are deployed, live v25 / v16 still have D1.
+> - **Current deployment:** `finance` v26 and `needs-attention` v17, deployed
+>   by the operator from commit `18eab9d` (the D1 fix). Both are ACTIVE with
+>   verify_jwt and one `index.js` each, byte-identical to the committed
+>   artifacts:
+>   - `finance`: 656,429 B, sha256
+>     `ce34776a3abb062646a92a2e24cde88490c5bdc524f25234bfda0b6b4b71236d`;
+>   - `needs-attention`: 214,404 B, sha256
+>     `b3a8d2f8ca0a0fb58e7c0fbecb31aac375c4ab65e460d3d167a78f5571d3dbb9`.
+> - **First deployment:** `finance` v25 / `needs-attention` v16 from
+>   `5670592`. Live proof A–AU: FIN17.13 (resting state then: FIN17.14).
+> - **Defect D1 (FIN17.15): fixed and LIVE-PROVEN** (FIN17.16). On today's
+>   date, Actual movements now come first, then today's forecasts in the
+>   approved order. The exact approved example gives low 600.00, breached,
+>   1.00 below, in Finance and in ATT-054 alike.
+> - **Final resting state:** FIN17.17.
 > - The checkpoint text below is kept as written.
 >
 > **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN** (checkpoint text, superseded).
@@ -22317,9 +22319,9 @@ grant execute on function public.finance_bank_balance_record(jsonb, integer, jso
   would be needed only at very high volume.
 - **No bank reconciliation / Open Banking:** the balance is always
   Management-entered.
-- **D1, same-day actual/forecast order (found in the live proof):** fix
-  approved and in code (FIN17.15). **Redeploy pending:** `finance` v26 /
-  `needs-attention` v17, then a short live re-check.
+- ~~D1, same-day actual/forecast order~~ **Done:** fixed in `18eab9d`,
+  deployed as `finance` v26 / `needs-attention` v17, live-proven
+  (FIN17.16).
 - **Live DB UPDATE/DELETE on `finance_bank_balances`** was not run: the
   MCP destructive-statement gate held the block and it never executed.
   Append-only is proven from the catalogue, the API and unit tests
@@ -22453,7 +22455,7 @@ cleanup.
   - `finance --check` and `needs-attention --check` MATCH (still identical
     to deployed v25 / v16).
 
-### FIN17.15 Defect D1 — same-day actual vs forecast ordering (FIXED IN CODE, NOT DEPLOYED)
+### FIN17.15 Defect D1 — same-day actual vs forecast ordering (FIXED, LIVE-PROVEN on v26 / v17)
 
 - **Where:** `buildCashFlow` sorts every event once by cash date, OUT
   before IN, source type, source id (the approved rule). Actual movements
@@ -22516,6 +22518,87 @@ cleanup.
     `ce34776a3abb062646a92a2e24cde88490c5bdc524f25234bfda0b6b4b71236d`;
   - `needs-attention`: 214,404 B, sha256
     `b3a8d2f8ca0a0fb58e7c0fbecb31aac375c4ab65e460d3d167a78f5571d3dbb9`.
-- **Deployment checkpoint:** operator deploys `finance` v26 and
-  `needs-attention` v17 from the D1 commit. Live v25 / v16 still have D1
-  until then.
+- **Deployed:** the operator deployed `finance` v26 and `needs-attention`
+  v17 from `18eab9d`. Live proof: FIN17.16.
+
+### FIN17.16 D1 live proof (2026-10-02, `finance` v26 / `needs-attention` v17)
+
+- **Deployment verified independently.** Both functions were fetched from
+  TEST and compared byte for byte with the committed artifacts:
+  - `finance` v26: 656,429 B, sha256 `ce34776a…236d`;
+  - `needs-attention` v17: 214,404 B, sha256 `b3a8d2f8…dbb9`;
+  - both ACTIVE, verify_jwt, one `index.js`, equal; both `--check` MATCH;
+    HEAD `18eab9d`.
+- **Why an isolated organisation.** In `ORG-TEST-001`, every overdue OUT
+  is projected on today, so its "today" can never show the clean
+  1000 → 700 → 600 example. The proof therefore ran in a temporary ZZTEST
+  organisation, `ORG-TEST-D1`, set up as follows:
+  - Airtable "Organisation & Branding" row "ZZTEST F17 D1 Proof Org",
+    Europe/London;
+  - the TEST manager's profile was switched to it temporarily, with its
+    own Manage grant `97518d24…` (`ORG-TEST-001` kept its grant);
+  - every write went through the deployed APIs as that real user, except
+    two fixture invoices plus their lines, written to Airtable with
+    Finance's own `invoiceCreateFields` mapping so the F7 receipt route
+    would accept them.
+  - The first receipt attempt returned 409 `invoice_data_invalid`: an
+    invoice without its stored line is refused. The line was added and
+    the receipt was retried.
+- **Fixtures (all through the APIs):**
+  - F2 threshold 601.00 (settings revision 1);
+  - supplier `FSU-0F11CC7DD71C`;
+  - custom-date schedule `FSA-26CFF3D6B2C8`: `FSI-735164C75450` 300.00 and
+    `FSI-F16CBAFBADB5` 100.00, both due 2026-10-02;
+  - balance `FBB-440DB25FDF3B` 1000.00 as at 2026-10-01 (yesterday);
+  - payment `FSP-D1F8C926FF8D` 300.00 paid 2026-10-02. The first attempt,
+    sent at the same moment as the balance write, returned 409
+    `finance_commercial_busy` and saved nothing; the retry gave 201;
+  - Needs Attention Settings: ATT-054 enabled for `ORG-TEST-D1` only.
+
+| # | Check | Result (live) |
+|---|---|---|
+| 1 | Exact approved example (30d, 3m, money-out) | Row 1 `out:supplier_payment:FSP-D1F8C926FF8D` **actual** 300.00 → **700.00**; row 2 `out:supplier_instalment:FSI-F16CBAFBADB5` confirmed 100.00 → **600.00**. Balance today 700.00, projected low **600.00** on **2026-10-02**, first breach 2026-10-02, thresholdBreached **true**, belowThresholdBy **1.00**, end 600.00, reconciles. (The old order put the instalment first: low 700.00, no breach.) |
+| 2 | ATT-054 parity | One Warning case `cash_balance_below_threshold\|cash_position:ORG-TEST-D1`: projectedLow **600.00**, projectedLowDate 2026-10-02, safetyThreshold **601.00**, firstBreachDate **2026-10-02**, belowThresholdBy **1.00**, balance 1000.00 as at 2026-10-01 (`FBB-440DB25FDF3B`), destination finance/cash-flow 3m position, complete, no config issues |
+| 3 | Actual IN today + forecast OUT | Fixture invoice `FIV-D1F170000001` 200.00 due 10-20; F7 receipt `FPY-D07F609A5951` 50.00 received today. Order: actual OUT 300.00 → 700.00, **actual IN 50.00 → 750.00**, then confirmed OUT 100.00 → 650.00; 10-20 IN 150.00 → 800.00. Low 650.00 today, headroom 49.00, not breached; ATT-054 cleared by itself (NA Clear) |
+| 4 | Multiple Actuals + forecast IN today + a future date with OUT and IN | Added `FSA-49D55A63D841` (`FSI-B57B663A35EB` 50.00 due today, paid `FSP-6C45886467AB` today; `FSI-A654B507CCC8` 50.00 due 10-20) and fixture `FIV-D1F170000002` 80.00 due today. Today: actual OUT 50.00 → 950.00, actual OUT 300.00 → 650.00, actual IN 50.00 → **700.00** (= balance today), then confirmed OUT 100.00 → **600.00**, **confirmed IN 80.00 → 680.00**. 10-20: **OUT 50.00 → 630.00 before IN 150.00 → 780.00**. Low 600.00 today, breached, 1.00 below; money-in (3 rows) and money-out (4 rows) show the same balances and reconcile; ATT-054 gives the same numbers (end 780.00) |
+| 5 | Future-date order | 10-20 in the D1 org: OUT before IN. Main organisation: identical to before (below) |
+| 6 | No source date rewritten | Instalments: original due = due (10-02 ×3, 10-20). Payments paid 10-02 ×2. Balance as at 10-01. On every row the cash date equals the source date; no Actual moved to another date |
+| 7 | F17 baseline outside D1 (`ORG-TEST-001`) | Before and after the proof: 30d 30 events, low 29097.50 on 10-31, end 29277.50, timeline hash `3cf20410…`; 3m 51 events, low = end 12187.75 on 2027-01-01, hash `9c5661c7…`. Start B5 as at today, so there are 0 Actual rows and the order equals the old rule. NA Clear (complete). Audit 476 unchanged |
+
+### FIN17.17 Final F17 resting TEST state (F17 COMPLETE IN TEST)
+
+- **Deployed:** `finance` v26 / `needs-attention` v17 (from `18eab9d`).
+  Production `bkkukymqaxawnudoxdjs` is untouched: 9 functions, no `finance`
+  or `needs-attention`.
+- **`ORG-TEST-001`** is exactly the FIN17.14 state:
+  - balances B1–B5 (start B5 40000.00 as at 2026-10-02);
+  - F2 threshold null;
+  - NA Settings for ATT-047..054 absent; NA Clear;
+  - one active Finance grant, Manage `6f08e287-64ec-4845-a2bd-dd9ce284bc63`;
+  - `module_finance` ON; Europe/London;
+  - audit 476.
+- **D1 proof organisation retired:**
+  - manager profile back on `ORG-TEST-001`;
+  - grant `97518d24-347d-4f3f-bd1e-65f7bae4bf3b` revoked with a note;
+  - Airtable rows deleted: the `ORG-TEST-D1` organisation row, its Finance
+    Settings row, the ATT-054 setting, the 2 fixture invoices, 2 lines and
+    the F7 payment row.
+- **Retained in Supabase (append-only history).** These rows stay under
+  `organisation_id = ORG-TEST-D1`, which no longer resolves, so they are
+  unreachable through any API and never read for `ORG-TEST-001`:
+  - supplier `FSU-0F11CC7DD71C`;
+  - agreements `FSA-26CFF3D6B2C8` and `FSA-49D55A63D841`;
+  - 4 instalments and 2 payments;
+  - balance `FBB-440DB25FDF3B`;
+  - 12 audit rows (all audit: 488 = 476 + 12).
+- **Harness tokens cleared** (all `tok` null). A `DELETE` on
+  `f2probe.tokens` was held by the MCP destructive-statement gate and did
+  not run; the token was nulled with an `UPDATE` instead. `f2probe`
+  cleanup stays an operator item.
+- **Suites after the live proof:**
+  - F17 97/97, ATT-054 29/29, money-out 76/76, NA finance 64/64, NA
+    113/113, NA foundation 78/78, settings 100/100;
+  - bundle tests 24/24 + 8/8;
+  - full regression **89/89** files;
+  - `finance` and `needs-attention` `--check` MATCH.
+- **Not started:** F18 Month Report.
