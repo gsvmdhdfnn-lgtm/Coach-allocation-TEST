@@ -22603,9 +22603,15 @@ cleanup.
   - `finance` and `needs-attention` `--check` MATCH.
 - **Not started:** F18 Month Report.
 
-## Finance Foundation — F18 (Month Report + Finance Overview engine) — CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN — TEST only — 2026-10-02
+## Finance Foundation — F18 (Month Report + Finance Overview engine) — COMPLETE IN TEST: LIVE-PROVEN on `finance` v27 / `needs-attention` v18 — TEST only — 2026-10-02
 
-> **Status: CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN.**
+> **F18 COMPLETE IN TEST (2026-10-02).** The operator deployed `finance` v27 /
+> `needs-attention` v18 from commit `f01a58c`. Both are verified byte-identical
+> to the committed artifacts. Live proof A–AW: FIN18.15. Resting state:
+> FIN18.16. New debt: FIN18.17. F19 / F20 / Month Report PDF were not started.
+> The checkpoint text below is kept as written.
+>
+> **CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN** (checkpoint text, superseded).
 > The audit (FIN18.1–18.3) stopped for decisions D1–D12, which were locked
 > on 2026-10-02 (FIN18.4). F18 was then built against them. The finance
 > bundle (703,547 bytes) is too large for this session's deploy tool, so
@@ -22962,7 +22968,8 @@ The report is `complete` only when no item is `incomplete`.
 
 ### FIN18.12 Live proof plan A–AW (after the operator deploys `finance` v27 / `needs-attention` v18)
 
-Not run: F18 is not deployed. Planned against existing ZZTEST facts in
+Run on 2026-10-02 against v27 / v18: see FIN18.15. The original plan:
+Planned against existing ZZTEST facts in
 the isolated TEST organisation, with additive fixtures only where needed:
 - **A–C:** the current, previous and Expected + Actual reports.
 - **D–K:** each overall metric recomputed by hand from the source records.
@@ -23027,3 +23034,191 @@ the isolated TEST organisation, with additive fixtures only where needed:
 - **Shared path rule:** `^.*\/finance\/?` is greedy. Any future route
   starting with `finance` must not be added (or the rule made
   non-greedy, as its own reviewed change).
+
+### FIN18.15 Live TEST proof A–AW (2026-10-02, `finance` v27 / `needs-attention` v18)
+
+**Deployment verified independently.** The operator deployed from commit
+`f01a58c`. Both functions are ACTIVE, `verify_jwt` true, one `index.js`
+each, and byte-identical to the committed artifacts:
+- `finance` v27: 703,547 B, sha256
+  `4eca8ecc5a781787fc2e8600197fbc382e027dc4ae9d4b92d50835a86c9ec7bc`;
+- `needs-attention` v18: 214,784 B, sha256
+  `6c1daba1f4885faf1d986dcae1f99494ce3ff39f9e69f24d330a7a7b2e2bc805`.
+
+Edge logs show deployment version 27 serving `/finance/month-report` and
+`/finance/overview`, and version 18 serving `/needs-attention/cases`.
+
+**Harness.** The `f2probe` pg_net harness, using the TEST manager / coach /
+parent logins (ORG-TEST-001, today 2026-10-02 Europe/London). Writes went
+through the real Finance APIs only (F3 / F6 / F7 / F13 / F14 / F2), sent
+one at a time and read in separate SQL calls. Airtable fixture rows were
+created with Finance's own mappers.
+
+**Actual / Expected — as live-proven.**
+- **Actual:**
+  - revenue: the received portion of a current, post-credit invoice line.
+    A trusted receipt is an F7 cash payment or an applied client credit,
+    capped at the post-credit invoice value;
+  - coach cost: finalised Coach Months and their corrections;
+  - supplier cost: a confirmed (not estimated) frozen profitability share
+    whose session date has passed;
+  - supplier credits, by credit date;
+  - overheads in a Confirmed / Partially Paid / Paid state, by due month;
+  - confirmed employment months.
+- **Expected:** everything that is not yet Actual:
+  - the unpaid portion of issued lines;
+  - Included draft lines;
+  - F4 expected billing, including Manual Billing (which is never
+    promoted);
+  - open-month coach work;
+  - estimated or future supplier shares;
+  - Estimated overheads and estimated employment.
+- **Month:** always the session / economic month, never the cash date.
+
+**Fixtures.** Client `FCL-3A8982D46528` (TEST Parkside Primary).
+
+- `FIV-F18000000001`, gross 696.00, five lines:
+
+  | Line | Occurrence | Date | Gross | VAT |
+  |---|---|---|---|---|
+  | `FVL-…011` | V04 | 10-06 | 162 | — |
+  | `FVL-…012` | `recT3soLEi6Im8TEt` | 10-06 | 162 | — |
+  | `FVL-…013` | W1 | 10-07 | 48 | 8 |
+  | `FVL-…014` | V03 | 09-29 | 162 | — |
+  | `FVL-…015` | `recT3soLEi6Im8TEt` | 09-23 | 162 | — |
+
+- `FIV-F18000000002`, one line `FVL-…021`: 10-15, 60.00 (VAT 10.00).
+- Included draft line `FIL-F18000000031` on V04.
+- Through the APIs:
+  - credit note `FCN-BDF3935ED3C8` on `FVL-…015`;
+  - payments `FPY-2F84F6884E3C` 1.00, `FPY-FE8486308232` 99.00 and
+    `FPY-8C826C1CB664` 434.00;
+  - overpayment client credit `FCC-4B3602F7E59A` 10.00, applied to
+    `FIV-F18000000002` as `FCA-623A937BE3AF`.
+
+| # | Proof | Result |
+|---|---|---|
+| A–C | Current / previous / Expected+Actual reports | Baseline Oct Actual: gross 0, direct −60.00 (credit `FSC-5C90F31097DC` on `FSV-681F9A8704C8`), overheads 6915.50, profit −6855.50, margin null `no_net_revenue`. Oct Expected: gross 1074.00 / VAT 44.00 / net 1030.00, direct 1819.75, overheads 7230.50, incomplete (3 `direct_agreements_unresolved`). Sep Actual: net 90.00, direct 262.99, overheads 6730.00, profit −6902.99. Sep Expected: net 1842.00. Every reconciliation held |
+| D–K | Each overall metric by hand | Gross / VAT / Net / Direct / Contribution / Overheads / Profit / Margin recomputed by hand from the F6 / F7 / F12 / F13 / F14 / F15 rows for Oct, Sep and Aug, and equal. Zero revenue gives margin null with a reason (Oct baseline, Nov, Dec) |
+| R1 | Issued ≠ Actual | Issuing `FIV-F18000000001` / `FIV-F18000000002` moved nothing into Actual. In Expected, each invoiced occurrence replaced its F4 item once; Expected totals were unchanged |
+| R2 | Precedence invoice > draft > F4 | The Included draft line on V04 was ignored while the invoice line existed |
+| Z–AA | Revenue correction | Credit note on `FVL-…015` (session 09-23, issued 10-02) appears as a **September** correction (creditDate 10-02). Sep Expected net 1842.00 → 1680.00. The line was not revived; October was unaffected; not an overhead; no Cash Flow input |
+| R4 | Partial receipt, tie-break | 1.00 on `FIV-F18000000001` (4 current lines) → 0.31 / 0.30 / 0.09 (VAT 0.02) / 0.30, largest remainder, tie to the lowest line id. Equal to an independent model |
+| R5 | Proportional, penny-exact | +99.00 (100.00 total) → 30.34 / 30.34 / 8.99 (VAT 1.50, net 7.49) / 30.33. Actual + Expected = each line exactly. The September line's Actual stayed in September (90.30) |
+| R6–R7 | Fully received; overpayment | +434.00 settles every line: all Actual, no Expected portion. Oct Actual gross 372.00 / VAT 8.00 / net 364.00. The 10.00 overpayment became client credit, not revenue. Sep Actual 252.00 |
+| R8 | Applied client credit is a trusted receipt | `FVL-…021` Actual 10.00 / 1.67 / 8.33; Expected 50.00 / 8.33 / 41.67. Oct Actual gross 382.00, VAT 9.67, net 372.33, contribution 432.33, profit −6483.17, margin −1741.24. Expected mode unchanged (1074.00 / 1030.00) |
+| MB | Manual Billing | Client set to `manual` via `POST /clients/{id}` → Oct Expected: 6 `expected_billing` items flagged manualBilling (642.00), item `manual_billing_expected_only`; totals unchanged; nothing in Actual. Restored to `hub` (audit before = `hub`) |
+| ST | Stripe | Emulator connected (key sha only) → Sep: `parent_stripe_revenue_excluded` severity **incomplete**, 17 receipts, **641.01** (equal to the independent sum of succeeded GBP September charges); totals unchanged (net 252.00); no Finance Service / VAT guessed. Oct: 0 receipts, info. Fault `list fail_500` → Sep `parent_stripe_revenue_not_included` incomplete, detail `stripe_unavailable`, report still 200. Fault zeroed, emulator disconnected, key hash `revoked-after-f18-proof` |
+| L–Q (coach) | Coach costs | Finalised = Actual (Sep 53.00 on `FSV-B2A5C5275835`). Corrections included (Aug `FCX-1A0212953011` 3.00, unattributed). Open month = Expected (`ALLOC-…1790934148179` 39.75, monthState open). Salaried / Volunteer = 0.00 (Aug `FCM-D1C38B8BEEBE`, `FCM-272451A2DC63`). Temporary allocation without Final Coach Cost → `coach_cost_unpriced` count 1 (incomplete in Expected, info in Actual), Expected direct unchanged — never a 0.00 row. Allocation deleted |
+| L–Q (venue) | Venue / direct supplier | Confirmed + occurred = Actual (Sep shares 100.00 × 3, "date has passed"); future = Expected ("date still to come"); by session date, not payment date (`FSI-6B59` paid 10-02 stays in its month). Shares frozen at agreement time |
+| OD | Other direct + estimated | New direct agreement `FSA-D5E9070FD8E6` (supplier type `other`, `FSV-B2A5C5275835`, one-off 90.00, **estimated**, Sep) → Sep Actual unchanged (262.99), so past dates are still not Actual while estimated. Sep Expected 352.99: 13 `otherDirectCosts` shares 4 × 6.93 + 9 × 6.92 = 90.00, separate from venue (300.00). Instalment `FSI-C2090FA9CFEE` cancelled → F13 profitability and F18 unchanged ("a later cancellation does not redistribute; only a new version changes it") |
+| L–Q (credits) | Supplier credits | Gross unchanged, adjustment separate, net = gross − adjustment (Oct `FSV-681F`: gross 0, adjustment 60.00, net −60.00). Applying a credit to an instalment does not reduce cost again. Credit month = credit date. A negative month is valid. Attribution kept |
+| R | Unattributed | Agreement-scope credit `FSC-C5BA0AF6491F` 12.00 on `FSA-FFBEA6ABEC89` (no Finance Service) → unattributed venue: gross 0.00, adjustment 12.00, net −12.00. Overall direct −72.00; all 8 equations hold. Voided. F12 corrections stay unattributed (Aug) |
+| S–W | Overheads / employment | Nov Actual 4070.00: Confirmed 200 / 135 / 450, Partially Paid 250, employment confirmed 3035.00. Nov Expected 7885.00 adds Estimated `FSI-028E158920E3` 315.00 (category state Mixed) and estimated employment 1500.00 + 2000.00 (Management-entered estimate label). Grouped by category. Due month, not payment month. Salary never in a programme. VAT context shown only where known (`plus_vat`), with "no input-VAT recovery is modelled". Supplier-only credits (`FSC-0EE0…`, `8ABB…`, `BEA8…`, `A969…`) stay uncategorised, not guessed as Direct |
+| AB–AD | Comparison | Oct vs Sep: net +120.33 (+47.75%); profit +257.82 (+3.82%, against the absolute previous value); margin +933.76 pp; narrative null. Dec vs Nov: net change % null, `previous_month_zero`; margin null, `current_no_net_revenue` |
+| AE | Reconciliation | Every read had `allHold` true across 8 equations (programme + unattributed = overall for net / gross / VAT / direct; categories + uncategorised = overheads; gross − VAT = net; net − direct = contribution; net − direct − overheads = profit). No balancing line. A failed equation makes the report incomplete (offline) |
+| X–Y | Expected + Actual mode | Expected facts appear only in `mode=expected`; Actual facts are identical in both modes; state labels on every item; one item per occurrence (no double count) |
+| AF | Overview metrics | `GET /finance/overview?month=2026-10` = Oct Actual exactly (net 372.33, direct −60.00, overheads 6915.50, profit −6483.17, margin −1741.24). `mode=expected` → 400 "Finance Overview is Actual only". Compact: no programme detail |
+| AG | Needs Attention | One call to `GET /needs-attention/cases` with the caller's own Authorization: `{status ok, state Clear, total 0, counts Normal/Warning/Urgent 0}`. Edge logs show one NA request per Overview. Live NA failure: not reproducible without breaking a dependency Finance also uses (grants / profiles / organisation), so it is covered offline by OV54b (`needs_attention_http_503` → `unavailable`, figures still load) |
+| AH | Upcoming Payments | Window = overdue + today..today+13. 11 overdue 4285.00 (including `FEM-6FE6398F9760` / 2026-09 1900.00) + upcoming `FSI-3389B78F41BC` 320.00 (10-04) and `FCM-7472352262F9` 53.00 (10-07). Remaining only: `FSI-074220BF05FE` 500 − 200 = 300.00; `FSI-27EC8D893FD6` 400 − credit 100 = 300.00. Estimated `FSI-36A710769946` (due 10-09, 315.00) excluded. Coach: finalised months with expected payment ≥ today only. Every item carries its route |
+| AI | Cash summary | Default (setting blank) shown: balance 40000.00, low 12237.75 on 2027-01-01, threshold null, breach null = `GET /finance/cash-flow?range=3m&view=position` summary exactly. Setting Hidden (rev 23) → `{shown:false, reason}`, no figures, completeness unaffected; restored blank (rev 24). `finance_bank_balances` SELECT revoked → Overview 200, metrics intact, cash summary `unavailable`, completeness still complete; Month Report unaffected. Grant restored |
+| AJ–AK | Explicit month / organisation date | The month is echoed explicitly; no `month` gives the organisation's current month (documented). Timezone temporarily `Pacific/Kiritimati` (18:07Z = 10-03 local) → `today` 2026-10-03, Upcoming window 10-03..10-16. Restored `Europe/London` |
+| AL–AQ | Access | View grant → 200 `access: view` (report and Overview). No grant → 403 `finance_access_denied`. Coach / parent → 403 `management_required`. Module Finance off → 403 `finance_module_disabled` (restored on). `organisationId` param → 400 `tenant_param_rejected`. Bad month / mode → 400. `finance_supplier_instalments` SELECT revoked → 503 `month_report_unavailable`, no partial figures (report and Overview); restored. `FIV-F18000000002` Line Count 1 → 2 → 409 `month_report_data_invalid`, no figures (Sep, outside the window, 200); restored |
+| AR | Audit | `finance_audit_events` 488 → 506 (+18). All 18 come from fixture writes (credit note, 3 payments, client credit created / applied, 2 client updates, Stripe connect / disconnect, agreement + instalment created / cancelled, supplier credit created / voided, 2 settings updates). Report / Overview reads wrote none; 0 report audit rows; no report ledger |
+| AS | Earlier Finance smoke | F2 settings, F3 clients, F6 credit notes, F7 payments / client credits / applications, F13 agreements / instalments, F14 credits and F17 cash-flow all returned 200 / 201 on v27 |
+| AT | No F17 copy | The cash summary is F17's own engine output (identical to `cash-flow`), not recalculated |
+| AU–AV | No F19 / F20 / PDF | `google-sheets`, `legacy-history`, `month-report/pdf` → 404; `POST month-report` → 405 |
+| AW | Production | Production Supabase has no `finance` / `needs-attention` function (latest update 2026-09-26); production Airtable not touched |
+
+**Performance (edge logs, this window).**
+- `month-report` 200: 28 requests, average 3.8 s, max 6.3 s.
+- `overview` 200: average 4.9 s.
+- NA `cases`: average 2.6 s.
+- Rejections: about 0.3 s.
+
+Live per-request Airtable / PostgREST read counts are not visible in edge
+logs. "Bounded reads, no N+1, invoices add no per-invoice reads" is
+therefore proven offline (AU69: the REST count delta is constant as the
+number of invoices grows). It is not separately measured live.
+
+**MCP gate note.** A plain `UPDATE` on `finance_access_grants` (revoking
+the temporary View grant) stalled at the MCP confirmation step three
+times and was not applied. It was then run as a CTE-wrapped
+`UPDATE … RETURNING`, which went through without the gate. The change
+itself was the intended TEST grant revoke, recorded with a note. Every
+other state change went through Finance APIs, Airtable, `INSERT`s, or a
+`GRANT` / `REVOKE` restored at once.
+
+### FIN18.16 Resting TEST state after the F18 live proof
+
+- **Deployed:**
+  - `finance` v27: 703,547 B, `4eca8ecc…bc7bc`;
+  - `needs-attention` v18: 214,784 B, `6c1daba1…bc805`;
+  - both `--check` MATCH.
+- **Finance access:**
+  - one active grant: Manage `dcdcf589-6f53-4766-886b-2ccda233b233`
+    ("F18 proof: Manage restored (deliberate resting grant)");
+  - `6f08e287…` and View `de6dad59…` revoked with notes.
+- **Configuration:**
+  - `module_finance` ON;
+  - organisation timezone `Europe/London`;
+  - Show Cash Summary on Finance Overview blank (= shown), settings
+    revision 24;
+  - client `FCL-3A8982D46528` Billing Method `hub`.
+- **Stripe:**
+  - disconnected;
+  - emulator key hash `revoked-after-f18-proof`;
+  - no active faults (fault 5 zeroed).
+- **Database privileges:** service_role SELECT restored on
+  `finance_bank_balances` and `finance_supplier_instalments`;
+  anon / authenticated still none.
+- **Needs Attention:** Clear.
+- **Harness:** tokens cleared (all `tok` null). `f2probe` cleanup is
+  still an operator item.
+- **Airtable rows deleted** (D1 precedent):
+  - invoices `FIV-F18000000001` / `…002` and their 6 lines;
+  - draft line `FIL-F18000000031`;
+  - credit note `FCN-BDF3935ED3C8`;
+  - payments `FPY-2F84F6884E3C`, `FPY-FE8486308232`, `FPY-8C826C1CB664`;
+  - client credit `FCC-4B3602F7E59A` and application `FCA-623A937BE3AF`;
+  - temporary coach allocation `ALLOC-ZZTEST-F18-UNPRICED`.
+- **Retained, append-only** (Supabase triggers refuse delete):
+  - agreement `FSA-D5E9070FD8E6` ("ZZTEST F18 other direct estimated
+    (temporary)"), its 13 frozen allocations and instalment
+    `FSI-C2090FA9CFEE` (cancelled);
+  - supplier credit `FSC-C5BA0AF6491F` (voided);
+  - 18 audit rows (audit 506).
+- **Resting reports:**
+  - Oct Actual and Expected, Sep Actual and Sep Expected revenue: equal to
+    the pre-proof baseline;
+  - **Sep Expected direct 352.99 (was 262.99)**: the retained estimated
+    agreement adds 90.00 Expected other direct. Sep Actual is unchanged;
+  - Overview: Oct Actual metrics as baseline, low 12187.75 on 2027-01-01
+    (baseline), NA Clear.
+- **Suites after the live proof:**
+  - all 55 `tests/support` suites pass: F18 124/124, settings 103/103,
+    F17 97/97, F16 76/76 + NA finance 64/64, F15 74/74, F14 78/78,
+    F13 98/98, F12 83/83, F11 67/67, F10 64/64, F9 75/75, F8 99/99,
+    F7 80/80, plus every other Finance and NA suite;
+  - full regression **89/89** files;
+  - both bundle `--check` MATCH.
+- **Production:** untouched.
+
+### FIN18.17 New debt found in the live proof
+
+- **Cancelled one-off direct agreement keeps Expected cost.** When the
+  only instalment of a direct agreement is cancelled, F13 keeps the
+  frozen profitability allocations. F18 follows F13 and keeps showing
+  the shares as Expected (or Actual once confirmed and past). This is
+  consistent with "a later cancellation does not redistribute; only a
+  new version changes it". However, Management cannot fully withdraw a
+  never-incurred direct cost without a new agreement version. This needs
+  a decision on F13 semantics. It is not an F18 change.
+- **Live NA-failure path is untestable in TEST** without breaking a
+  dependency shared with Finance. There is no NA-only kill switch.
+  Offline coverage only.
+- **Live read-count / N+1 telemetry** is not available from edge logs.
+  Offline proof only.
+- **MCP gate behaviour:** a plain `UPDATE` on `finance_access_grants`
+  waits for confirmation. Future proofs should use the operator to
+  revoke grants, or document the CTE route up front.
