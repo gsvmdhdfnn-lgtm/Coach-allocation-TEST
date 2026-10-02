@@ -136,7 +136,7 @@
  *   GET  /supplier-instalments/{FSI-..}              one instalment + payments + history
  *   POST /supplier-instalments/{FSI-..}/confirm-estimate | move | split | payment | cancel
  *   GET  /supplier-cost-facts[?from&to]              profitability facts + cash-timing facts, kept separate
- *   No route here creates an overhead / salary (F15), a bank payment or a Cash Flow event.
+ *   No route here pays anyone through a bank or creates a Cash Flow event (F15 overheads / salaries are below).
  *
  * F14 supplier / venue credits (Finance read = GET, Finance manage = POST); never auto-applied, never deleted:
  *   GET  /supplier-credits[?supplierId&agreementId&status]
@@ -145,6 +145,25 @@
  *   POST /supplier-credits/{FSC-..}/apply            { instalmentId, amount, reason? }  explicit, same supplier, confirmed + unsettled only
  *   POST /supplier-credits/{FSC-..}/unapply          { applicationId, reason }  before the instalment is settled only
  *   POST /supplier-credits/{FSC-..}/void             { reason }  only a credit that was never applied
+ *
+ * F15 overheads / salaries & employment costs (Finance read = GET, Finance manage = POST). An overhead is an F13
+ * general supplier agreement + an F15 category (F13 keeps its amount, schedule, estimates, payments and payee);
+ * contractors stay F13 suppliers; salaried employment is F15's own ledger (not payroll, never allocated to sessions):
+ *   GET  /overhead-categories[?active]               categories + usage + suggestions (nothing seeded)
+ *   POST /overhead-categories                        { name, reason? }
+ *   GET  /overhead-categories/{FOC-..}               one category + where used + history
+ *   POST /overhead-categories/{FOC-..}               { name?, active?, reason? }  rename / deactivate / reactivate
+ *   GET  /overheads[?categoryId&month]               by category: supplier overheads + employment costs; uncategorised
+ *   POST /overheads                                  { agreementId, categoryId, reason? }  categorise one general agreement version (fixed)
+ *   GET  /overheads/{FSA-..}                         agreement + schedule + versions with their categories + history
+ *   POST /overheads/{FSA-..}/version                 F13 version body + categoryId?  new version + its category, one transaction
+ *   GET  /employment-costs[?active]                  salaried employees: terms + this month
+ *   POST /employment-costs                           { personRef?|name, categoryId, annualSalary, payDay, startDate, endDate?, employerPensionMonthlyEstimate?, employerNiPayeMonthlyEstimate?, notes?, reason? }
+ *   GET  /employment-costs/{FEM-..}[?from&to]        versions + months (estimated / confirmed / paid) + history
+ *   POST /employment-costs/{FEM-..}/version          { effectiveFromMonth, changed fields..., reason }
+ *   POST /employment-costs/{FEM-..}/months/{YYYY-MM}/confirm-estimate   { amount | useEstimate: true, reason? }  never marks Paid
+ *   POST /employment-costs/{FEM-..}/months/{YYYY-MM}/payment            { amount (= confirmed, full only), paidDate, method?, reference?, note? }
+ *   GET  /overhead-facts[?from&to]                   reporting facts (supplier overheads + credits + employment months)
  *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
@@ -180,8 +199,25 @@ import { matchStripeRoute, parseParentLink, parseStripeQuery, parseStripeSetting
 import { matchCoachCostRoute, parseCorrection, parseCostQuery, parseFinalise } from "./finance-coach-costs.ts";
 import { type CostDeps, correctFinanceMonth, finaliseWorkerMonth, listCostFacts, listFinanceMonths, readCostMonth, readFinanceMonth, readWorkerMonth, readWorkerMonths } from "./finance-coach-costs-orchestrator.ts";
 import { matchSupplierRoute, parseAction, parseAgreement, parseSupplierCreate, parseSupplierQuery, parseSupplierUpdate } from "./finance-suppliers.ts";
-import { matchCreditRoute, parseCreditAction, parseCreditCreate, parseCreditQuery } from "./finance-supplier-credits.ts";
+import { matchCreditRoute, parseCreditAction, parseCreditCreate as parseSupplierCreditCreate, parseCreditQuery } from "./finance-supplier-credits.ts";
 import { createCredit, creditAction, listCredits, readCredit } from "./finance-supplier-credits-orchestrator.ts";
+import { matchOverheadRoute, parseCategorise, parseCategory, parseEmploymentCreate, parseEmploymentVersion, parseItemAction, parseOverheadQuery, parseOverheadVersion } from "./finance-overheads.ts";
+import {
+  categoriseOverhead,
+  createCategory,
+  createEmployment,
+  employmentItemAction,
+  listCategories,
+  listEmployment,
+  listOverheadFacts,
+  listOverheads,
+  readCategory,
+  readEmployment,
+  readOverhead,
+  updateCategory,
+  versionEmployment,
+  versionOverhead,
+} from "./finance-overheads-orchestrator.ts";
 import { type SupplierDeps, changeInstalmentAction, createAgreement, createSupplier, listAgreements, listCostFacts as listSupplierCostFacts, listInstalments, listSuppliers, readAgreement, readInstalment, readSupplier, updateSupplier, versionAgreement } from "./finance-suppliers-orchestrator.ts";
 import { matchFamilyRoute, parseApply, parseDecision, parseFamilyPayment, parseFamilyQuery, parseReason } from "./finance-family.ts";
 import { applyFamilyCredit, listFamilyCredits, listRefundDecisions, listRevenueCorrections, readFamily, readRefundDecision, readRefundSource, recordFamilyPayment, recordRefundDecision, reverseRefundDecision, voidFamilyCredit } from "./finance-family-orchestrator.ts";
@@ -636,13 +672,63 @@ async function handleCredits(req: Request, url: URL, match: NonNullable<ReturnTy
   if (r.name === "credits.one") return commercialResponse(await readCredit(deps, caller, r.params.creditId));
   const raw = await req.text();
   if (r.name === "credits.create") {
-    const p = parseCreditCreate(raw, isTenantKey);
+    const p = parseSupplierCreditCreate(raw, isTenantKey);
     if (!p.ok) return commercialResponse({ status: "error", ...p });
     return commercialResponse(await createCredit(deps, caller, p.input));
   }
   const p = parseCreditAction(r.params.action, raw, isTenantKey);
   if (!p.ok) return commercialResponse({ status: "error", ...p });
   return commercialResponse(await creditAction(deps, caller, r.params.creditId, r.params.action, p.input));
+}
+
+/** F15 routes: same order as F3-F14 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleOverheads(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchOverheadRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const r = match.route;
+  // Writes take no query parameters at all.
+  const q = parseOverheadQuery(req.method === "GET" ? r.name : "write", url.searchParams, isTenantKey);
+  if (!q.ok) return commercialResponse({ status: "error", ...q });
+  if (r.name === "categories.list") return commercialResponse(await listCategories(deps, caller, { active: q.active }));
+  if (r.name === "categories.one") return commercialResponse(await readCategory(deps, caller, r.params.categoryId));
+  if (r.name === "overheads.list") return commercialResponse(await listOverheads(deps, caller, { categoryId: q.categoryId, month: q.month }));
+  if (r.name === "overheads.one") return commercialResponse(await readOverhead(deps, caller, r.params.agreementId));
+  if (r.name === "employment.list") return commercialResponse(await listEmployment(deps, caller, { active: q.active }));
+  if (r.name === "employment.one") return commercialResponse(await readEmployment(deps, caller, r.params.employmentId, { fromMonth: q.fromMonth, toMonth: q.toMonth }));
+  if (r.name === "facts") return commercialResponse(await listOverheadFacts(deps, caller, { fromMonth: q.fromMonth, toMonth: q.toMonth }));
+  const raw = await req.text();
+  if (r.name === "categories.create" || r.name === "categories.update") {
+    const p = parseCategory(raw, isTenantKey, r.name === "categories.create");
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    if (r.name === "categories.create") return commercialResponse(await createCategory(deps, caller, p));
+    return commercialResponse(await updateCategory(deps, caller, r.params.categoryId, p));
+  }
+  if (r.name === "overheads.categorise") {
+    const p = parseCategorise(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await categoriseOverhead(deps, caller, p));
+  }
+  if (r.name === "overheads.version") {
+    const p = parseOverheadVersion(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await versionOverhead(deps, caller, r.params.agreementId, p));
+  }
+  if (r.name === "employment.create") {
+    const p = parseEmploymentCreate(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await createEmployment(deps, caller, p.spec));
+  }
+  if (r.name === "employment.version") {
+    const p = parseEmploymentVersion(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await versionEmployment(deps, caller, r.params.employmentId, p));
+  }
+  const p = parseItemAction(r.params.action, raw, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  return commercialResponse(await employmentItemAction(deps, caller, r.params.employmentId, r.params.month, r.params.action, p.input));
 }
 
 /** F11 routes: same order as F3-F10 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
@@ -713,6 +799,10 @@ Deno.serve(async (req: Request) => {
     // F14 next: it owns only supplier-credits/...
     const credits = matchCreditRoute(route, req.method);
     if (credits) return await handleCredits(req, url, credits);
+
+    // F15 next: it owns only overhead-categories/..., overheads/..., employment-costs/... and overhead-facts.
+    const overheads = matchOverheadRoute(route, req.method);
+    if (overheads) return await handleOverheads(req, url, overheads);
 
     // F12 next: it owns only coach-costs/..., coach-summaries/... and coach-cost-facts.
     const coachCosts = matchCoachCostRoute(route, req.method);

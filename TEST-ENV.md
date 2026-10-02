@@ -20544,3 +20544,590 @@ row)**
   - every Finance + Needs Attention Finance suite green;
   - `finance --check` and `needs-attention --check` MATCH;
   - full `node tests/run-all.js` **85/85 files**.
+
+## Finance Foundation — F15 (overheads / contractors / salaries & employment costs) — CODE COMPLETE, NOT DEPLOYED — TEST only — 2026-10-02
+
+> **CODE COMPLETE / TESTS PASS / TEST SCHEMA APPLIED / NOT DEPLOYED / NOT LIVE-PROVEN.**
+>
+> - **Artifact:** `supabase/deploy-artifacts/finance/index.js`, 623,708
+>   bytes, sha256
+>   `19eeb53414fa986759e2e417836f9e6b5294d216e0218b7c12aeb9d9e511f508`
+>   (deterministic; `--check` MATCH). Too large to push through the MCP
+>   deploy tool from here, so it waits for an operator deploy (it will be
+>   `finance` v23). `finance` v22 is still the live function.
+> - **`needs-attention`:** unchanged (v14, artifact MATCH, sha256
+>   `0d5df081…9939`).
+> - **TEST schema:** `finance_f15_overheads_employment` applied
+>   (FIN15.9 / FIN15.13). It is additive and backward compatible with
+>   `finance` v22 (v22 never reads the new tables).
+> - **Also fixed (F14 regression, FIN15.12):** `index.ts` imported
+>   `parseCreditCreate` twice. The bundle kept the F14 one, so on v22
+>   F7's `POST /credit-notes/{id}/client-credit` and
+>   `POST /payments/{id}/overpayment-credit` parse with the supplier-credit
+>   parser and refuse a valid `{ amount, reason }` body (400). Fixed by
+>   aliasing the F14 import; v23 carries the fix.
+> - **Not built:** payroll software, salary allocation to sessions, F16
+>   Needs Attention rules, Cash Flow, Month Report.
+> - **Production untouched.**
+
+### FIN15.1 Pre-implementation audit (2026-10-02) — overlap reported, scope approved
+
+- **F13 already owns** (and keeps owning):
+  - non-Coach contractors: supplier type `contractor`, `hourly` cost type
+    (rate × expected monthly hours, always estimated, one confirmed
+    monthly amount, no timesheets; F13 tests CT26–CT28d);
+  - fixed monthly / quarterly / annual, one-off, scheduled and
+    custom-date costs;
+  - the `general` classification (not attributed to sessions) and the
+    rare `direct` Other Direct Cost;
+  - effective-dated versions that cancel only the predecessor's unpaid
+    instalments from the new start and refuse to reach back over paid or
+    credited ones;
+  - Estimated → Confirmed (actual or Use Estimate) → Paid, payments
+    Management-confirmed, never bank truth;
+  - due / paid dates and `/supplier-cost-facts`.
+- **F12 already owns** the salaried coach's £0 direct session cost (Cost
+  Basis "Salaried — no direct session cost").
+- **Nothing existed** for overhead categories, a category on a cost, or
+  salaried employment costs (code, F2 settings, Supabase, Airtable).
+- **F2 settings:** no overlap. **Needs Attention:** only
+  `invoice_overdue` / `invoice_draft_blocked` are active Finance rules; F15
+  needs no rule change.
+- **Legacy workbook:** only its tab names ("Other Costs", "Business
+  Overheads") and the design pack's category list are known; the Sheets
+  were not read (standing constraint).
+- The overlap was reported before any code and David approved the scope
+  (FIN15.2).
+
+### FIN15.2 Locked product decisions (David, 2026-10-02)
+
+1. **Overheads** = an existing F13 **general** supplier agreement version
+   + an F15 overhead category. No second overhead ledger. F13 stays the
+   source of amount, schedule, estimate confirmation, payment,
+   effective-date versioning and supplier / payee.
+2. **Contractors** stay F13's. F15 only categorises them, surfaces them in
+   Overheads and includes them in overhead facts.
+3. **Employer NI / PAYE / pension:** Management-entered monthly
+   estimates, clearly labelled. No NI / PAYE calculation in v1 (no
+   payroll-grade inputs). Not payroll software.
+4. **Salary payments:** full payment only in v1. No partial salary
+   payments.
+5. **Categories:** not seeded. The baseline list (Salaries & Employment
+   Costs, Admin / Contractors, Consultancy, Software, Vehicles, Insurance,
+   Marketing, Donations, Accounting / Legal, Other) is shown as
+   suggestions only. Create / rename / deactivate; history traceable.
+6. **Locked detail:**
+   - each F13 agreement version gets ONE category assignment, fixed;
+     recategorising from a later date is a new F13 agreement version;
+   - a general overhead has a supplier / payee ("Other Supplier" for
+     insurers, donation recipients, accountants, …);
+   - salaried employees are F15's own ledger of effective-dated versions;
+     monthly items show salary, pension estimate, NI / PAYE estimate,
+     total, state, expected payment date and paid date; F13's lifecycle
+     functions are reused;
+   - F12 Salaried allocations keep a £0 direct cost; salary is never
+     allocated to sessions / programmes.
+
+### FIN15.3 Model
+
+```
+F13 general agreement version (FSA) ──1:1──► finance_overhead_assignments (FOA)  ──► finance_overhead_categories (FOC)
+                                             (fixed; category name snapshot)          (rename / deactivate; never deleted)
+
+finance_employment_versions (FEV, per employment FEM)   append-only, effective from a month
+    └─ months are COMPUTED from the version governing each month;
+       a month Management acts on becomes finance_employment_items (FEI):
+       confirmed once (actual or Use Estimate) → paid once, in full
+```
+
+- **Category:** `name` (1–100, unique per organisation, case-insensitive,
+  including inactive ones), `active`, `revision`.
+- **Assignment:** one per F13 agreement version (unique index), general
+  agreements only, active category only, `category_name_at_assignment`
+  snapshot so a later rename stays traceable.
+- **Employment version:** optional `person_ref` (Coaches `Coach ID`,
+  verified by a read-only Coaches lookup; the name is taken from it),
+  otherwise `person_name`; `category_id`; `annual_salary_minor`;
+  `pay_day` 1–31 (a shorter month pays on its last day); `start_date`
+  (fixed); `end_date`; `effective_from_month`; optional monthly
+  `pension_estimate_minor` and `ni_paye_estimate_minor` (labelled
+  "Management-entered estimate"); `notes`; `reason`.
+- **Month line (computed):** salary = annual ÷ 12 (half away from zero);
+  estimate total = salary + pension + NI / PAYE; expected payment date =
+  pay day in that month; `partMonth` flag when employment starts / ends
+  inside the month (the estimate stays a full month — Management confirms
+  the actual).
+- **Item (stored once acted on):** the month's snapshot (version,
+  salary, estimates, estimate total), the confirmed `amount_due_minor`,
+  `used_estimate`, confirmed by / at / reason, then `paid_minor` (0 or the
+  full amount), `paid_date`, method / reference / note, paid by / at.
+- **No VAT on employment costs** (`vatTreatment` `not_applicable`).
+
+### FIN15.4 Rules (API plan first, database function re-checks everything)
+
+- **Categorise:** agreement exists and is `general` (a direct cost is
+  "not an overhead"); not already categorised (fixed); category exists
+  and is active.
+- **Overhead version** (`POST /overheads/{FSA}/version`): F13's own
+  version body + optional `categoryId` (default: the version it replaces'
+  category; required if that one has none). F13's `recordNewAgreement`
+  plans the version (all F13 rules: start later, never over paid /
+  credited instalments, profitability history) and F15 wraps the write so
+  F13's database function and the assignment run in **one transaction**
+  (`finance_overhead_version_record`). A version made directly on F13's
+  route is simply uncategorised until Management categorises it.
+- **Employment version:** must start after the latest version's month and
+  not before the start month; never on or before a month already confirmed
+  or paid (`confirmed_month_after_change`); a new end date may not fall
+  before the version's first month (`end_before_version_start`); start
+  date and person are fixed; something must change; a changed category
+  must be active.
+- **Confirm a month:** the month must be employed under its governing
+  version; `amount` OR `useEstimate: true` (F13's parser); once only;
+  never marks Paid.
+- **Pay a month:** confirmed first; amount must equal the confirmed amount
+  (full only); paid date not in the future; once only.
+- **Concurrency:** every write takes the shared Finance write lock
+  (`commercial:{org}`, via F13's `withLock`); the database functions
+  re-check state (`expected` paid amount, unique month / successor /
+  assignment indexes, revision on categories).
+
+### FIN15.5 Estimate lifecycle + payment — F13's functions, reused
+
+- A month line is mapped onto F13's `Instalment` shape (`asInstalment`) so
+  **`planChange` / `stateOf` / `remainingOf` / `stateLabelOf`** decide
+  Estimated → Confirmed → Paid. F15 computes no balance itself (drift
+  check Z9).
+- **Use Estimate** makes the estimate the confirmed amount due; Paid is a
+  separate action. Payments are "Management-confirmed — not a bank
+  reconciliation" (`source: management_confirmed`).
+- Supplier overhead estimates / payments stay on F13's
+  `/supplier-instalments/{FSI}/confirm-estimate | payment` (there is
+  deliberately no `/overheads/{id}/confirm-estimate | payment`).
+
+### FIN15.6 Reporting facts (`GET /overhead-facts`, for F18) + Cash Flow inputs (F17)
+
+- Range `?from&to` (months; default the 3 months ending this month; at
+  most 12).
+- **`supplier_agreement` rows:** every non-cancelled instalment of an F13
+  general agreement due in the range — category (or null =
+  uncategorised), payee, period, expected payment date, amount, gross /
+  VAT / net **only where known** (`no_vat`: gross = net, VAT 0.00;
+  `vat_included`: gross only; `plus_vat`: net only; unknown: none), state,
+  estimated, cash paid, credit applied, remaining, paid date, contractor /
+  hourly forecast.
+- **`supplier_credit` rows:** F14 credits on a general agreement (negative,
+  dated when recorded); voided credits and credits on direct agreements
+  are excluded; supplier-wide credits stay in `/supplier-cost-facts`.
+- **`employment` rows:** every employed month — category, person, period,
+  expected payment date, amount, VAT not applicable, state, components
+  (salary + labelled estimates), part-month flag, paid date.
+- `byCategory` totals. Nothing creates a Cash Flow event or a Month
+  Report; the expected payment date / estimated-or-confirmed amount / paid
+  date are the future Cash Flow inputs.
+
+### FIN15.7 API (all under `finance`, F1 rules) + access
+
+| Route | Access | Notes |
+|---|---|---|
+| `GET /overhead-categories[?active]` | View | + usage, + suggestions (never seeded) |
+| `POST /overhead-categories` | Manage | `{ name, reason? }` |
+| `GET /overhead-categories/{FOC}` | View | where used + history |
+| `POST /overhead-categories/{FOC}` | Manage | `{ name?, active?, reason? }` rename / (de)activate |
+| `GET /overheads[?categoryId&month]` | View | by category: supplier overheads + employment (people behind the total); uncategorised |
+| `POST /overheads` | Manage | `{ agreementId, categoryId, reason? }` |
+| `GET /overheads/{FSA}` | View | agreement, schedule, versions with categories, history |
+| `POST /overheads/{FSA}/version` | Manage | F13 version body + `categoryId?` |
+| `GET /employment-costs[?active]` | View | current terms + this month |
+| `POST /employment-costs` | Manage | `{ personRef? \| name, categoryId, annualSalary, payDay, startDate, endDate?, employerPensionMonthlyEstimate?, employerNiPayeMonthlyEstimate?, notes?, reason? }` |
+| `GET /employment-costs/{FEM}[?from&to]` | View | versions, months, history, direct session cost 0.00 note |
+| `POST /employment-costs/{FEM}/version` | Manage | `{ effectiveFromMonth, changed fields…, reason }` |
+| `POST /employment-costs/{FEM}/months/{YYYY-MM}/confirm-estimate` | Manage | `{ amount \| useEstimate: true, reason? }` |
+| `POST /employment-costs/{FEM}/months/{YYYY-MM}/payment` | Manage | `{ amount (= confirmed), paidDate, method?, reference?, note? }` |
+| `GET /overhead-facts[?from&to]` | View | FIN15.6 |
+
+- Order: 404/405 → 401 → 403 `management_required` (Coach / Parent) →
+  400 query / body (tenant keys rejected; writes take no query) → F1
+  `authorizeFinance` (no grant 403 `finance_access_denied`, View write 403
+  `finance_manage_required`, module off 403 `finance_module_disabled`).
+- Routed after F14 and before F12 in `index.ts`.
+
+### FIN15.8 Audit
+
+- `finance_overhead_category.created` / `.updated` (record
+  `{org}:{FOC}`; before / after, `changed`).
+- `finance_overhead.categorised` / `.versioned` (record `{org}:{FSA}`;
+  the version also writes F13's own agreement / instalment events in the
+  same transaction).
+- `finance_employment_cost.created` / `.versioned` (record `{org}:{FEM}`).
+- `finance_employment_item.estimate_confirmed` (estimate, confirmed,
+  usedEstimate, `paidStateUnchanged: true`) / `.paid` (record
+  `{org}:{FEM}:{YYYY-MM}`).
+- Context `contract: finance-overheads-v1`, route, actor. Reads and
+  refused writes write nothing (suite AU35). No deletes exist.
+
+### FIN15.9 Supabase (TEST) — applied 2026-10-02
+
+- Migration `20261002090000 finance_f15_overheads_employment` (recorded in
+  `supabase_migrations.schema_migrations`). Full SQL in FIN15.13.
+- Tables (RLS on, no client grants): `finance_overhead_categories`,
+  `finance_overhead_assignments`, `finance_employment_versions`,
+  `finance_employment_items`.
+- Guards: assignments and versions append-only; categories / items never
+  deleted or truncated; a category update keeps identity and steps the
+  revision by one; an item changes only once, unpaid → paid in full.
+- Functions (security definer, `service_role` only):
+  `finance_overhead_category_write`, `finance_overhead_assign`,
+  `finance_overhead_version_record` (calls F13's
+  `finance_supplier_agreement_record` + the assignment, one transaction),
+  `finance_employment_version_record`, `finance_employment_item_change`;
+  internal `finance_overhead_insert_assignment`. Refusals are `f15:…`.
+- **Smoke test** (self-rolling-back DO block, no UPDATE / DELETE inside):
+  all 15 probes refused as designed (duplicate name, stale revision, stale
+  name snapshot, second assignment, direct agreement, duplicate employment,
+  wrong salary snapshot, double confirm, month before start, partial
+  payment, stale / double payment, version in a confirmed month, forked
+  version, wrong governing version); 8 audit rows inside the rolled-back
+  transaction; afterwards F15 tables empty and audit still 380.
+
+### FIN15.10 Code, tests
+
+- New: `finance-overheads.ts` (pure), `finance-overheads-repository.ts`,
+  `finance-overheads-orchestrator.ts`; routes in `index.ts`.
+- F13 change (minimal): `recordNewAgreement` is exported with an optional
+  `write` hook so F15 can wrap F13's single database call; F13 behaviour
+  is unchanged (F13 98/98, F14 78/78).
+- Tests: `tests/support/finance-overheads.test.ts` **74/74** (brief 1–35 +
+  facts, concurrency, database backstops, Z1–Z10 drift); world
+  `tests/support/finance-overheads-world.ts`; shim
+  `tests/e2e/financeoverheadstest.js`; bundle test **22/22** (B21 routes,
+  B22 RPCs).
+- Mutation: F15 54/55 killed (the survivor — the payment's expected paid
+  amount always 0 — is equivalent: salary items are only ever paid from
+  unpaid); re-run after the F13 change: F13 **37/37**, F14 **50/50**.
+- **Strict `tsc`:** clean for the F15 files and the touched F13 file;
+  `index.ts` only shows the pre-existing Deno / `jsr:` / F5 `lineId`
+  messages (the duplicate-import error is gone).
+- Full regression **86/86** files.
+
+### FIN15.11 Resting TEST state (deployment checkpoint)
+
+- F15 tables exist and are **empty**; audit **380** (unchanged).
+- F13 / F14 fixtures (FIN14.15) unchanged; Manage grant `93588584…` open;
+  `module_finance` ON; harness tokens cleared.
+- `finance` v22 and `needs-attention` v14 deployed (F15 code not live).
+
+### FIN15.12 Open items / future debt
+
+- **Deploy** the committed artifact as `finance` v23 (operator), then live
+  proof A–AD on ZZTEST fixtures, including the F7 parser fix
+  (`POST /payments/{id}/overpayment-credit` with `{ amount, reason }`
+  must reach F7 — 404 for an unknown payment — not 400).
+- **F14 regression fixed here:** duplicate `parseCreditCreate` import in
+  `index.ts` (FIN15 header). Drift check Z8 now fails on any duplicate
+  imported name.
+- **Overhead VAT** is only as known as the supplier's VAT treatment: F13
+  agreements carry no VAT rate / split, so `vat_included` gives gross
+  only and `plus_vat` net only (F18 may need an agreement-level VAT rate).
+- **Part months** are flagged, not pro-rated (Management confirms the
+  actual). **Start date** is fixed after creation.
+- **Supplier-wide F14 credits** have no agreement, so no category; they
+  stay in `/supplier-cost-facts`.
+- **NI / PAYE** are never calculated (decision 3). **Partial salary
+  payments** not supported (decision 4).
+- `f2probe` cleanup remains an operator item.
+
+### FIN15.13 Applied SQL (`finance_f15_overheads_employment`, TEST `dkqubldmfyeuudecxmvh`)
+
+Applied in three steps via `execute_sql` (2026-10-02), then the item function re-applied once so a month before the start reads `month_not_employed` (the text below is the final state). Recorded as migration `20261002090000`.
+
+```sql
+-- finance_f15_overheads_employment (TEST only). Step 1: tables.
+-- Overhead categories: Management-configurable; renamed / deactivated, never deleted.
+create table public.finance_overhead_categories (
+  organisation_id text not null,
+  category_id text not null check (category_id ~ '^FOC-[0-9A-F]{12}$'),
+  name text not null check (length(name) between 1 and 100 and name = btrim(name)),
+  active boolean not null,
+  revision integer not null check (revision >= 1),
+  created_at timestamptz not null,
+  created_by uuid not null,
+  updated_at timestamptz not null,
+  updated_by uuid not null,
+  primary key (organisation_id, category_id)
+);
+create unique index finance_overhead_categories_name_unique on public.finance_overhead_categories (organisation_id, lower(name));
+
+-- One F13 general agreement version -> one category, fixed once made.
+create table public.finance_overhead_assignments (
+  organisation_id text not null,
+  assignment_id text not null check (assignment_id ~ '^FOA-[0-9A-F]{12}$'),
+  agreement_id text not null,
+  category_id text not null,
+  category_name_at_assignment text not null check (length(category_name_at_assignment) between 1 and 100),
+  reason text check (reason is null or length(btrim(reason)) between 1 and 500),
+  assigned_at timestamptz not null,
+  assigned_by uuid not null,
+  primary key (organisation_id, assignment_id),
+  foreign key (organisation_id, agreement_id) references public.finance_supplier_agreements (organisation_id, agreement_id),
+  foreign key (organisation_id, category_id) references public.finance_overhead_categories (organisation_id, category_id)
+);
+create unique index finance_overhead_assignments_one_per_agreement on public.finance_overhead_assignments (organisation_id, agreement_id);
+create index finance_overhead_assignments_category on public.finance_overhead_assignments (organisation_id, category_id);
+
+-- Salaried employment cost: append-only effective-dated versions (not payroll).
+create table public.finance_employment_versions (
+  organisation_id text not null,
+  version_id text not null check (version_id ~ '^FEV-[0-9A-F]{12}$'),
+  employment_id text not null check (employment_id ~ '^FEM-[0-9A-F]{12}$'),
+  supersedes_version_id text,
+  person_ref text check (person_ref is null or person_ref ~ '^COACH-[A-Za-z0-9-]{1,48}$'),
+  person_name text not null check (length(btrim(person_name)) between 1 and 200),
+  category_id text not null,
+  annual_salary_minor bigint not null check (annual_salary_minor > 0),
+  pay_day integer not null check (pay_day between 1 and 31),
+  start_date date not null,
+  end_date date check (end_date is null or end_date >= start_date),
+  effective_from_month text not null check (effective_from_month ~ '^\d{4}-(0[1-9]|1[0-2])$'),
+  pension_estimate_minor bigint check (pension_estimate_minor is null or pension_estimate_minor > 0),
+  ni_paye_estimate_minor bigint check (ni_paye_estimate_minor is null or ni_paye_estimate_minor > 0),
+  notes text check (notes is null or length(notes) <= 2000),
+  reason text check (reason is null or length(btrim(reason)) between 1 and 500),
+  created_at timestamptz not null,
+  created_by uuid not null,
+  primary key (organisation_id, version_id),
+  foreign key (organisation_id, supersedes_version_id) references public.finance_employment_versions (organisation_id, version_id),
+  foreign key (organisation_id, category_id) references public.finance_overhead_categories (organisation_id, category_id),
+  -- the first version starts in the start month; every later version starts after it
+  check ((supersedes_version_id is null) = (effective_from_month = to_char(start_date, 'YYYY-MM'))),
+  check (effective_from_month >= to_char(start_date, 'YYYY-MM')),
+  check (end_date is null or supersedes_version_id is null or end_date >= to_date(effective_from_month || '-01', 'YYYY-MM-DD'))
+);
+create unique index finance_employment_versions_one_successor on public.finance_employment_versions (organisation_id, supersedes_version_id) where supersedes_version_id is not null;
+create unique index finance_employment_versions_one_first on public.finance_employment_versions (organisation_id, employment_id) where supersedes_version_id is null;
+create unique index finance_employment_versions_one_per_person on public.finance_employment_versions (organisation_id, person_ref) where supersedes_version_id is null and person_ref is not null;
+create unique index finance_employment_versions_month on public.finance_employment_versions (organisation_id, employment_id, effective_from_month);
+
+-- A month Management acted on: confirmed once (actual or Use Estimate), then paid once, in full.
+create table public.finance_employment_items (
+  organisation_id text not null,
+  item_id text not null check (item_id ~ '^FEI-[0-9A-F]{12}$'),
+  employment_id text not null,
+  month text not null check (month ~ '^\d{4}-(0[1-9]|1[0-2])$'),
+  version_id text not null,
+  salary_minor bigint not null check (salary_minor > 0),
+  pension_estimate_minor bigint not null check (pension_estimate_minor >= 0),
+  ni_paye_estimate_minor bigint not null check (ni_paye_estimate_minor >= 0),
+  estimate_total_minor bigint not null,
+  amount_due_minor bigint not null check (amount_due_minor > 0),
+  used_estimate boolean not null,
+  expected_payment_date date not null,
+  confirmed_at timestamptz not null,
+  confirmed_by uuid not null,
+  confirm_reason text check (confirm_reason is null or length(btrim(confirm_reason)) between 1 and 500),
+  paid_minor bigint not null,
+  paid_date date,
+  payment_method text check (payment_method is null or payment_method in ('bank_transfer','card','direct_debit','cash','other')),
+  payment_reference text check (payment_reference is null or length(payment_reference) <= 200),
+  payment_note text check (payment_note is null or length(payment_note) <= 500),
+  paid_at timestamptz,
+  paid_by uuid,
+  primary key (organisation_id, item_id),
+  foreign key (organisation_id, version_id) references public.finance_employment_versions (organisation_id, version_id),
+  check (estimate_total_minor = salary_minor + pension_estimate_minor + ni_paye_estimate_minor),
+  check (not used_estimate or amount_due_minor = estimate_total_minor),
+  check (to_char(expected_payment_date, 'YYYY-MM') = month),
+  -- full payment only (v1): nothing paid, or exactly the confirmed amount
+  check (paid_minor = 0 or paid_minor = amount_due_minor),
+  check ((paid_minor = 0) = (paid_date is null) and (paid_date is null) = (paid_at is null) and (paid_at is null) = (paid_by is null)),
+  check (paid_minor > 0 or (payment_method is null and payment_reference is null and payment_note is null))
+);
+create unique index finance_employment_items_one_per_month on public.finance_employment_items (organisation_id, employment_id, month);
+
+alter table public.finance_overhead_categories enable row level security;
+alter table public.finance_overhead_assignments enable row level security;
+alter table public.finance_employment_versions enable row level security;
+alter table public.finance_employment_items enable row level security;
+revoke all on public.finance_overhead_categories, public.finance_overhead_assignments, public.finance_employment_versions, public.finance_employment_items from public, anon, authenticated;
+
+-- finance_f15_overheads_employment. Step 2: guards.
+create or replace function public.finance_overhead_append_only() returns trigger language plpgsql set search_path = '' as $$
+begin
+  raise exception 'f15:history_is_append_only';
+end $$;
+-- Assignments and employment versions never change or disappear.
+create trigger finance_overhead_assignments_immutable before update or delete on public.finance_overhead_assignments for each row execute function public.finance_overhead_append_only();
+create trigger finance_employment_versions_immutable before update or delete on public.finance_employment_versions for each row execute function public.finance_overhead_append_only();
+create trigger finance_overhead_categories_no_delete before delete on public.finance_overhead_categories for each row execute function public.finance_overhead_append_only();
+create trigger finance_employment_items_no_delete before delete on public.finance_employment_items for each row execute function public.finance_overhead_append_only();
+create trigger finance_overhead_categories_no_truncate before truncate on public.finance_overhead_categories for each statement execute function public.finance_overhead_append_only();
+create trigger finance_overhead_assignments_no_truncate before truncate on public.finance_overhead_assignments for each statement execute function public.finance_overhead_append_only();
+create trigger finance_employment_versions_no_truncate before truncate on public.finance_employment_versions for each statement execute function public.finance_overhead_append_only();
+create trigger finance_employment_items_no_truncate before truncate on public.finance_employment_items for each statement execute function public.finance_overhead_append_only();
+
+-- A category keeps its identity; only its name / active flag change, one revision at a time.
+create or replace function public.finance_overhead_category_guard() returns trigger language plpgsql set search_path = '' as $$
+begin
+  if new.organisation_id <> old.organisation_id or new.category_id <> old.category_id or new.created_at <> old.created_at
+     or new.created_by <> old.created_by or new.revision <> old.revision + 1 then
+    raise exception 'f15:history_is_append_only';
+  end if;
+  return new;
+end $$;
+create trigger finance_overhead_categories_update_guard before update on public.finance_overhead_categories for each row execute function public.finance_overhead_category_guard();
+
+-- A confirmed month only ever changes once: unpaid -> paid in full. Its confirmed amount and estimate are frozen.
+create or replace function public.finance_employment_item_guard() returns trigger language plpgsql set search_path = '' as $$
+begin
+  if old.paid_minor <> 0 or new.paid_minor <> new.amount_due_minor
+     or (to_jsonb(new) - array['paid_minor','paid_date','payment_method','payment_reference','payment_note','paid_at','paid_by'])
+        <> (to_jsonb(old) - array['paid_minor','paid_date','payment_method','payment_reference','payment_note','paid_at','paid_by']) then
+    raise exception 'f15:history_is_append_only';
+  end if;
+  return new;
+end $$;
+create trigger finance_employment_items_update_guard before update on public.finance_employment_items for each row execute function public.finance_employment_item_guard();
+
+-- finance_f15_overheads_employment. Step 3: write functions (service_role only). Each writes its audit rows in the same transaction.
+
+-- Create (p_expected_revision null) or update (expected revision must match) one overhead category.
+create or replace function public.finance_overhead_category_write(p_category jsonb, p_expected_revision integer, p_events jsonb) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_org text := p_category->>'organisation_id'; v_id text := p_category->>'category_id'; v_rev integer;
+begin
+  if p_expected_revision is null then
+    insert into finance_overhead_categories select * from jsonb_populate_record(null::finance_overhead_categories, p_category);
+  else
+    select revision into v_rev from finance_overhead_categories where organisation_id = v_org and category_id = v_id for update;
+    if not found then raise exception 'f15:category_not_found'; end if;
+    if v_rev <> p_expected_revision then raise exception 'f15:category_changed'; end if;
+    update finance_overhead_categories c set name = r.name, active = r.active, revision = r.revision, updated_at = r.updated_at, updated_by = r.updated_by
+      from jsonb_populate_record(null::finance_overhead_categories, p_category) r
+     where c.organisation_id = v_org and c.category_id = v_id;
+  end if;
+  perform finance_supplier_insert_audit(p_events);
+  return jsonb_build_object('category_id', v_id);
+end $$;
+
+-- Internal: the rules every category assignment obeys (general agreement, active category, name snapshot, once only).
+create or replace function public.finance_overhead_insert_assignment(p_assignment jsonb) returns void language plpgsql security definer set search_path = public as $$
+declare v_org text := p_assignment->>'organisation_id'; v_cls text; v_name text; v_active boolean;
+begin
+  select classification into v_cls from finance_supplier_agreements where organisation_id = v_org and agreement_id = p_assignment->>'agreement_id';
+  if not found then raise exception 'f15:agreement_not_found'; end if;
+  if v_cls <> 'general' then raise exception 'f15:not_an_overhead'; end if;
+  select name, active into v_name, v_active from finance_overhead_categories where organisation_id = v_org and category_id = p_assignment->>'category_id' for share;
+  if not found then raise exception 'f15:category_not_found'; end if;
+  if not v_active then raise exception 'f15:category_inactive'; end if;
+  if v_name <> p_assignment->>'category_name_at_assignment' then raise exception 'f15:snapshot_mismatch'; end if;
+  if exists (select 1 from finance_overhead_assignments where organisation_id = v_org and agreement_id = p_assignment->>'agreement_id') then
+    raise exception 'f15:already_categorised';
+  end if;
+  insert into finance_overhead_assignments select * from jsonb_populate_record(null::finance_overhead_assignments, p_assignment);
+end $$;
+
+-- Categorise one existing F13 general agreement version.
+create or replace function public.finance_overhead_assign(p_assignment jsonb, p_events jsonb) returns jsonb language plpgsql security definer set search_path = public as $$
+begin
+  perform finance_overhead_insert_assignment(p_assignment);
+  perform finance_supplier_insert_audit(p_events);
+  return jsonb_build_object('assignment_id', p_assignment->>'assignment_id', 'agreement_id', p_assignment->>'agreement_id');
+end $$;
+
+-- A new F13 general agreement version (F13's own function: schedule, cancelled predecessor instalments, all audit rows)
+-- and its category, in ONE transaction.
+create or replace function public.finance_overhead_version_record(p_agreement jsonb, p_allocations jsonb, p_instalments jsonb, p_cancel jsonb, p_assignment jsonb, p_events jsonb) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_org text := p_agreement->>'organisation_id'; v_prev text := p_agreement->>'supersedes_agreement_id'; v jsonb;
+begin
+  if v_prev is null or p_agreement->>'classification' <> 'general' then raise exception 'f15:not_an_overhead'; end if;
+  if not exists (select 1 from finance_supplier_agreements where organisation_id = v_org and agreement_id = v_prev and classification = 'general') then
+    raise exception 'f15:not_an_overhead';
+  end if;
+  if p_assignment->>'organisation_id' <> v_org or p_assignment->>'agreement_id' <> p_agreement->>'agreement_id' then
+    raise exception 'f15:snapshot_mismatch';
+  end if;
+  v := finance_supplier_agreement_record(p_agreement, p_allocations, p_instalments, p_cancel, p_events);
+  perform finance_overhead_insert_assignment(p_assignment);
+  return v || jsonb_build_object('assignment_id', p_assignment->>'assignment_id');
+end $$;
+
+-- Create (no predecessor) or version one salaried employment cost.
+create or replace function public.finance_employment_version_record(p_version jsonb, p_events jsonb) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_org text := p_version->>'organisation_id'; v_emp text := p_version->>'employment_id'; v_prev text := p_version->>'supersedes_version_id';
+        p finance_employment_versions%rowtype; v_month text := p_version->>'effective_from_month'; v_active boolean;
+begin
+  select active into v_active from finance_overhead_categories where organisation_id = v_org and category_id = p_version->>'category_id' for share;
+  if not found then raise exception 'f15:category_not_found'; end if;
+  if v_prev is null then
+    if not v_active then raise exception 'f15:category_inactive'; end if;
+    if exists (select 1 from finance_employment_versions where organisation_id = v_org and employment_id = v_emp) then raise exception 'f15:employment_exists'; end if;
+    if p_version->>'person_ref' is not null and exists (select 1 from finance_employment_versions where organisation_id = v_org and person_ref = p_version->>'person_ref') then
+      raise exception 'f15:employment_exists';
+    end if;
+  else
+    select * into p from finance_employment_versions where organisation_id = v_org and version_id = v_prev for share;
+    if not found or p.employment_id <> v_emp then raise exception 'f15:employment_not_found'; end if;
+    if exists (select 1 from finance_employment_versions where organisation_id = v_org and supersedes_version_id = v_prev) then raise exception 'f15:already_versioned'; end if;
+    if v_month <= p.effective_from_month then raise exception 'f15:version_must_start_later'; end if;
+    if p.category_id <> p_version->>'category_id' and not v_active then raise exception 'f15:category_inactive'; end if;
+    if (p_version->>'start_date')::date <> p.start_date or p_version->>'person_ref' is distinct from p.person_ref then raise exception 'f15:snapshot_mismatch'; end if;
+    perform 1 from finance_employment_items where organisation_id = v_org and employment_id = v_emp for share;
+    if exists (select 1 from finance_employment_items where organisation_id = v_org and employment_id = v_emp and month >= v_month) then
+      raise exception 'f15:confirmed_month_after_change';
+    end if;
+    if p_version->>'end_date' is not null and (p_version->>'end_date')::date < to_date(v_month || '-01', 'YYYY-MM-DD') then raise exception 'f15:end_before_version_start'; end if;
+  end if;
+  insert into finance_employment_versions select * from jsonb_populate_record(null::finance_employment_versions, p_version);
+  perform finance_supplier_insert_audit(p_events);
+  return jsonb_build_object('employment_id', v_emp, 'version_id', p_version->>'version_id');
+end $$;
+
+-- confirm: record the month's confirmed amount (actual or Use Estimate) - it is NOT paid.
+-- payment: mark a confirmed month paid, in full, exactly once.
+create or replace function public.finance_employment_item_change(p_kind text, p_item jsonb, p_expected jsonb, p_events jsonb) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_org text := p_item->>'organisation_id'; v_emp text := p_item->>'employment_id'; v_month text := p_item->>'month';
+        ver finance_employment_versions%rowtype; v_gov text; v_first date := to_date(v_month || '-01', 'YYYY-MM-DD'); v_last date;
+        i finance_employment_items%rowtype; v_salary bigint;
+begin
+  v_last := (v_first + interval '1 month' - interval '1 day')::date;
+  if p_kind = 'confirm' then
+    select * into ver from finance_employment_versions where organisation_id = v_org and version_id = p_item->>'version_id';
+    if not found or ver.employment_id <> v_emp then raise exception 'f15:employment_not_found'; end if;
+    -- the version that governs the month: the latest one starting on or before it
+    select version_id into v_gov from finance_employment_versions where organisation_id = v_org and employment_id = v_emp and effective_from_month <= v_month order by effective_from_month desc limit 1;
+    if v_gov is null then raise exception 'f15:month_not_employed'; end if;
+    if v_gov is distinct from ver.version_id then raise exception 'f15:employment_changed'; end if;
+    if ver.start_date > v_last or (ver.end_date is not null and ver.end_date < v_first) then raise exception 'f15:month_not_employed'; end if;
+    v_salary := round(ver.annual_salary_minor::numeric / 12);
+    if (p_item->>'salary_minor')::bigint <> v_salary
+       or (p_item->>'pension_estimate_minor')::bigint <> coalesce(ver.pension_estimate_minor, 0)
+       or (p_item->>'ni_paye_estimate_minor')::bigint <> coalesce(ver.ni_paye_estimate_minor, 0)
+       or (p_item->>'expected_payment_date')::date <> v_first + (least(ver.pay_day, extract(day from v_last)::int) - 1)
+       or (p_item->>'paid_minor')::bigint <> 0 or p_item->>'paid_date' is not null then
+      raise exception 'f15:snapshot_mismatch';
+    end if;
+    if exists (select 1 from finance_employment_items where organisation_id = v_org and employment_id = v_emp and month = v_month) then raise exception 'f15:already_confirmed'; end if;
+    insert into finance_employment_items select * from jsonb_populate_record(null::finance_employment_items, p_item);
+  elsif p_kind = 'payment' then
+    select * into i from finance_employment_items where organisation_id = v_org and item_id = p_item->>'item_id' for update;
+    if not found then raise exception 'f15:item_not_found'; end if;
+    if i.paid_minor <> (p_expected->>'paid_minor')::bigint then raise exception 'f15:item_changed'; end if;
+    if i.paid_minor = i.amount_due_minor then raise exception 'f15:already_paid'; end if;
+    if (p_item->>'paid_minor')::bigint <> i.amount_due_minor then raise exception 'f15:partial_payment_not_supported'; end if;
+    if p_item->>'paid_date' is null then raise exception 'f15:snapshot_mismatch'; end if;
+    update finance_employment_items set paid_minor = i.amount_due_minor, paid_date = (p_item->>'paid_date')::date, payment_method = p_item->>'payment_method',
+           payment_reference = p_item->>'payment_reference', payment_note = p_item->>'payment_note', paid_at = (p_item->>'paid_at')::timestamptz, paid_by = (p_item->>'paid_by')::uuid
+     where organisation_id = v_org and item_id = i.item_id;
+  else
+    raise exception 'f15:unknown_change';
+  end if;
+  perform finance_supplier_insert_audit(p_events);
+  return jsonb_build_object('item_id', p_item->>'item_id', 'kind', p_kind);
+end $$;
+
+revoke all on function public.finance_overhead_category_write(jsonb, integer, jsonb), public.finance_overhead_insert_assignment(jsonb), public.finance_overhead_assign(jsonb, jsonb),
+  public.finance_overhead_version_record(jsonb, jsonb, jsonb, jsonb, jsonb, jsonb), public.finance_employment_version_record(jsonb, jsonb),
+  public.finance_employment_item_change(text, jsonb, jsonb, jsonb), public.finance_overhead_append_only(), public.finance_overhead_category_guard(), public.finance_employment_item_guard() from public, anon, authenticated;
+grant execute on function public.finance_overhead_category_write(jsonb, integer, jsonb), public.finance_overhead_assign(jsonb, jsonb),
+  public.finance_overhead_version_record(jsonb, jsonb, jsonb, jsonb, jsonb, jsonb), public.finance_employment_version_record(jsonb, jsonb),
+  public.finance_employment_item_change(text, jsonb, jsonb, jsonb) to service_role;
+```

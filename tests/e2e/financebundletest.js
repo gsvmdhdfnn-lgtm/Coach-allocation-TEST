@@ -127,6 +127,23 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   ck('B19. F14 supplier-credit routes are live in the artifact: list / one GET, create / apply / unapply / void POST (401 without a token); a credit is never POSTed / DELETEd in place (405); no delete / auto-apply route (404)', kl401.status === 401 && kc401.status === 401 && ko401.status === 401 && kp405.status === 405 && kd405.status === 405 && ka401.status === 401 && ka405.status === 405 && ku401.status === 401 && kv401.status === 401 && kx404.status === 404 && kauto404.status === 404, `${kl401.status}/${kc401.status}/${ko401.status}/${kp405.status}/${kd405.status}/${ka401.status}/${ka405.status}/${ku401.status}/${kv401.status}/${kx404.status}/${kauto404.status}`);
   ck('B20. F14 writes go through its atomic database functions only (finance_supplier_credit_* RPCs in the artifact)', ['finance_supplier_credit_record', 'finance_supplier_credit_change'].every((f) => flat.includes(f)));
 
+  const oc401 = await call('GET', 'overhead-categories');
+  const op401 = await call('POST', 'overhead-categories');
+  const ou401 = await call('POST', 'overhead-categories/FOC-0123456789AB');
+  const od405 = await call('DELETE', 'overhead-categories/FOC-0123456789AB');
+  const ol401 = await call('GET', 'overheads');
+  const ov401 = await call('POST', 'overheads/FSA-0123456789AB/version');
+  const opay404 = await call('POST', 'overheads/FSA-0123456789AB/payment');
+  const oconf404 = await call('POST', 'overheads/FSA-0123456789AB/confirm-estimate');
+  const el401 = await call('GET', 'employment-costs');
+  const ec401 = await call('POST', 'employment-costs/FEM-0123456789AB/months/2026-10/confirm-estimate');
+  const ep401 = await call('POST', 'employment-costs/FEM-0123456789AB/months/2026-10/payment');
+  const epr404 = await call('POST', 'employment-costs/FEM-0123456789AB/payroll');
+  const of401 = await call('GET', 'overhead-facts');
+  const of405 = await call('POST', 'overhead-facts');
+  ck('B21. F15 overhead / employment routes are live in the artifact (401 without a token); no category delete (405), no overhead payment / confirm route (F13 owns those) and no payroll route (404); facts are read-only (405)', [oc401, op401, ou401, ol401, ov401, el401, ec401, ep401, of401].every((r) => r.status === 401) && od405.status === 405 && of405.status === 405 && [opay404, oconf404, epr404].every((r) => r.status === 404), [oc401, op401, ou401, od405, ol401, ov401, opay404, oconf404, el401, ec401, ep401, epr404, of401, of405].map((r) => r.status).join('/'));
+  ck('B22. F15 writes go through its atomic database functions only (finance_overhead_* / finance_employment_* RPCs in the artifact)', ['finance_overhead_category_write', 'finance_overhead_assign', 'finance_overhead_version_record', 'finance_employment_version_record', 'finance_employment_item_change'].every((f) => flat.includes(f)));
+
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;
   console.log(`\n${results.length - failed}/${results.length} passing`);

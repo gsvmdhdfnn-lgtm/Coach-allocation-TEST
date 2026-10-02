@@ -452,8 +452,10 @@ export function updateSupplier(deps: SupplierDeps, caller: FinanceCaller, suppli
   });
 }
 
-/** Create (predecessor null) or version an agreement: schedule + frozen allocation + audit in one database call. */
-async function recordNewAgreement(deps: SupplierDeps, caller: FinanceCaller, ctx: Ctx, supplier: Supplier, spec: AgreementSpec, predecessor: Agreement | null): Promise<Ok | SFail> {
+/** Stores one new agreement in ONE database call; another slice may wrap F13's call to add its own row in the same transaction. */
+export type AgreementWriter = (a: Agreement, allocations: Allocation[], instalments: Instalment[], cancel: Instalment[], events: Record<string, unknown>[]) => Promise<unknown>;
+/** Create (predecessor null) or version an agreement: schedule + frozen allocation + audit in one database call. Call only under withLock. */
+export async function recordNewAgreement(deps: SupplierDeps, caller: FinanceCaller, ctx: Ctx, supplier: Supplier, spec: AgreementSpec, predecessor: Agreement | null, write?: AgreementWriter): Promise<Ok | SFail> {
   const org = ctx.org.organisationId;
   if (predecessor) {
     if (successorOf(ctx, predecessor)) return fail(409, "agreement_already_versioned", REFUSALS.agreement_already_versioned);
@@ -546,7 +548,7 @@ async function recordNewAgreement(deps: SupplierDeps, caller: FinanceCaller, ctx
     ...instalments.map((i) => audit(EVENTS.instalmentCreated, ENTITY.instalment, i.instalmentId, null, auditInstalment(i), null)),
     ...cancel.map((c) => audit(EVENTS.cancelled, ENTITY.instalment, c.instalmentId, auditInstalment({ ...c, cancelledAt: null }), auditInstalment(c), c.cancelReason)),
   ];
-  await recordAgreement(deps.grants, a, allocations, instalments, cancel, events);
+  await (write ? write(a, allocations, instalments, cancel, events) : recordAgreement(deps.grants, a, allocations, instalments, cancel, events));
   return {
     status: "ok",
     httpStatus: 201,
