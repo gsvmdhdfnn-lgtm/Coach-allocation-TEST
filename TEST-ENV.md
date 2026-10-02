@@ -21464,9 +21464,15 @@ contract:
   - `finance --check` and `needs-attention --check` MATCH;
   - full `node tests/run-all.js` **86/86 files**.
 
-## Finance Foundation — F16 (Money Out Needs Attention: ATT-049..053) — CODE COMPLETE, NOT DEPLOYED — TEST only — 2026-10-02
+## Finance Foundation — F16 (Money Out Needs Attention: ATT-049..053) — LIVE-PROVEN on `needs-attention` v15 / `finance` v24 — TEST only — 2026-10-02
 
-> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
+> **LIVE-PROVEN (2026-10-02).** Deployed by the operator from commit
+> `d49f7ca`: `needs-attention` v15 and `finance` v24, both ACTIVE,
+> verify_jwt on, one `index.js` each, byte-identical to the committed
+> artifacts. Live proof A–AD: FIN16.13. Resting state: FIN16.14. The
+> original checkpoint text below is kept as written.
+>
+> **CODE COMPLETE / TESTS PASS** (checkpoint text, superseded by the live proof).
 >
 > - **What F16 adds:** five Management Needs Attention rules for Money
 >   Out, derived live from F13 / F14 supplier instalments and F15
@@ -21743,10 +21749,15 @@ contract:
 
 ### FIN16.10 Open items / future debt
 
-- **Deploy (operator):** `needs-attention` v15 and `finance` v24 from the
-  F16 commit. Then run the live proof A–AD on ZZTEST supplier /
-  employment fixtures, and enable ATT-049..053 for ORG-TEST-001 in Needs
-  Attention Settings.
+- ~~Deploy (operator)~~ **Done:** `needs-attention` v15 and `finance` v24
+  deployed from `d49f7ca` and live-proven (FIN16.13). ATT-049..053 rest
+  **off** for ORG-TEST-001 (no Settings rows); an organisation turns them
+  on with a Needs Attention Settings row.
+- **Grant-lookup failure** cannot be simulated live, because there is no
+  TEST switch to break the grant table read. It is unit-proven (fails
+  closed: no Finance case, count or amount; AC26). An **ambiguous grant**
+  cannot exist: the DB's unique index `finance_access_grants_one_active`
+  refused a second active grant live (FIN16.13 X).
 - **F12 Coach Months:** no Paid fact, so excluded. A coach-payment rule
   needs an F12 paid lifecycle first.
 - **Settled instalments are still read:** the F13 table keeps settled
@@ -21761,7 +21772,7 @@ contract:
   month. That is true, but noisy for back-dated employees.
 - **`f2probe` cleanup** remains an operator item.
 
-### FIN16.11 Resting TEST state (deployment checkpoint)
+### FIN16.11 Resting TEST state (deployment checkpoint — superseded by FIN16.14)
 
 - **Airtable TEST (additive):**
   - catalogue rows ATT-049..053 Active, Default Enabled off, no Settings
@@ -21793,3 +21804,113 @@ contract:
    unchanged; production untouched.
 7. **Restore the baseline:** disable the rules, revoke the snooze, clear
    tokens.
+
+### FIN16.13 Live proof A–AD (2026-10-02, `needs-attention` v15 / `finance` v24)
+
+Everything was run through the deployed HTTP APIs as real TEST users
+(`f2probe` harness): manager, coach.a and parent.a. Organisation
+ORG-TEST-001, Europe/London. Today 2026-10-02.
+
+**Temporary set-up:**
+- Settings rows `NAS-F16-PROBE-ATT-049..053` (Enabled + Allow Override)
+  for ORG-TEST-001.
+
+**Fixtures, written through the `finance` API (ZZTEST, kept):**
+- Supplier `FSU-AE91D5CB9361` "ZZTEST F16 Money Out Venue", agreement
+  `FSA-357200C4107F` (custom dates). Instalments:
+
+  | Label | Instalment | Details |
+  |---|---|---|
+  | A | `FSI-FC837945D91E` | 500, due today |
+  | B | `FSI-6B59881BC31F` | 300, due 09-25 |
+  | C | `FSI-074220BF05FE` | 500, due 09-20, paid 200 |
+  | D | `FSI-27EC8D893FD6` | 400, due 09-28, credit `FSC-43750E38DF5F` 100 applied |
+  | F | `FSI-0692DA751B4B` | 250, cancelled |
+  | J soon | `FSI-3389B78F41BC` | estimate 315, due 10-04 |
+  | J far | `FSI-36A710769946` | estimate 315, due 10-09 |
+  | K | `FSI-5A9E0F3835AE` | estimate 80, due today |
+  | L | `FSI-128E7FA9CE1B` | estimate 120, due 09-30 |
+  | Z | `FSI-528A736673C9` | 150, due 10-20 |
+
+- Employment `FEM-1AA46052A3A7` "ZZTEST F16 Groundsman"
+  (`FEV-D7D088C3776B`): 18,000/yr, pay day 2, start 2026-10-01, so the
+  October estimate of 1500 is due today.
+- Existing F13 / F15 fixtures were also in scope:
+  - six overdue F13 instalments;
+  - E1 `FEM-75680EBBDA38` August 1100 (overdue);
+  - E2 `FEM-6FE6398F9760` September estimate 2000 (estimate overdue).
+
+| # | Check | Result |
+|---|---|---|
+| A | Deployed = committed | `needs-attention` v15: ACTIVE, verify_jwt, 1 file, 184,460 B, sha `1d265d79…c742` = artifact.<br>`finance` v24: ACTIVE, verify_jwt, 1 file, 623,858 B, sha `32c23a73…206d` = artifact.<br>Both `--check` MATCH |
+| B | Baseline before | `/cases` Clear, 0 cases. All 7 Finance rules skipped `disabled`; `financeAccess:not_checked`; no Finance read. Audit 423. F2 settings revision 15, `estimateReminderDays` null |
+| C | First read (Manage) | 16 cases: the 8 pre-existing open obligations plus the 8 new F16 sources (A, B, C, D, J soon, K, L, Groundsman).<br>Summary **Warning, total 16 (15 Warning / 1 Normal)**; `complete:true`; 0 config issues; access manage.<br>Each of the four Supabase sources was listed once, on one page. F, J far and Z raised nothing |
+| D | Supplier payment due today | A → ATT-049 `outgoing_payment_due_today\|supplier_instalment:FSI-FC837945D91E`, 500.00, action "Review Supplier Payment" |
+| E | Supplier payment overdue | B → ATT-050, 300.00, due 09-25, **7 days** overdue |
+| F | Partial payment | C → ATT-050 showing **remaining 300.00** of 500 (paid 200), 12 days |
+| G | Supplier credit | D → ATT-050 remaining **300.00**: `creditApplied 100.00`, cash 0.00; detail "(supplier credit applied £100.00)" |
+| H | Fully settled → no case | B paid 300 in full (201) → B's case gone (16 → 13 together with I and L) |
+| I | Cancelled → no case | F (cancelled before any read) never raised a case. Cancelling A (due today, 200) removed its case |
+| J | Employment due today | Groundsman October after Use Estimate → ATT-049 `employment_cost:FEM-1AA46052A3A7\|month:2026-10`, 1500.00, "Review Employment Cost" |
+| K | Employment overdue | E1 August → ATT-050, 1100.00, 35 days. E2 September after confirming the actual → ATT-050, **1900.00**, 2 days |
+| L | Paid employment clears | E1 August paid 1100 (201) → case gone. Groundsman October paid 1500 (201) → case gone |
+| M | Estimate approaching | J soon (due 10-04) → ATT-051 Normal, `daysUntilDue 2`, "Confirm Cost"; J far (10-09) nothing |
+| N | Organisation setting | F2 API `estimateReminderDays=7` (revision 16) → J far appears as ATT-051, 7 days; `reminderSource organisation_setting` |
+| O | Blank → baseline 3 | `estimateReminderDays=null` (revision 18) → J far gone, J soon stays; `reminderDays 3`, `reminderSource finance_baseline` |
+| P | 0 disables advance only | `estimateReminderDays=0` (revision 17) → no ATT-051 at all; ATT-052 / 053 cases unchanged |
+| Q | Estimated, due today | K and the Groundsman October → ATT-052 "Amount still estimated" |
+| R | Estimated, after due date | L (09-30) and E2 September → ATT-053 "Estimate overdue" |
+| S | One estimate case per source | Every source carried exactly one key in every read. J soon was 051 only; K 052 only; L 053 only. No source ever carried two rules |
+| T | Confirm actual clears | L confirmed at 125.00 → its 053 case gone; ATT-050 125.00, 2 days. E2 confirmed at 1900 → 053 gone; ATT-050 1900.00 |
+| U | Use Estimate | K → 052 gone; ATT-049 80.00 (due today). Groundsman October → 052 gone; ATT-049 1500.00 |
+| V | Finance Manage | Sees every Money Out case with `exceptionAllowed:true`. Snooze `NAEX-20261002081840-FBF8E4C8` (`recVUPELf00tSDNpW`) on `outgoing_payment_overdue\|supplier_instalment:FSI-6B59881BC31F` → 201, until 08:22:40Z |
+| W | Finance View | Manage grant revoked, View grant `13702bb7…` → 15 cases, all `exceptionAllowed:false`. Snooze POST → **403 `finance_manage_required`** |
+| X | No grant / fail closed | View grant revoked → **Clear, 0, suppressed 0**, `financeAccess:none`, no Supabase read, no names or amounts. A caseKey lookup returned `exists:false`, skip `finance_access_required`.<br>A second active grant insert was refused by `finance_access_grants_one_active`. Grant-lookup failure is unit-proven (FIN16.10).<br>New Manage grant `acc1cde9-c345-4c9d-b4be-d60812cd432e` |
+| Y | Module off; Coach / Parent | `module_finance` off → Clear, Finance rules `module_off`, `not_checked`, no Supabase read; module back ON. Coach and Parent → **403 "Management access required"** |
+| Z | Snooze = reminder timing only | While snoozed: total 15, suppressed 1, B absent, and B's DB row unchanged (due 09-25, confirmed, 300, paid 0).<br>After expiry (read 08:23:41Z): B back, same key, due 09-25, still **7 days** overdue, `exceptionAllowed:true`; suppressed 0.<br>Paying B (H) cleared it. There is no mark-complete: the only write route is the existing snooze/revoke |
+| AA | Case identity | Keys are stable across every read (`<rule>\|supplier_instalment:<FSI>` / `<rule>\|employment_cost:<FEM>\|month:<YYYY-MM>`).<br>Z moved 10-20 → 09-29 → one ATT-050 case, 3 days. Moved again → 09-30 → the **same single key**, 2 days; no stale duplicate.<br>Due-today / overdue and approaching / today / overdue never coexisted for one source |
+| AB | Organisation-local date | Organisation Timezone temporarily Pacific/Honolulu at 08:25Z (local 10-01 22:25) → 12 cases:<br>- `FSI-CC9E2E4CB932` (due 10-01) flipped from ATT-050 (1 day) to **ATT-049 due today**;<br>- K (due 10-02) raised nothing;<br>- every overdue count dropped by exactly 1 (64→63, 63→62, 32→31, 12→11, 4→3, 2→1);<br>- J soon `daysUntilDue` 3.<br>Restored to Europe/London |
+| AC | Counts, regression | Summary total = case count in every read (16 / 15 + 1 suppressed / 16 / 13 / 12), with Warning / Normal counts matching the rules (only ATT-051 is Normal).<br>ATT-047 / 048 turned on temporarily (`NAS-F16-PROBE-ATT-047/048`): both evaluated, 0 candidates (TEST has no overdue invoice or blocked draft, as in the F8a / F8b resting state), both with Money Out on and with it off.<br>With Money Out off: 15 Finance Airtable tables read, **0** Supabase Money Out reads.<br>F2 / F13 / F14 / F15 APIs worked unchanged for every fixture action. No new table, no stored case; the existing Exceptions table is the only write |
+| AD | Coach Months excluded; audit; production | `finance_worker_cost_months` (3 rows) has no paid column. `FCM-626821C7ABFA` (170.00, expected payment 2026-09-07, already past) never raised a case, and the table is not in the read list. No coach-paid state was invented.<br>Finance audit 423 → **453 (+30)**, all from the fixture and source actions (supplier 1, agreement 1, instalment created 10 / partially_paid 1 / cancelled 2 / paid 1 / estimate_confirmed 2 / moved 2, credit created 1 / applied 1, employment cost created 1, item estimate_confirmed 2 / paid 2, settings updated 3). Reads, snooze, timezone and Settings changes wrote none.<br>Production not touched |
+
+### FIN16.14 Resting TEST state (after the live proof)
+
+- **Deployed:** `needs-attention` v15, `finance` v24 (= `d49f7ca`
+  artifacts).
+- **Airtable TEST:**
+  - catalogue ATT-049..053 Active, Default Enabled off;
+  - **0 Needs Attention Settings rows**: all 7 temporary probe rows were
+    deleted, so every Finance rule rests off;
+  - Organisation Timezone Europe/London;
+  - Finance Settings Estimate Reminder Days blank (revision 18).
+  - Exception `NAEX-20261002081840-FBF8E4C8` remains as history. It
+    expired at 08:22:40Z and is inert.
+- **`/cases` (manager):** Clear, 0 cases, `complete:true`, 0 config
+  issues, all 7 Finance rules skipped `disabled`, `financeAccess:
+  not_checked`, no Finance read.
+- **Supabase TEST:** the F16 ZZTEST fixtures are kept as deliberate
+  fixtures:
+  - A cancelled; B paid;
+  - C partial, 300 open; D 300 open after credit;
+  - F cancelled;
+  - J soon / J far estimated;
+  - K confirmed 80 (due today); L confirmed 125; Z 150 (due 09-30);
+  - Groundsman October paid.
+  - E1 August is paid and E2 September is confirmed at 1900.
+  - If an organisation enabled the rules today, it would see 13 cases.
+  - Finance audit 453.
+- **Access:** Manage grant `acc1cde9…` open (the only active grant);
+  `module_finance` ON; harness tokens cleared.
+- `f2probe` cleanup is still an operator item. F17 Cash Flow not started.
+
+**Suites after the live proof (2026-10-02):**
+- **F16:** money-out 76/76.
+- **F15–F12:** F15 overheads 74/74, F14 supplier credits 78/78, F13
+  suppliers 98/98, F12 coach costs 83/83.
+- **F8a / F8b:** needs-attention-finance 64/64, finance-drafts 99/99.
+- **Needs Attention:** engine 112/112, foundation 78/78, bundle 8/8.
+- **Finance bundle:** 22/22.
+- **Both `--check` MATCH:**
+  - `finance` `32c23a73…206d`;
+  - `needs-attention` `1d265d79…c742`.
+- **Full regression:** **87/87** test files.
