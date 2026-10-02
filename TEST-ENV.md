@@ -23222,3 +23222,176 @@ other state change went through Finance APIs, Airtable, `INSERT`s, or a
 - **MCP gate behaviour:** a plain `UPDATE` on `finance_access_grants`
   waits for confirmation. Future proofs should use the operator to
   revoke grants, or document the CTE route up front.
+
+## Finance Foundation — F19 (Google Sheets reporting writer) — AUDIT COMPLETE — STOPPED BEFORE CODE (no Google connection exists) — TEST only — 2026-10-02
+
+> **Status: AUDIT ONLY.** No code, schema or deployment change. The F19 brief
+> says to stop and report the connector / emulator foundation before
+> implementing external writes if no real Google connection exists, and none
+> exists. Live TEST stays `finance` v27 / `needs-attention` v18. Production
+> is untouched. F20 and F21 were not started.
+
+### FIN19.1 Audit findings (2026-10-02)
+
+1. **Existing Google code: read-only, anonymous, no writer.**
+   - `config.js`, `hub-content`, `parent-hub`, `player-feedback` and
+     `player-sessions` fetch "Publish to web" CSV URLs (`2PACX-…` schedule
+     workbook: Sessions / Changes / Coaches / Venue Info / Info / Resources /
+     Calendar / Archive / Terms).
+   - The legacy "Financials" tab URL is AES-GCM encrypted in `config.js`,
+     and `management.js` `unlock()` decrypts it client-side. `hub-content`
+     has an optional `FINANCIALS_CSV_URL` secret for server-side reads.
+   - There is no Sheets API, Drive API, Apps Script, OAuth or service
+     account code in either repo. There is no legacy code that writes to
+     Sheets.
+2. **Finance connection model.**
+   - `finance_external_connections` is Xero only: CHECK
+     `provider = 'xero'`, `auth_method = 'client_credentials'`, and
+     Xero-specific columns. The ORG-TEST-001 row is disconnected.
+   - `finance_stripe_connections` is Stripe only.
+   - Secrets are designed to live in Vault (`client_secret_id`). Vault
+     currently holds 0 secrets.
+3. **Finance Settings.** There are no Sheet / workbook / range fields, in
+   Airtable or in `finance-settings.ts`. The header comment says
+   integration connections "(Stripe / Xero / Sheets) are not settings
+   here".
+4. **The workbooks (read-only Drive metadata / content, no write).**
+   - **"Josh Evans Hub"** (`1-ANsySIFZ3LWrgQv3Ob9DKADwy1GA9dUZW3UmdE-p3g`)
+     is the Finance-pack workbook. Its real tabs:
+     - Overview (prose);
+     - Session Ledger (A:R);
+     - Coach Costs (A:N);
+     - Revenue & Billing (A:AG);
+     - Other Costs (A:L);
+     - Business Overheads (A:M);
+     - **Cash Events** (A:R, header only; not in the pack list);
+     - **Monthly Summary** (a formula layout with input cells "Selected
+       month" B3 and "Reporting view" B4, not a data table);
+     - Setup (lists);
+     - Integration Map (documentation).
+
+     The data tabs hold only `EXAMPLE-…` rows. Several columns encode
+     concepts F18 deliberately does not use:
+     - Programme Area (not Finance Service);
+     - coach Payment Status / Paid Date (F18: payment state is
+       irrelevant);
+     - "VAT Reclaimable? / Reclaimable VAT" (F18: no input-VAT recovery);
+     - a per-occurrence Session Ledger mixing revenue and cost.
+   - **"Josh_Evans_Coaching_PL_and_Schedule"**
+     (`1JT60QGjHVGUS1eBHESgJgJW92JF_geENnkfnAuOIAMc`) is the live P&L,
+     formula-driven ("Edit blue cells only"). It is entirely user-managed.
+   - Both are owned by the operator account in a shared drive. Neither is
+     a safe write target, and neither will be used for F19 proof.
+5. **Google authentication: none.**
+   - No GCP project, service account, OAuth client, API key or Apps Script
+     deployment is configured.
+   - The TEST `finance` function reads only `AIRTABLE_*` / `SUPABASE_*`
+     environment variables.
+   - There is no Google emulator in TEST: only `xero-sandbox` and
+     `stripe-sandbox`.
+   - This session's egress proxy blocks Google hosts (403). Edge Functions
+     are not affected.
+6. **No Sheets repository / connector boundary exists.** The F9 / F10
+   pattern (provider adapter + repository + orchestrator + a TEST
+   `*-sandbox` emulator with fault injection) is the precedent to reuse.
+7. **F18 writer inputs.**
+   - `buildMonthReport` already produces every canonical value. Overall,
+     programmes (revenue / coach / venue / other direct / credit
+     adjustment), revenue sources, cost details, unattributed,
+     overheads (categories + uncategorised), revenue corrections,
+     excluded (Stripe), completeness and reconciliation are all present.
+   - Facts carry stable internal keys:
+     - `rev:<line>:actual|expected`, `rev:<draftLine>:draft`,
+       `rev:<occ>:billing`;
+     - `coach:<month>|open:<alloc>`, `coach:<correction>`;
+     - `share:<agreement>:<occ>:<session>`;
+     - `credit:<id>[:k|:rest]`;
+     - `oh:<instalment>`;
+     - `emp:<employment>:<month>`.
+   - These keys are not exposed in the API response today. An in-process
+     writer can use them without changing the F18 contract.
+   - Coach keys change from `open` to the month id at finalisation, and
+     revenue keys change from the F4 / draft layer to the invoice layer.
+     A month-scoped replace handles both.
+8. **Legacy writers:** none.
+9. **Multi-organisation.**
+   - Today's legacy reads are single-workbook and hard-coded (Josh), so
+     they are not reusable.
+   - F19 needs a per-organisation connection row, derived server-side
+     from the caller's organisation, with each spreadsheet id unique
+     across organisations.
+   - The design pack's system-of-record map lists Sheets as "financial
+     events, calculations, ledgers". The F19 brief narrows Sheets to a
+     **reporting output only** (Hub → Sheets). The brief is followed.
+
+### FIN19.2 Recommended foundation (each needs a decision before code)
+
+- **D1 Auth.** Recommended: one platform Google **service account**. Its
+  JSON key is a Supabase secret, set by the operator and never in Airtable,
+  Git or audit. Each organisation shares its own reporting workbook with
+  the service-account email (Editor). The per-org row stores only the
+  spreadsheet id. (Alternative: per-org OAuth with a refresh token in
+  Vault, which is heavier.)
+- **D2 Ownership.** Recommended: **dedicated Hub-owned tabs only**, never
+  the legacy tabs:
+  - `Hub · Monthly Summary`, `Hub · Programmes`, `Hub · Revenue`,
+    `Hub · Coach Costs`, `Hub · Direct Costs`, `Hub · Overheads`,
+    `Hub · Completeness`;
+  - `Hub · Sync Info`: an ownership marker, organisation id, schema
+    `finance_reporting_v1`, last sync.
+
+  The writer never touches any other tab. If a `Hub ·` tab exists with
+  headers or a marker that don't match, the result is
+  `schema_incompatible` with no write. Legacy formulas may later be
+  repointed by Management.
+- **D3 TEST target.** Recommended: a **`sheets-sandbox` TEST Edge
+  Function**, emulating the Sheets v4 subset (`spreadsheets.get`,
+  `values.batchGet`, `values.batchUpdate`, `values.batchClear`, `batchUpdate`
+  addSheet / freeze). It would have a sha-authenticated bearer, fault
+  injection (403 / 404 / 429 / 500 / partial / drift) and a request log,
+  like `xero-sandbox` / `stripe-sandbox`. A real Google proof needs the
+  operator to create a TEST service account, a TEST workbook and a TEST
+  secret. Until then, real Google is NOT PROVEN.
+- **D4 Modes.** Recommended: one sync writes **both** Actual and Expected +
+  Actual for the month:
+  - two summary rows and per-mode programme rows;
+  - detail rows taken once from the canonical Expected report, each with an
+    explicit State, so nothing adds Actual + full Expected.
+- **D5 Write algorithm.** Recommended, per managed tab:
+  - read the key columns once (one `batchGet` for all tabs);
+  - keep rows of other months exactly as read;
+  - replace the month's rows with the canonical set, sorted by
+    (month, mode, row key);
+  - write with one `values.batchUpdate` plus a trailing clear;
+  - re-read and verify row keys, counts and control totals (Net / Direct /
+    Overheads / Profit against F18).
+
+  Identity is (organisation, month, mode, row key), never the row number.
+  Superseded facts disappear with the replace. There is a row cap per tab,
+  and exceeding it gives `workbook_too_large`.
+- **D6 Storage.** Recommended: new Supabase tables:
+  - `finance_reporting_connections` (org, provider `google_sheets`, unique
+    spreadsheet id, display name, status, schema version, last attempt /
+    success, last error code);
+  - `finance_reporting_sync_runs` (append-only: run id, org, actor, month,
+    workbook id, schema, result, row counts, control totals, error code,
+    started / completed).
+
+  Plus one `finance_audit_events` row per sync, with no credentials.
+  Status reads are not audited.
+- **D7 Placement.** Recommended: routes inside `finance`:
+  - `GET /finance/reporting/google-sheets/status` (View);
+  - `POST …/sync {month}` (Manage, under the org Finance write lock);
+  - `POST …/connect {spreadsheetId}` and `…/disconnect` (Manage, connect
+    reads workbook metadata first).
+
+  The connector is a separate module inside the bundle. Only the emulator
+  is a new function. `needs-attention` is not redeployed. The bundle grows
+  (it is already about 704 KB), so the operator deploys.
+- **D8 Shared code.** The writer calls the F18 engine in-process and never
+  recomputes. The F18 API stays unchanged.
+
+### FIN19.3 Resting state
+
+No change: no code, no schema, no Airtable / Supabase / Google writes. The
+workbooks were read only. Production untouched.
