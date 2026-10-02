@@ -183,6 +183,14 @@
  *                                                                to needs-attention as the caller) + Upcoming Payments + optional
  *                                                                F17 cash summary (F2 setting overviewCashSummaryVisible)
  *
+ * F19 Google Sheets reporting writer (Finance read = GET, Finance manage = POST): Hub -> Sheets ONLY, one-way; the
+ * figures are the canonical F18 Month Report (never recalculated); only the "Hub ·" tabs are ever written; the
+ * workbook never changes Hub Finance. F19 targets the TEST sheets-sandbox emulator only - REAL GOOGLE IS NOT ENABLED:
+ *   GET  /reporting/google-sheets/status            configured?, workbook identity, last attempt / success, recent runs
+ *   POST /reporting/google-sheets/configure         { spreadsheetId, endpoint: sandbox, displayName?, reason? }  verified first
+ *   POST /reporting/google-sheets/disconnect        { reason? }  the workbook itself is never touched
+ *   POST /reporting/google-sheets/sync              { month: YYYY-MM }  both modes; read back + verified before success
+ *
  * No auth -> 401. Coach / Parent / pending / inactive -> 403. The organisation
  * is ALWAYS the caller's own Supabase profile organisation_id - any
  * tenant-looking query parameter or body key is rejected with 400, never
@@ -240,6 +248,8 @@ import { matchCashFlowRoute, parseBalance, parseCashQuery } from "./finance-cash
 import { readBalanceHistory, readCashFlow, recordBankBalance } from "./finance-cash-flow-orchestrator.ts";
 import { matchMonthReportRoute, parseMonthReportQuery } from "./finance-month-report.ts";
 import { type NeedsAttentionSummary, readFinanceOverview, readMonthReport } from "./finance-month-report-orchestrator.ts";
+import { checkReportingQuery, matchReportingRoute, parseConfigureBody, parseDisconnectBody, parseSyncBody } from "./finance-reporting-sheets.ts";
+import { type ReportingDeps, configureReporting, disconnectReporting, readReportingStatus, syncReporting } from "./finance-reporting-sheets-orchestrator.ts";
 import { type SupplierDeps, changeInstalmentAction, createAgreement, createSupplier, listAgreements, listCostFacts as listSupplierCostFacts, listInstalments, listSuppliers, readAgreement, readInstalment, readSupplier, updateSupplier, versionAgreement } from "./finance-suppliers-orchestrator.ts";
 import { matchFamilyRoute, parseApply, parseDecision, parseFamilyPayment, parseFamilyQuery, parseReason } from "./finance-family.ts";
 import { applyFamilyCredit, listFamilyCredits, listRefundDecisions, listRevenueCorrections, readFamily, readRefundDecision, readRefundSource, recordFamilyPayment, recordRefundDecision, reverseRefundDecision, voidFamilyCredit } from "./finance-family-orchestrator.ts";
@@ -329,7 +339,7 @@ async function resolveCaller(authHeader: string | null): Promise<FinanceCaller |
   };
 }
 
-const deps: SettingsDeps & CommercialDeps & XeroDeps & StripeDeps & CostDeps & SupplierDeps = {
+const deps: SettingsDeps & CommercialDeps & XeroDeps & StripeDeps & CostDeps & SupplierDeps & ReportingDeps = {
   airtable: { baseId: AIRTABLE_BASE_ID, token: AIRTABLE_TOKEN },
   grants: { supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY },
   // TEST DEPLOYMENT GUARD (F9): a live Xero connection must reach a Xero Demo Company - TEST never issues into a real Xero organisation.
@@ -798,6 +808,33 @@ async function handleMonthReport(req: Request, url: URL, match: NonNullable<Retu
   return commercialResponse(await readFinanceOverview(deps, caller, { month: q.month }, needsAttentionSummary(req.headers.get("Authorization"))));
 }
 
+/** F19 routes: same order as F3-F18 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleReporting(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchReportingRoute>>): Promise<Response> {
+  if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const q = checkReportingQuery(url.searchParams, isTenantKey);
+  if (!q.ok) return commercialResponse({ status: "error", ...q });
+  const r = match.route;
+  if (r.name === "reporting.status") return commercialResponse(await readReportingStatus(deps, caller));
+  const raw = await req.text();
+  if (r.name === "reporting.sync") {
+    const p = parseSyncBody(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await syncReporting(deps, caller, { month: p.month }));
+  }
+  if (r.name === "reporting.configure") {
+    const p = parseConfigureBody(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await configureReporting(deps, caller, { spreadsheetId: p.spreadsheetId, endpoint: p.endpoint, displayName: p.displayName, reason: p.reason }));
+  }
+  const p = parseDisconnectBody(raw, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  return commercialResponse(await disconnectReporting(deps, caller, { reason: p.reason }));
+}
+
 /** F11 routes: same order as F3-F10 - 404/405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
 async function handleFamily(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchFamilyRoute>>): Promise<Response> {
   if (match.status === "not_found") return jsonResponse({ error: "Unknown route" }, 404);
@@ -859,7 +896,11 @@ Deno.serve(async (req: Request) => {
   try {
     const decoded = decodedPath(route);
     if (decoded === null) return jsonResponse({ error: "Unknown route" }, 404);
-    // F18 first: it owns only month-report and overview (Finance Overview).
+    // F19 first: it owns only reporting/... (Google Sheets reporting writer).
+    const reporting = matchReportingRoute(route, req.method);
+    if (reporting) return await handleReporting(req, url, reporting);
+
+    // F18 next: it owns only month-report and overview (Finance Overview).
     const monthReport = matchMonthReportRoute(route, req.method);
     if (monthReport) return await handleMonthReport(req, url, monthReport);
 

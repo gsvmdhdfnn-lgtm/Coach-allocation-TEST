@@ -23223,13 +23223,24 @@ other state change went through Finance APIs, Airtable, `INSERT`s, or a
   waits for confirmation. Future proofs should use the operator to
   revoke grants, or document the CTE route up front.
 
-## Finance Foundation — F19 (Google Sheets reporting writer) — AUDIT COMPLETE — STOPPED BEFORE CODE (no Google connection exists) — TEST only — 2026-10-02
+## Finance Foundation — F19 (Google Sheets reporting writer) — CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN (finance v28 awaits operator) — REAL GOOGLE WRITE: NOT PROVEN — TEST only — 2026-10-02
 
-> **Status: AUDIT ONLY.** No code, schema or deployment change. The F19 brief
-> says to stop and report the connector / emulator foundation before
-> implementing external writes if no real Google connection exists, and none
-> exists. Live TEST stays `finance` v27 / `needs-attention` v18. Production
-> is untouched. F20 and F21 were not started.
+> **Status (latest first).**
+> - **Build (FIN19.4–FIN19.12):** built against the TEST sheets-sandbox
+>   emulator on the approved decisions D1–D8.
+>   - Code complete; offline suite 99/99; 16/16 mutations killed; full
+>     regression green.
+>   - TEST schema `f19_finance_reporting_sheets` applied.
+>   - `sheets-sandbox` v1 deployed, provisioned and live-smoked.
+>   - The `finance` artifact (746,061 bytes) is too large for this
+>     session's deploy tool, so **`finance` v28 awaits operator
+>     deployment**. Live TEST stays `finance` v27 / `needs-attention` v18
+>     (needs-attention is unchanged and is not redeployed).
+>   - **REAL GOOGLE WRITE: NOT PROVEN.** No Google credential exists and none
+>     was added.
+>   - Production untouched. F20 / F21 were not started.
+> - **Audit (FIN19.1–FIN19.3):** stopped before code. No real Google
+>   connection exists, so the emulator foundation came first.
 
 ### FIN19.1 Audit findings (2026-10-02)
 
@@ -23395,3 +23406,357 @@ other state change went through Finance APIs, Airtable, `INSERT`s, or a
 
 No change: no code, no schema, no Airtable / Supabase / Google writes. The
 workbooks were read only. Production untouched.
+
+### FIN19.4 Decisions as built (approved 2026-10-02)
+
+- **D1 Auth.**
+  - Provider interface: `SheetsProvider` in
+    `finance-reporting-sheets-provider.ts`. It speaks the Sheets v4 REST
+    subset and is reached through a separate `TokenSource`.
+  - Domain values:
+    - `provider = google_sheets`;
+    - `auth_mode = platform_service_account` (the only enabled mode);
+    - `organisation_oauth` reserved in the schema / CHECK only.
+  - Endpoints: `sandbox` (enabled) and `google` (refused at configure and
+    at sync with `reporting_google_not_available`; the token source
+    returns `auth_unavailable` without reading any secret).
+  - The platform credential lives only in **Supabase Vault**, as secret
+    `finance_reporting_sheets_<endpoint>`. It is read only by the
+    service-role RPC `finance_reporting_secret` and held in memory for one
+    request.
+  - The credential is never stored in Airtable, Git, the connection row,
+    the run row or the audit, and is never returned.
+  - Each organisation shares its own workbook with the platform account.
+- **D2 Ownership.** Only these 8 tabs are ever written:
+  - `Hub · Monthly Summary`
+  - `Hub · Programmes`
+  - `Hub · Revenue`
+  - `Hub · Coach Costs`
+  - `Hub · Direct Costs`
+  - `Hub · Overheads`
+  - `Hub · Completeness`
+  - `Hub · Sync Info`
+
+  Every other tab is never written, including Overview, Session Ledger,
+  Coach Costs, Revenue & Billing, Other Costs, Business Overheads,
+  Monthly Summary, Setup, Integration Map and Cash Events. Columns to the
+  right of the managed columns are never touched either.
+
+  `Hub · Sync Info` (Field / Value) holds:
+  - `ownership_marker = hub-finance-reporting`;
+  - `schema_version = finance_reporting_v1`;
+  - `writer_version = f19.1`;
+  - `organisation_id`;
+  - a note;
+  - `last_successful_sync_at` / `_month` / `_run`;
+  - one `month:YYYY-MM` row per month synced.
+
+  The sync refuses rather than overwrites (nothing is written) when:
+  - a header or the schema version differs;
+  - the marker is missing;
+  - Hub tabs exist without Sync Info;
+  - the workbook belongs to another organisation;
+  - a row has no Row Key / Month, or a Row Key is duplicated.
+- **D3 Emulator:** `supabase/functions-test/sheets-sandbox/`.
+  - `emulator.ts` is a pure core shared byte-for-byte with the offline
+    suite. `index.ts` is the Supabase-backed Edge Function.
+  - It supports:
+    - metadata, tab create, and A1 ranges;
+    - batch read and batch write (RAW);
+    - permission-denied (403) and not-found / deleted (404);
+    - schema drift (by editing the stored doc);
+    - fault injection: `fail_401`, `fail_403`, `fail_404`, `fail_429`,
+      `fail_500`, `partial_write`, `corrupt_read`, `malformed`;
+    - a request log.
+- **D4 Modes.**
+  - One sync writes both Actual and Expected + Actual (summary,
+    programme and completeness rows carry the Mode).
+  - Detail rows are the canonical F18 facts of the month (one per stable
+    fact key) with State Actual / Expected. F18's unresolved revenue rows
+    are shown as State `Unresolved` with blank amounts, so they are never
+    counted.
+  - Actual = State Actual. Expected + Actual = Actual + Expected. Each fact
+    appears once, so there is no double count.
+- **D5 Write / replace.**
+  1. One bounded read of every existing Hub tab (managed columns, header +
+     20,000 rows).
+  2. Keep other months' rows.
+  3. Replace the selected month's rows by the canonical key set. Stale
+     bottom rows are cleared with blanks.
+  4. Sort by Month | Row Key.
+  5. One values.batchUpdate for all tabs.
+  6. Read back and verify. The verification is two independent checks:
+     - the exact grid, the Row Keys and the row counts;
+     - the F18 controls recomputed from the read-back: summary Net, Direct,
+       Overheads and Profit; Net − Direct − Overheads = Profit; the
+       Revenue Net detail; Coach + Direct Net Cost; the Overheads Net
+       detail.
+
+  A failed verification is **Failed** (502 `reporting_verification_failed`),
+  never success-with-warning. Only after verification is Sync Info
+  stamped, then read back.
+- **D6 Storage:** `finance_reporting_connections`,
+  `finance_reporting_sync_runs`, plus one audit event per completed sync.
+- **D7 Routes:** inside `finance`, routed first (before F18), with no
+  `/finance/` internal prefix:
+  - `GET /reporting/google-sheets/status` (View);
+  - `POST /reporting/google-sheets/configure | disconnect | sync` (Manage).
+
+  The organisation is always the caller's own; tenant keys get 400.
+  `needs-attention` is untouched.
+- **D8:** the writer calls `loadCanonicalMonth()`, a new F18 export in
+  `finance-month-report-orchestrator.ts`. It builds both F18 reports and
+  `buildFacts()` from ONE source load. The writer only transforms that
+  result; it never calculates a figure.
+- **Also locked:**
+  - Hub → Sheets only, with no import; manual edits are disposable.
+  - Legacy formulas are not preserved; writes are RAW.
+  - Sheets is optional: status returns `configured:false` and Finance works
+    without it.
+  - Sync is triggered explicitly by Management only.
+  - A failure never mutates Finance.
+  - Schema `finance_reporting_v1`.
+  - No Josh workbook is hard-coded or written.
+
+### FIN19.5 Tabs, columns, Row Keys (schema `finance_reporting_v1`)
+
+Every data tab ends with `Organisation ID`, `Row Key`.
+
+| Tab | Row Key | Columns (before Org / Key) |
+|---|---|---|
+| Hub · Monthly Summary | `summary:<M>:<actual\|expected>` | Month, Mode, State, Gross Revenue, VAT, Net Revenue, Direct Costs, Programme Contribution, Overheads, Final Business Profit, Final Margin %, Margin Note, Report Complete?, Incomplete Items, Parent / Stripe Revenue, Stripe Excluded Gross |
+| Hub · Programmes | `programme:<M>:<mode>:<FSV-…\|UNATTRIBUTED>` | Month, Mode, Finance Service ID, Programme, State, Gross / VAT / Net Revenue, Coach / Venue / Other Direct Cost, Credit Adjustment, Direct Costs, Contribution, Margin % |
+| Hub · Revenue | F18 fact key (`rev:<line>:actual\|expected`, `rev:<draftLine>:draft`, `rev:<occ>:billing`) or `unresolved:<occ>` | Month, Date, State, Layer, Finance Service ID, Programme, Client, Session, Occurrence ID, Source, Source ID, Gross, VAT, Net, Note |
+| Hub · Coach Costs | `coach:<month\|open>:<alloc>`, `coach:<correction>` | Month, Work Date, State, Coach, Coach Ref, Finance Service ID, Programme, Session, Occurrence ID, Cost Basis, Coach Month ID, Correction ID, Allocation, Amount |
+| Hub · Direct Costs | `share:<agr>:<occ>:<session>`, `credit:<id>[:k\|:rest]` | Month, Date, State, Cost Type, Effect, Supplier (+ID), Agreement (+ID), Credit ID, Finance Service ID, Programme, Occurrence / Session, Gross Cost, Credit Adjustment, Net Cost, Note |
+| Hub · Overheads | `oh:<instalment>`, `emp:<employment>:<M>`, `credit:<id>` | Month, Date, State, Category (+ID), Kind, Supplier / Person, Source ID, Agreement, Gross, Credit Adjustment, Net, VAT Context, Note |
+| Hub · Completeness | `completeness:<M>:<mode>:<code\|reconciliation>` | Month, Mode, Code, Severity, Message, Count, Amount |
+
+Money is written as numbers in pounds (exactly 2 dp, from F18's own
+strings / pence).
+
+### FIN19.6 Code, schema, tests
+
+- **New code** (`supabase/functions-test/finance/`):
+  - `finance-reporting-sheets.ts`: pure. Contract, tabs, canonical rows,
+    inspection, `planWrite`, `writeSyncInfo`, `verifyWrite`, views, audit,
+    routes, parsers.
+  - `-provider.ts`: HTTP adapter + `TokenSource`. Fixed request count;
+    timeout 20 s.
+  - `-repository.ts`: PostgREST reads + RPCs.
+  - `-orchestrator.ts`: status, configure, disconnect, sync, `tokenFor`.
+- **Changed:**
+  - `index.ts`: `handleReporting`, routed first.
+  - `finance-month-report-orchestrator.ts`: `loadCanonicalMonth`.
+- **TEST SQL migration** `f19_finance_reporting_sheets` (additive; no
+  DROP).
+  - **`finance_reporting_connections`.**
+    - CHECKs on provider / auth_mode / endpoint / spreadsheet id
+      (`^[A-Za-z0-9_-]{20,128}$`) / schema / state / display name.
+    - Unique `(organisation_id, provider)`.
+    - Partial unique index `(provider, spreadsheet_id) where connected`:
+      one workbook = one organisation.
+    - Delete / truncate refused (`f19:connection_is_kept`).
+  - **`finance_reporting_sync_runs`.**
+    - Run id `FRS-<12 hex>`; month pattern; modes = {actual, expected}.
+    - `(result='running') = (completed_at is null)`; failed ⇒ error_code;
+      succeeded ⇒ control_totals; summary ≤ 500.
+    - Guard trigger: the only update allowed is running → final with the
+      identity unchanged. Delete / truncate refused
+      (`f19:history_is_append_only`).
+  - **RPCs** (service_role only; each atomic with its audit insert):
+    - `finance_reporting_configure`: revision check, `workbook_in_use`;
+      a new workbook resets the last-sync fields.
+    - `finance_reporting_disconnect`.
+    - `finance_reporting_sync_start`: closes a run left `running` for more
+      than 5 minutes as `reporting_run_abandoned`.
+    - `finance_reporting_sync_finish`: exactly once.
+    - `finance_reporting_secret(endpoint)`: Vault read.
+  - **Sandbox tables:** `sheets_sandbox_accounts` (sha256 only),
+    `sheets_sandbox_spreadsheets`, `sheets_sandbox_faults`,
+    `sheets_sandbox_requests`, plus `sheets_sandbox_take_fault`.
+  - **Security:** RLS on everywhere, all revoked from anon / authenticated
+    (verified with `has_*_privilege`).
+- **Lock:** the existing Finance write lock RPCs with key
+  `reporting:google-sheets:<org>`. A sync never blocks other Finance
+  writes, and two reporting changes for one organisation cannot overlap
+  (busy → 409 `finance_reporting_busy`).
+- **Tests:**
+  - **Suite:** `tests/support/finance-reporting-sheets.test.ts`,
+    **99/99**. It drives the REAL orchestrator, provider, repository and
+    pure module over the F18 October 2026 world, fake `finance_reporting_*`
+    RPCs with the SQL's rules, and the emulator core over fetch. Sections:
+    - CN connection;
+    - SY first sync / canonical pass-through / keys / Sync Info / history /
+      audit;
+    - BA batching;
+    - ID idempotency;
+    - MO month isolation + replacement;
+    - ME manual edits;
+    - SC schema / ownership;
+    - FA failures + retry;
+    - AC access;
+    - OI organisation isolation;
+    - AU audit / history;
+    - DC disconnect;
+    - BD boundary;
+    - Z drift.
+  - **Mirrors:** `finance-reporting-sheets*.ts`,
+    `sheets-sandbox-emulator.ts`,
+    `finance-month-report-orchestrator.ts`.
+  - **F18 suite** 124/124. Its AU/AV boundary check now asserts that F18
+    stays free of Sheets code and that F19 is wired only via its own
+    modules.
+  - **Mutation: 16/16 killed.** The mutations covered:
+    - other months dropped;
+    - exact compare off;
+    - schema / marker / Sync-Info / row-org checks off;
+    - state forced Actual;
+    - stale rows not cleared;
+    - verification ignored;
+    - workbook reuse unchecked;
+    - configure not inspecting;
+    - Manage not required;
+    - Google token path;
+    - the success stamp skipped;
+    - summary controls unchecked;
+    - 403 unmapped.
+  - **Full regression:** all 56 `tests/support` suites pass; `npm test`
+    89/89 files.
+- **Request count per sync:** 6 Google requests whatever the row count:
+  1. metadata;
+  2. [addSheet ×8 in one batchUpdate, first time] or [one bounded read of
+     the existing Hub tabs, afterwards];
+  3. one values.batchUpdate;
+  4. one read-back;
+  5. the Sync Info stamp;
+  6. its read-back.
+
+  There is no per-row call.
+
+### FIN19.7 Failure handling (Finance is never mutated)
+
+| Condition | HTTP / code | Run | Workbook |
+|---|---|---|---|
+| no connection | 409 `reporting_not_configured` | none | — |
+| endpoint google | 409 `reporting_google_not_available` | none | — |
+| no Vault credential | 409 `reporting_credentials_unavailable` | failed | untouched |
+| 401 | 409 `reporting_credentials_rejected` | failed | untouched |
+| not shared (403) | 409 `reporting_workbook_permission_denied` | failed | untouched |
+| missing / deleted | 409 `reporting_workbook_not_found` | failed | untouched |
+| 429 | 503 `reporting_workbook_busy` | failed | untouched |
+| 5xx / no response | 503 `reporting_workbook_unavailable` | failed | untouched |
+| malformed | 502 `reporting_workbook_response_invalid` | failed | untouched |
+| schema / marker / ownership / unrecognised rows / too large | 409 `reporting_schema_incompatible` / `_workbook_owned_elsewhere` / `_managed_rows_unrecognised` / `_workbook_too_large` | failed | untouched (reads only) |
+| partial write | 503 `reporting_write_failed` | failed | partly written; Sync Info NOT stamped; the next sync repairs it |
+| read-back mismatch | 502 `reporting_verification_failed` | failed | written but NOT stamped |
+| run not recorded | 500 `finance_reporting_unrecorded` | stays running → closed as abandoned by the next start after 5 minutes | verified |
+| lock held | 409 `finance_reporting_busy` | none | untouched |
+
+### FIN19.8 Deployment checkpoint
+
+- **Artifacts** (`--check` MATCH):
+
+  | Artifact | Bytes | sha256 | Note |
+  |---|---|---|---|
+  | `supabase/deploy-artifacts/finance/index.js` | 746,061 | `7d0fbeb34a1dcca5c8d21e84008e96a4212bf3f8e34ebd81976c7b6b5335c8dc` | was 703,547 on v27 |
+  | `supabase/deploy-artifacts/needs-attention/index.js` | 214,784 | `6c1daba1f4885faf1d986dcae1f99494ce3ff39f9e69f24d330a7a7b2e2bc805` | unchanged; no redeploy |
+
+- **Operator:** deploy `finance` v28 from the committed artifact
+  (verify_jwt true, as v27), then check the deployed hash against the
+  manifest.
+- **`sheets-sandbox` v1:** deployed by this session (verify_jwt false;
+  `index.ts` + `emulator.ts` as committed; the deployed source was
+  re-read and matches).
+- **Provisioned on TEST.**
+  - **Account:** `hub-reporting@sheets-sandbox.test`. Its key was
+    generated inside SQL; only its sha256 is in `sheets_sandbox_accounts`,
+    and the key itself is only in Vault (`finance_reporting_sheets_sandbox`).
+    The key was never printed and is not in Git.
+  - **Workbooks:**
+    - `SBX_F19_TEST_REPORTING_WB01`: shared with the account; the 10
+      legacy-style tabs.
+    - `SBX_F19_TEST_UNSHARED_WB01`: not shared; used for the permission
+      proof.
+- **Live emulator smoke** (pg_net from the TEST database; the key was read
+  from Vault in SQL):
+
+  | Probe | Result |
+  |---|---|
+  | no key | 401 |
+  | shared workbook metadata | 200 |
+  | unshared | 403 |
+  | missing | 404 |
+  | values:batchGet | 200, `read 1 range(s)` |
+
+  Every probe was logged in `sheets_sandbox_requests` with no key and no
+  values. One first-attempt 500 was a transient platform error: PostgREST
+  `PGRST303 "JWT issued at future"` during a cold boot of 5 instances. The
+  retry returned 200. This is not an emulator defect.
+- **The F19 writer itself is NOT live-proven.** That needs `finance` v28.
+
+### FIN19.9 Live proof plan (after the operator deploys `finance` v28; sandbox only)
+
+1. Verify the v28 hash.
+2. `GET /finance/reporting/google-sheets/status` → `configured:false`.
+3. `POST configure {spreadsheetId: SBX_F19_TEST_REPORTING_WB01, endpoint: sandbox}`
+   → 201. Then:
+   - the unshared workbook → 403 mapping;
+   - endpoint google → 409.
+4. `POST sync {month}` for the current and previous months, then compare
+   `Hub · Monthly Summary` (read via `sheets_sandbox_spreadsheets.doc`)
+   with `GET /month-report` for both modes.
+5. Re-sync for idempotency, then a manual edit followed by a re-sync.
+6. Inject faults, each followed by a retry:
+   - `fail_403` / `fail_429` / `partial_write` on values_batch_update;
+   - `corrupt_read` on a fresh workbook.
+7. Prove access (View / Coach) and tenant-key 400.
+8. Check history / audit rows, confirm the legacy tabs are byte-identical,
+   and confirm Finance tables are unchanged.
+9. Disconnect.
+
+All of this is against the emulator: **REAL GOOGLE WRITE: NOT PROVEN.**
+
+### FIN19.10 Resting TEST state
+
+- **Live functions:** `finance` v27 (F19 routes not live),
+  `needs-attention` v18, `sheets-sandbox` v1.
+- **Supabase TEST:**
+  - F19 tables are empty: no connection, no runs, no F19 audit events.
+  - Sandbox: 1 account, 2 workbooks, 0 faults, 6 request-log rows from the
+    smoke.
+  - Vault: `finance_reporting_sheets_sandbox`.
+- **Airtable TEST:** unchanged.
+- **Production** (Airtable `apprptFotQuVL1mhs`, Supabase
+  `bkkukymqaxawnudoxdjs`): untouched.
+- **No live Google workbook was read or written by the build.** This
+  includes Josh Evans Hub and Josh_Evans_Coaching_PL_and_Schedule.
+
+### FIN19.11 Real Google (V1) — what remains, NOT PROVEN
+
+1. Create a Google Cloud service account. Store its JSON key only in
+   Supabase Vault / secrets, never in Airtable, Git or audit.
+2. Implement the `google` `TokenSource`: a JWT grant →
+   `https://oauth2.googleapis.com/token`, scope
+   `https://www.googleapis.com/auth/spreadsheets`, with the token cached
+   per request. The writer and adapter are unchanged.
+3. Enable the `google` endpoint once a TEST Google workbook is shared with
+   the service-account e-mail.
+4. Run the FIN19.9 proof against it.
+5. `organisation_oauth` stays reserved: a schema value only, with no flow.
+
+### FIN19.12 Debt
+
+- The F19 writer is not live-proven until `finance` v28 is deployed by the
+  operator.
+- Sheets formatting (number formats, column widths, frozen-column styling)
+  is not applied. Values are RAW numbers, so Sheets shows them unformatted.
+- The 20,000-row bound per tab is refused, not paged. Archiving older
+  months to a copy is a manual step.
+- A run left `running` after an unrecorded completion stays visible as
+  running until the next sync start more than 5 minutes later closes it as
+  `reporting_run_abandoned`. No audit event is written for that closure.
+- A manual edit to another month's row survives until that month is
+  synced again (D5 "preserve other months"). That month's next sync
+  restores it.
+- `f2probe` cleanup remains an operator item.

@@ -64,6 +64,7 @@ import {
   MONTH_REPORT_CONTRACT,
   MonthReportDataError,
   OVERVIEW_CONTRACT,
+  buildFacts,
   buildMonthReport,
   monthEnd,
   previousMonth,
@@ -355,6 +356,30 @@ export async function readMonthReport(deps: MonthReportDeps, caller: FinanceCall
     const report = buildMonthReport(inputsOf(L, org, month, today, at, parent), q.mode, { generatedAt: at.toISOString(), organisationName: org.name });
     const { _figures, ...body } = report;
     return { status: "ok", httpStatus: 200, body: { contract: MONTH_REPORT_CONTRACT, organisation: { organisationId: org.organisationId, name: org.name, timezone: org.timezone }, access: auth.access, currency: "GBP", today, ...body } };
+  } catch (e) {
+    const df = dataFail(e);
+    if (df) return df;
+    throw e;
+  }
+}
+
+// ---------------------------------------------------------------------
+// F19 reporting writer input - the canonical F18 result, never recalculated
+// ---------------------------------------------------------------------
+/**
+ * One month in BOTH modes from ONE source load (the same inputs both F18
+ * reports and their facts are built from). The caller has already
+ * authorised `org`; the F19 reporting writer only transforms this.
+ */
+export async function loadCanonicalMonth(deps: MonthReportDeps, caller: FinanceCaller, org: OrganisationContext, month: string) {
+  const at = now(deps);
+  const today = todayIn(org.timezone, at);
+  const [L, parent] = await Promise.all([loadSources(deps, org, month, today), parentRevenueOf(deps, caller, month)]);
+  if (isFail(L)) return L;
+  try {
+    const inputs = inputsOf(L, org, month, today, at, parent);
+    const meta = { generatedAt: at.toISOString(), organisationName: org.name };
+    return { status: "ok" as const, at, today, actual: buildMonthReport(inputs, "actual", meta), expected: buildMonthReport(inputs, "expected", meta), facts: buildFacts(inputs).facts, serviceLabels: inputs.serviceLabels };
   } catch (e) {
     const df = dataFail(e);
     if (df) return df;
