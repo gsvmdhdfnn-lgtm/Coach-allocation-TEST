@@ -21915,9 +21915,22 @@ ORG-TEST-001, Europe/London. Today 2026-10-02.
   - `needs-attention` `1d265d79…c742`.
 - **Full regression:** **87/87** test files.
 
-## Finance Foundation — F17 (Cash Position / Cash Flow forecast + ATT-054) — CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN — TEST only — 2026-10-02
+## Finance Foundation — F17 (Cash Position / Cash Flow forecast + ATT-054) — LIVE-PROVEN on `finance` v25 / `needs-attention` v16, with one open defect (D1) — TEST only — 2026-10-02
 
-> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
+> **LIVE-PROVEN (2026-10-02), one open defect.**
+>
+> - **Deployed by the operator** from commit `5670592`: `finance` v25 and
+>   `needs-attention` v16. Both are ACTIVE with verify_jwt, one `index.js`
+>   each, byte-identical to the committed artifacts.
+> - **Live proof A–AU:** FIN17.13. Resting state: FIN17.14.
+> - **Open defect D1 (FIN17.15).** On today's date, an actual movement can
+>   sort after a forecast row. The projected low and the breach can then
+>   be optimistic. It is reproduced in the pure engine and is not visible
+>   in the TEST data. The fix touches the approved same-day ordering, so it
+>   needs your decision and a redeploy.
+> - The checkpoint text below is kept as written.
+>
+> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN** (checkpoint text, superseded).
 >
 > - **What F17 adds:**
 >   - One Cash Position timeline: what is expected to hit the bank, when,
@@ -22110,7 +22123,7 @@ Approved decisions (David, 2026-10-02), locked:
     403; a load failure → 503 `cash_flow_unavailable`; bad stored data →
     409.
   - Settings: more than one row → 409 `finance_settings_invalid`.
-- **Threshold:** set through the existing F2 `PUT /settings`
+- **Threshold:** set through the existing F2 `POST /settings`
   (`cashSafetyThresholdMinor`, whole pence 0..MAX, null clears it; Finance
   Manage; F2's own lock and audit).
 
@@ -22217,7 +22230,7 @@ Approved decisions (David, 2026-10-02), locked:
    / module off → 403. Check a future as-at date, a back-dated entry, a
    concurrent write (`balance_changed`), append-only (UPDATE / DELETE
    refused by the DB), and the audit row.
-3. Set and clear the threshold through F2.
+3. Set and clear the threshold through F2 (`POST /settings`).
 4. ZZTEST F7 invoices / payments / overpayment, F13 instalments (overdue,
    estimated, credited, partial), F15 employment, and F12 open +
    finalised + past Coach Months.
@@ -22280,8 +22293,8 @@ grant execute on function public.finance_bank_balance_record(jsonb, integer, jso
 
 ### FIN17.12 Open items / future debt
 
-- **Deploy (operator):** `finance` v25 and `needs-attention` v16, then the
-  FIN17.10 live proof.
+- ~~Deploy (operator)~~ **Done:** `finance` v25 / `needs-attention` v16
+  from `5670592`, live-proven (FIN17.13), apart from D1 (FIN17.15).
 - **Stripe payout integration:** payouts / balance transactions, giving a
   real bank date and net amount.
 - **F12 Coach Paid lifecycle:** without it, past Coach Months stay
@@ -22295,3 +22308,163 @@ grant execute on function public.finance_bank_balance_record(jsonb, integer, jso
   would be needed only at very high volume.
 - **No bank reconciliation / Open Banking:** the balance is always
   Management-entered.
+- **D1, same-day actual/forecast order (found in the live proof):** see
+  FIN17.15. It needs a decision and a redeploy.
+- **Live DB UPDATE/DELETE on `finance_bank_balances`** was not run: the
+  MCP destructive-statement gate held the block and it never executed.
+  Append-only is proven from the catalogue, the API and unit tests
+  (FIN17.13 I).
+
+### FIN17.13 Live proof A–AU (2026-10-02, `finance` v25 / `needs-attention` v16)
+
+Everything ran through the deployed HTTP APIs as real TEST users
+(`f2probe` pg_net harness):
+- users: manager `285f819e…`, coach.a and parent.a;
+- organisation ORG-TEST-001, Europe/London;
+- today 2026-10-02 (09:39–10:00Z).
+
+The harness gained four read helpers: `f2probe.cfb`, `cfs`, `cft` and
+`res`-based summaries. They are part of the existing `f2probe` operator
+cleanup.
+
+**Fixtures (ZZTEST, kept unless noted):**
+
+- **Coach work:**
+  - occurrences `ZZTEST-F17-SEP` `recZGuCQmrV5QMTHR` (2026-09-08) and
+    `ZZTEST-F17-OCT` `recfV3bQKalVwBRk3` (2026-10-01), both Completed, on
+    inactive session ZZTEST-F12-A;
+  - `/allocate` (coach-allocations) for coach P: Sep `rec2bDikNNp4YFmds`
+    2 h × 26.50 = 53.00 and Oct `rec2uVikXwvaK2HRe` 1.5 h = 39.75, both
+    Confirmed;
+  - Work Summary `recf0rd3iyZrzi19T` (Sep) prepared and finalised;
+  - F12 finalise → `FCM-7472352262F9` 53.00 (payment date 2026-10-07).
+- **Balances** (append-only; all kept):
+
+  | Entry | Id | Amount | As at | Note |
+  |---|---|---|---|---|
+  | B1 | `FBB-96AB9072D0BE` | 12000.00 | 10-01 | |
+  | B2 | `FBB-55282A80C940` | 9999.99 | 09-28 | back-dated |
+  | B3 | `FBB-79CAC7EB4917` | −300.00 | 10-02 | concurrent winner |
+  | B4 | `FBB-40D9E2A193DD` | 15000.00 | 10-02 | |
+  | B5 | `FBB-982894B18EF5` | 40000.00 | 10-02 | resting start |
+
+- **F7 (reversed / restored at the end):**
+  - receipt `FPY-3BCC61806FF6` 25.00 (10-02) on `FIV-6015A9D88999`;
+  - receipt `FPY-FE40387F70AD` 60.00 (10-01) on `FIV-D9A443B0F2CA`;
+  - due date of `FIV-E6600556B017` moved 10-22 → 10-01 (`FDD-81C548DFEEEC`);
+  - client credit `FCA-8FE678023EEA` 10.00 from `FCC-7E3CD6292226` onto
+    `FIV-BDF2992D20D3`.
+- **F13 / F14 (kept):**
+  - `FSI-3389B78F41BC` estimate confirmed at 320.00;
+  - `FSI-5A9E0F3835AE` paid 80.00 (`FSP-A112C9D7689B`);
+  - `FSI-69917AE2B2F2` part-paid 100.00 (`FSP-70404BC732C3`);
+  - credit `FSC-A969F75FDA17` 30.00 (Kit Supplier) applied to
+    `FSI-9E8D7AE6B884`.
+
+| # | Check | Result |
+|---|---|---|
+| A | Deployed = committed | `finance` v25: 656,214 B, sha `6d45d5e9…944a`. `needs-attention` v16: 214,286 B, sha `a43139ce…cc86`.<br>Both ACTIVE, verify_jwt, 1 file, byte-identical to the artifacts. Both `--check` MATCH |
+| B | Baseline before | Audit 453; 0 balances; history `[]`.<br>30d: 30 events (4 in / 26 out), projection null with "Record the current bank balance to see a projected balance"; reconciles.<br>Stripe Not included. Payment not tracked: `FCM-626821C7ABFA` 173.00 (expected 09-07). F2 revision 18, threshold null. NA Clear |
+| C | Record balance (Manage) | B1 → 201 `FBB-96AB9072D0BE` seq 1, note kept, `recordedBy` manager.<br>Label "Management-entered bank balance", verification "Entered by Management - not bank verified and not reconciled", `isProjectionStart:true` |
+| D | Balance validation | as-at 10-03 → 409 `as_at_in_future`; note 501 chars → 400; `12.345` / `2026-02-30` → 400 field errors; `organisationId` in body or query → 400 `tenant_param_rejected`; `range=6m` / `view=stripe` → 400 |
+| E | History append-only / previous visible | B2 (back-dated 09-28) → seq 2, listed in history with `isProjectionStart:false`. The start stays B1 (latest as-at date wins) |
+| F | Negative balance | B3 −300.00 as at today → start −300.00, today −300.00, 0 Actual rows (today's movements are assumed to be in the entered balance) |
+| G | Same as-at, later entry wins | B4 15000.00 and then B5 40000.00, both as at 10-02 → the start becomes the highest sequence (B5) |
+| H | Concurrency | Two simultaneous POSTs → one 201 (B3), one 409 `finance_commercial_busy`.<br>Direct DB call with a stale expected sequence → `f17:balance_changed`; empty audit events → `f17:audit_missing`. Nothing written |
+| I | Append-only | Catalogue: `finance_bank_balances_immutable` (BEFORE UPDATE/DELETE) and `_no_truncate` both raise `f17:history_is_append_only`.<br>API: `DELETE cash-flow/balance` 405; `POST cash-flow/balance/{id}` 404; `GET cash-flow/balance` 405; `POST` on history / cash-flow 405.<br>The live UPDATE/DELETE block was held by the MCP gate and never ran (rows unchanged) |
+| J | 30-day range | 2026-10-02..2026-10-31 |
+| K | 3-month range | 2026-10-02..2027-01-01 (the day before 2027-01-02) |
+| L | Organisation-local date | Timezone temporarily Pacific/Pago_Pago (09:57Z = 10-01 22:57):<br>- today 10-01; 30d 10-01..10-30; 3m 10-01..12-31;<br>- `FSI-CC9E2E4CB932` (due 10-01) overdue 1 → Confirmed due today;<br>- `FIV-E6600556B017` overdue IN → Confirmed IN today;<br>- `FSI-7916D0613D55` 64 → 63 days.<br>Restored to Europe/London |
+| M | One timeline; views are filters | 3m: 55 events = 5 Money In + 50 Money Out; `reconciles:true`. Included IN 155.00 / OUT 31190.25 and the summary are identical in all three views. 55/55 rows carry the same projected balance in the filtered views as in Cash Position; keys unique |
+| N | Projection arithmetic | Today = 12000 − 1500 − 1100 − 300 = 9100.00 (three Actuals dated 10-02 after the 10-01 as-at), then 9125.00 after the 25.00 receipt.<br>3m end = 12000 + 155 − 31190.25 = −19035.25; low −19035.25 on 2027-01-01.<br>Each OUT lowers and each IN raises the running balance |
+| O | Same-day ordering | 10-02: `employment_cost` < `employment_payment` < `supplier_instalment` < `supplier_payment`. 10-31: all OUT rows, then IN rows (source id order within type). See D1 for the actual-vs-forecast edge case |
+| P | No double count on the as-at date | Four supplier payments dated 10-01 (= as-at; `FSP-1DEA…` 300, `FSP-3303…` 200, `FSP-7392…` 150, `FSP-B0EB…` 250) produced no event. The F7 receipt `FPY-FE40…` dated 10-01 produced no event, and its invoice left the forecast |
+| Q | Today as the low; duplicate identity | Not reproducible with TEST's outgoing-heavy data. Unit-proven (MB2 today-is-low; DD duplicate key → 409 `cash_flow_data_invalid`). Live: every read had unique event keys |
+| R | Confirmed IN | F7 receivables `FIV-E660…` 48.00 (10-22), `FIV-6015…` / `FIV-D9A4…` / `FIV-DA0D…` 60.00 (10-31), `FIV-BDF2…` 45.00 (11-20) |
+| S | Partial receipt | `FIV-6015…` 25.00 received → only 35.00 still expected; context `cashReceived 25.00` |
+| T | Fully received | `FIV-D9A4…` settled → no future IN |
+| U | Overdue IN | `FIV-E660…` moved to 10-01 → Overdue, real date 10-01 / original 10-22, 1 day, `includedInProjection:false` with reason; totalled in `overdueIn 48.00` |
+| V | Actual receipt after vs on as-at | `FPY-3BCC…` (10-02) → Actual IN 25.00 included. `FPY-FE40…` (10-01 = as-at) → no event |
+| W | Client credit is not cash | 10.00 applied to `FIV-BDF2…` → outstanding 45.00 → 35.00 (`clientCreditApplied 50.00`); no IN event |
+| X | Other exclusions | `notIncluded`: pre-invoice revenue, awaiting issue (3 invoices, 1377.00), no due date (0), F11 Refund Due, VAT/PAYE, client credit and supplier credit (`cash:false`). No such row in the timeline |
+| Y | Stripe | "Stripe forecast: Not included" / "Stripe bank payout timing is not currently available.", `included:false`. 0 Stripe rows; the timeline has only the 7 F17 source types. No fee, no payout delay, no charge date |
+| Z | Supplier Confirmed / Estimated | `FSI-9E8D…` Confirmed 80.00 (10-20); `FSI-3389…` / `FSI-36A7…` Estimated 315.00 (`amountIsEstimate:true`) |
+| AA | Supplier partial payment | `FSI-6991…` 300 paid 100 today → 200 forecast + Actual 100 (`FSP-7040…`) |
+| AB | Supplier credit | `FSI-9E8D…` 80 with 30 credit → 50.00 forecast; no IN event |
+| AC | Settled / cancelled | B `FSI-6B59…` settled → only its Actual payment `FSP-03B3…` (10-02). Cancelled A / F → nothing |
+| AD | Overdue OUT | e.g. `FSI-7916…` due 07-30, 64 days, cash date today, included; `FSI-0742…` due 09-20, 12 days, remaining 300 of 500 |
+| AE | Estimate → confirmed is one movement | `FSI-3389…` confirm-estimate 320.00 → same key, Confirmed 320.00 (was Estimated 315.00). K paid in full → forecast replaced by one Actual (`FSP-A112…` 80.00) |
+| AF | Employment | E2 Sep Confirmed 1900.00 Overdue 2 days; Groundsman Oct paid → Actual `FEI-2561…` 1500.00 only (no cost row); Groundsman Nov Estimated 1500.00; E1 Aug paid → Actual `FEI-3284…` 1100.00 |
+| AG | NI / PAYE | Every employment row: "Employer NI / PAYE estimates are inside this month's cost on its pay date - not the real HMRC payment date" (`niPayeEstimateIncluded`). VAT/PAYE are listed as not included |
+| AH | Open Coach Months | Sep 53.00 (10-07) and Oct 39.75 (11-07) Estimated, "Open month: live allocation cost - the amount may change until the month is finalised" (same as F12 `coach-costs`) |
+| AI | Finalised Coach Month | After F12 finalise: Sep → Confirmed 53.00, same key `out:coach_month:recdbaG9ro7R8SGjE\|month:2026-09` |
+| AJ | Payment not tracked | `FCM-626821C7ABFA` 173.00 (expected 09-07) only under "Payment not tracked", `affectsProjection:false`, never "Overdue". F12 still `paymentState:not_tracked`; no Coach Paid state anywhere |
+| AK | Threshold | No threshold → `thresholdBreached:null` + message.<br>20000.00 (F2 rev 19) → breached; first breach 2026-12-01; low 12044.75 on 2027-01-01; below by 7955.25.<br>12044.75 (= low) → NOT breached, headroom 0.00.<br>12044.76 → breached by 0.01, first breach 2027-01-01 |
+| AL | ATT-054 = Finance 3m result | One Warning `cash_balance_below_threshold\|cash_position:ORG-TEST-001`: low 12044.75 / 2027-01-01, threshold 20000.00, below 7955.25, first breach 12-01, end 12044.75, balance FBB-982894B18EF5 40000.00 as-at 10-02, `stripeIncluded:false`, destination `finance/cash-flow {range:3m, view:position}`. Identical to the Finance route |
+| AM | Disappears naturally | Threshold set to exactly the low → NA Clear, ATT-054 0 candidates. Back on 0.01 above → same key returns |
+| AN | Snooze | `NAEX-20261002095435-4F40B214` (until 09:57:35Z) → total 0, suppressed 1. The Finance 3m summary and timeline were byte-identical before vs during. After expiry: same key back, `exceptionAllowed:true` |
+| AO | Finance View | Manage `acc1cde9…` revoked; View `fe6f46d2…` granted.<br>`cash-flow` 200 (`access:view`); history 200; balance POST and threshold change → 403 `finance_manage_required` |
+| AP | No grant / Coach / Parent / tenant | No grant: 3 × 403 `finance_access_denied`; NA skips ATT-054 `finance_access_required` with 0 Finance reads.<br>Coach / Parent: 4 × 403 `management_required`. Tenant: D.<br>New Manage grant `6f08e287-64ec-4845-a2bd-dd9ce284bc63` |
+| AQ | Module off | `module_finance` off → 3 × 403 `finance_module_disabled`; NA ATT-054 `module_off`, `not_checked`, 0 Supabase reads. Back ON |
+| AR | Load failure fails closed | SELECT on `finance_bank_balances` temporarily revoked from service_role → `cash-flow` and history 503 `cash_flow_unavailable`; NA `complete:false` with `evaluator_error`, no case. Grant restored (anon / authenticated still none) |
+| AS | Audit | 453 → 471 (+18 = each successful write once): `finance_bank_balance.recorded` 5 (actor, before null, after entry, route context), `finance_settings.updated` 3, F7 4, F13 / F14 5, F12 1.<br>Reads, refusals, the busy 409 and the refused DB calls wrote nothing |
+| AT | Regression | With ATT-047..054 enabled together: complete, 0 config issues, 8 Supabase sources. ATT-047 1 (the deliberately overdue `FIV-E660…`), ATT-050 11 (= the 11 overdue OUT rows in Cash Flow), ATT-048 / 049 / 051 / 052 / 053 0, ATT-054 1. The F7, F12, F13, F14, F15 and coach-allocations / work-summaries APIs behaved unchanged for every fixture action |
+| AU | No second ledger / no profitability dates; production | Cash Flow wrote nothing but balance rows (no event store). Cash dates are only due / paid / received / expected-payment dates (Coach Months on the F12 payment date, never the work date). Production `bkkukymqaxawnudoxdjs`: 9 functions, no `finance` / `needs-attention`, last update 2026-09-26 |
+
+### FIN17.14 Resting TEST state (after the live proof)
+
+- **Restored:**
+  - `module_finance` ON;
+  - one active Finance grant: Manage `6f08e287-64ec-4845-a2bd-dd9ce284bc63`
+    (`acc1cde9…` and the View probe `fe6f46d2…` revoked with notes);
+  - Timezone Europe/London;
+  - F2 threshold null (revision 22);
+  - NA Settings rows for ATT-047..054 deleted (all Finance rules off by
+    default); NA Clear;
+  - harness tokens cleared.
+- **F7 back to its pre-proof state** through reversal rows, audited:
+  - `FPR-23F49DC9BA60` and `FPR-B0B0C87553B5` reverse the two receipts;
+  - `FAR-5D8FA3DA260D` reverses the client-credit application;
+  - `FIV-E660…` due date back to 10-22 (`FDD-BE260E5B6901`; the two FDD
+    rows stay in its history);
+  - receivables: E660 48.00 not due, 6015 60.00, D9A4 60.00, BDF2 45.00
+    partially paid.
+- **Retained ZZTEST fixtures (append-only or deliberate):**
+  - balances B1–B5 (the start is B5, 40000.00 as at 2026-10-02 — a
+    ZZTEST value, not a real bank balance);
+  - F12 month `FCM-7472352262F9` and its Work Summary;
+  - the Oct allocation (an open Coach Month 39.75 → Estimated OUT 11-07);
+  - the F13 / F14 actions in FIN17.13;
+  - snooze `NAEX-20261002095435-4F40B214` (expired, kept as history).
+- **Audit:** 476 (453 + 18 proof + 5 restore).
+- **Suites after the proof:**
+  - full regression **89/89** files (includes F17 89/89, ATT-054 26/26,
+    F16 76/76, and the F7–F15 and Needs Attention suites);
+  - `finance --check` and `needs-attention --check` MATCH (still identical
+    to deployed v25 / v16).
+
+### FIN17.15 Defect D1 — same-day actual vs forecast ordering (open, needs a decision)
+
+- **Where:** `buildCashFlow` sorts every event once by cash date, OUT
+  before IN, source type, source id (the approved rule). Actual movements
+  (after the as-at date, up to today) are applied to today's position.
+  The projected low / first breach scan then reads only non-actual rows.
+- **Effect:** on today's date, an Actual row can sort **after** a forecast
+  row:
+  - for example `supplier_payment` (actual) after `supplier_instalment`
+    (forecast);
+  - or an actual receipt (IN) after forecast OUT rows.
+- **Consequences:**
+  - The per-row "projected balance after" for today's forecast rows does
+    not yet include those actuals.
+  - Worse, the low / breach can be **optimistic**. Reproduction
+    (`scratchpad/f17_sameday.ts`, pure engine): opening 1000.00 as at
+    yesterday, Actual payment 300.00 today, forecast 100.00 due today,
+    threshold 601.00 → end 600.00 but low 700.00 and **no breach**.
+- **Not visible in the TEST data** (the low is weeks later). It is the
+  same in ATT-054 (shared engine).
+- **Proposed fix:** on a date, put already-happened Actual movements
+  first. These are already in today's position. Then keep the approved
+  OUT-before-IN / source type / source id order for forecasts. Add tests
+  for both directions and redeploy `finance` + `needs-attention`. This
+  refines a locked decision, so it is not changed without approval.
