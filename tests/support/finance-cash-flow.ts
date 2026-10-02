@@ -41,7 +41,10 @@
  *     issue in Xero (no due date), F11 Refund Due (no cash date until F21),
  *     VAT / PAYE liabilities (no structured source).
  *   - Ordering: cash date, OUT before IN (the cautious same-day low), source
- *     type, source id, key - never storage order.
+ *     type, source id, key - never storage order. On TODAY only, Actual
+ *     movements (already happened, already in today's position) come first,
+ *     then today's forecasts in that same order (D1, approved 2026-10-02).
+ *     No date is rewritten and no Actual moves to another date.
  */
 import { MAX_MINOR, formatMinor, parseMoney } from "./finance-money.ts";
 import { type CostWorld, type Correction, type FinanceMonth, type WorkItem, F as COST_FIELDS, addMonths, expectedPaymentDate, monthBounds, monthOf as costMonthOf, monthsBetween as costMonthsBetween, workItemsOf, workersOf } from "./finance-coach-costs.ts";
@@ -398,9 +401,14 @@ export interface CashFlow {
 }
 
 const DIR_ORDER: Record<Direction, number> = { out: 0, in: 1 };
-/** Cash date, then OUT before IN, then source type, source id, key - total and deterministic. */
-export function compareEvents(a: Pick<CashEvent, "cashDate" | "direction" | "sourceType" | "sourceId" | "key">, b: Pick<CashEvent, "cashDate" | "direction" | "sourceType" | "sourceId" | "key">): number {
+type Ordered = Pick<CashEvent, "cashDate" | "direction" | "sourceType" | "sourceId" | "key"> & { state?: CashState };
+/**
+ * Cash date, then OUT before IN, then source type, source id, key - total and deterministic.
+ * With `today`: on that date only, Actual movements sort before every forecast (D1).
+ */
+export function compareEvents(a: Ordered, b: Ordered, today?: string): number {
   if (a.cashDate !== b.cashDate) return a.cashDate < b.cashDate ? -1 : 1;
+  if (today !== undefined && a.cashDate === today && (a.state === "actual") !== (b.state === "actual")) return a.state === "actual" ? -1 : 1;
   if (a.direction !== b.direction) return DIR_ORDER[a.direction] - DIR_ORDER[b.direction];
   if (a.sourceType !== b.sourceType) return a.sourceType < b.sourceType ? -1 : 1;
   if (a.sourceId !== b.sourceId) return a.sourceId < b.sourceId ? -1 : 1;
@@ -704,7 +712,7 @@ export function buildCashFlow(x: CashFlowInputs): CashFlow {
   }
 
   // ----- order once, project once -----
-  events.sort(compareEvents);
+  events.sort((a, b) => compareEvents(a, b, today));
   let running: number | null = x.balance ? x.balance.amountMinor : null;
   for (const e of events) {
     if (running !== null && e.included) running += e.direction === "in" ? e.amountMinor : -e.amountMinor;
@@ -906,7 +914,7 @@ export function cashFlowView(cf: CashFlow, view: CashView) {
     timeline: shown.map(eventView),
     paymentNotTracked: view === "money-in" ? null : notTrackedView(cf),
     notIncluded: notIncludedView(cf),
-    ordering: "Cash date, then money out before money in on the same date (the cautious same-day low), then source type, then source id",
+    ordering: "Cash date, then money out before money in on the same date (the cautious same-day low), then source type, then source id. Today only: cash that has already moved (Actual) comes first, then today's remaining forecasts in that order",
     overdueRule: "Overdue money out is still owed: it keeps its real due date and counts as needed today. Overdue money in has not arrived: it is shown and totalled but never added to the projected balance.",
   };
 }

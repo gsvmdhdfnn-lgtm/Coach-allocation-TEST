@@ -21915,19 +21915,23 @@ ORG-TEST-001, Europe/London. Today 2026-10-02.
   - `needs-attention` `1d265d79…c742`.
 - **Full regression:** **87/87** test files.
 
-## Finance Foundation — F17 (Cash Position / Cash Flow forecast + ATT-054) — LIVE-PROVEN on `finance` v25 / `needs-attention` v16, with one open defect (D1) — TEST only — 2026-10-02
+## Finance Foundation — F17 (Cash Position / Cash Flow forecast + ATT-054) — LIVE-PROVEN on `finance` v25 / `needs-attention` v16; D1 FIXED IN CODE, NOT DEPLOYED (next `finance` v26 / `needs-attention` v17, see FIN17.15) — TEST only — 2026-10-02
 
-> **LIVE-PROVEN (2026-10-02), one open defect.**
+> **LIVE-PROVEN (2026-10-02); defect D1 fixed in code, NOT DEPLOYED.**
 >
 > - **Deployed by the operator** from commit `5670592`: `finance` v25 and
 >   `needs-attention` v16. Both are ACTIVE with verify_jwt, one `index.js`
 >   each, byte-identical to the committed artifacts.
 > - **Live proof A–AU:** FIN17.13. Resting state: FIN17.14.
-> - **Open defect D1 (FIN17.15).** On today's date, an actual movement can
->   sort after a forecast row. The projected low and the breach can then
->   be optimistic. It is reproduced in the pure engine and is not visible
->   in the TEST data. The fix touches the approved same-day ordering, so it
->   needs your decision and a redeploy.
+> - **Defect D1 (FIN17.15): fix approved and in code, NOT DEPLOYED.** On
+>   today's date, an actual movement could sort after a forecast row, so
+>   the projected low and the breach could be optimistic. On TODAY only,
+>   Actual movements now come first, then today's forecasts in the approved
+>   order. **Deployment checkpoint:** `finance` v26 (656,429 B, sha256
+>   `ce34776a3abb062646a92a2e24cde88490c5bdc524f25234bfda0b6b4b71236d`)
+>   and `needs-attention` v17 (214,404 B, sha256
+>   `b3a8d2f8ca0a0fb58e7c0fbecb31aac375c4ab65e460d3d167a78f5571d3dbb9`).
+>   Until they are deployed, live v25 / v16 still have D1.
 > - The checkpoint text below is kept as written.
 >
 > **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN** (checkpoint text, superseded).
@@ -22005,6 +22009,10 @@ Approved decisions (David, 2026-10-02), locked:
    dated **after** its as-at date are applied; anything on or before that
    date is assumed to be in the balance.
 5. **Same-day order:** cash date, OUT before IN, source type, source ID.
+   **Today only (D1, approved 2026-10-02):** Actual movements (already
+   happened) come first, then today's forecasts in that same order. No
+   date is rewritten and no Actual moves to another date. Future dates
+   are unchanged.
 6. **Ranges:**
    - **30d** = today .. today + 29;
    - **3m** = today .. the day before the same date three months later,
@@ -22084,6 +22092,7 @@ Approved decisions (David, 2026-10-02), locked:
    - a paid / settled source contributes only its Actual payment events.
 4. **Sort once** with `compareEvents` (cash date, OUT before IN, source
    type, source id, key), so the order never depends on storage order.
+   On today's date, Actual events sort before every forecast (D1).
 5. **Project once:**
    - `balanceAfter` is the running balance from the opening balance over
      included events;
@@ -22308,8 +22317,9 @@ grant execute on function public.finance_bank_balance_record(jsonb, integer, jso
   would be needed only at very high volume.
 - **No bank reconciliation / Open Banking:** the balance is always
   Management-entered.
-- **D1, same-day actual/forecast order (found in the live proof):** see
-  FIN17.15. It needs a decision and a redeploy.
+- **D1, same-day actual/forecast order (found in the live proof):** fix
+  approved and in code (FIN17.15). **Redeploy pending:** `finance` v26 /
+  `needs-attention` v17, then a short live re-check.
 - **Live DB UPDATE/DELETE on `finance_bank_balances`** was not run: the
   MCP destructive-statement gate held the block and it never executed.
   Append-only is proven from the catalogue, the API and unit tests
@@ -22443,7 +22453,7 @@ cleanup.
   - `finance --check` and `needs-attention --check` MATCH (still identical
     to deployed v25 / v16).
 
-### FIN17.15 Defect D1 — same-day actual vs forecast ordering (open, needs a decision)
+### FIN17.15 Defect D1 — same-day actual vs forecast ordering (FIXED IN CODE, NOT DEPLOYED)
 
 - **Where:** `buildCashFlow` sorts every event once by cash date, OUT
   before IN, source type, source id (the approved rule). Actual movements
@@ -22465,6 +22475,47 @@ cleanup.
   same in ATT-054 (shared engine).
 - **Proposed fix:** on a date, put already-happened Actual movements
   first. These are already in today's position. Then keep the approved
-  OUT-before-IN / source type / source id order for forecasts. Add tests
-  for both directions and redeploy `finance` + `needs-attention`. This
-  refines a locked decision, so it is not changed without approval.
+  OUT-before-IN / source type / source id order for forecasts.
+- **Approved 2026-10-02 (locked ordering refinement), TODAY only:**
+  1. Actual movements that already happened come first;
+  2. then unresolved / forecast movements in the existing order: OUT
+     before IN, source type, source id.
+
+  Future dates are unchanged. No source date is rewritten and no Actual
+  moves to another date.
+- **Fix (engine only, shared by Finance and ATT-054):**
+  - `compareEvents(a, b, today?)` gains one rule. When both events are
+    dated `today` and exactly one is Actual, the Actual sorts first.
+  - `buildCashFlow` sorts with `today`. The `ordering` text in the view
+    says so.
+  - Nothing else changes: balances, the low scan, ranges, inclusion and
+    threshold rules are untouched.
+- **Tests:**
+  - `finance-cash-flow.test.ts` D1-1..D1-8:
+    - the approved example: 1000.00 → Actual OUT 300.00 → 700.00 →
+      Confirmed OUT 100.00 → 600.00; low 600.00; threshold 601.00
+      breached; 1.00 below;
+    - a breach that exists only after the forecast;
+    - the low sees the end-of-day balance;
+    - Actual IN + forecast OUT;
+    - Actual OUT + forecast IN;
+    - several Actuals;
+    - future-date order unchanged (TL10 still passes);
+    - no date rewritten.
+  - `needs-attention-cash-flow.test.ts` D1a–D1c: the same example through
+    the real NA orchestrator. ATT-054 gives low 600.00 on 2026-10-15,
+    threshold 601.00, first breach 2026-10-15, 1.00 below, which equals
+    Finance's own `buildCashFlow`.
+  - The new D1 checks fail on the pre-fix engine. Both suites pass with
+    the fix.
+  - Suites: F17 97/97, ATT-054 29/29, money-out 76/76, NA finance 64/64,
+    NA 113/113, NA foundation 78/78, settings 100/100, bundle tests
+    24/24 + 8/8. Full regression **89/89** files.
+- **Artifacts** (deterministic, `--check` MATCH):
+  - `finance`: 656,429 B, sha256
+    `ce34776a3abb062646a92a2e24cde88490c5bdc524f25234bfda0b6b4b71236d`;
+  - `needs-attention`: 214,404 B, sha256
+    `b3a8d2f8ca0a0fb58e7c0fbecb31aac375c4ab65e460d3d167a78f5571d3dbb9`.
+- **Deployment checkpoint:** operator deploys `finance` v26 and
+  `needs-attention` v17 from the D1 commit. Live v25 / v16 still have D1
+  until then.

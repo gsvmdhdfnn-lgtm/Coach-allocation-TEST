@@ -291,6 +291,40 @@ async function main() {
     ck("MB3. Threshold boundary: projected low 700.00 on 10-20 with threshold 700.00 -> not breached, no breach date; threshold 700.01 -> breached, first breach 10-20", eq.projectedLowMinor === 70000 && eq.thresholdBreached === false && eq.firstBreachDate === null && below.thresholdBreached === true && below.firstBreachDate === "2026-10-20", `${eq.thresholdBreached}/${eq.firstBreachDate}/${below.firstBreachDate}`);
   }
 
+  // D1. Today only: Actual movements first, then today's forecasts (approved 2026-10-02)
+  {
+    const T = "2026-10-15", Y = "2026-10-14";
+    const inst0 = baseInputs().instalments[0];
+    const inst = (id: string, due: string, amount: number, paid = 0) => ({ ...inst0, instalmentId: id, dueDate: due, originalDueDate: due, plannedMinor: amount, amountDueMinor: amount, paidMinor: paid });
+    const pay = (id: string, instalmentId: string, amount: number, date: string) => ({ organisationId: ORG, paymentId: id, instalmentId, supplierId: "FSU-T", amountMinor: amount, paidDate: date, method: null, reference: null, note: null, createdAt: "", createdBy: MGR });
+    const rcpt = (id: string, date: string, amount: number) => ({ kind: "invoice_payment" as const, receiptId: id, invoiceId: "INV-T", clientId: "CLI-T", clientName: "T", amountMinor: amount, receivedDate: date });
+    const recv = (id: string, due: string, amount: number) => ({ invoiceId: id, clientId: "CLI-T", clientName: "T", officialNumber: id, grossMinor: amount, outstandingMinor: amount, cashReceivedMinor: 0, creditAppliedMinor: 0, creditNotesMinor: 0, dueDate: due, originalDueDate: due });
+    const d1 = (o: Record<string, unknown>) => buildCashFlow({ ...baseInputs(), today: T, balance: { ...baseInputs().balance, amountMinor: 100000, asAtDate: Y }, instalments: [], ...o } as any);
+    const row = (cf: any, key: string) => cf.events.find((e: any) => e.key === key);
+    const todayKeys = (cf: any) => cf.events.filter((e: any) => e.cashDate === T).map((e: any) => `${e.state}:${e.key}`);
+    const actualFirst = (cf: any) => { const st = cf.events.filter((e: any) => e.cashDate === T).map((e: any) => e.state === "actual"); return st.indexOf(false) === -1 || st.slice(st.indexOf(false)).every((a: boolean) => !a); };
+
+    // The approved example: 1000.00 as at yesterday, Actual OUT 300.00 today, Confirmed OUT 100.00 due today, threshold 601.00
+    const ex = d1({ thresholdMinor: 60100, instalments: [inst("FSI-PAID", T, 30000, 30000), inst("FSI-DUE", T, 10000)], supplierPayments: [pay("FSP-T1", "FSI-PAID", 30000, T)] });
+    const exView = cashFlowView(ex, "position") as any;
+    ck("D1-1. Actual OUT today + forecast OUT today (the approved example): after the Actual 700.00, after the due-today OUT 600.00; low 600.00; breached; 1.00 below", row(ex, "out:supplier_payment:FSP-T1").balanceAfterMinor === 70000 && row(ex, "out:supplier_instalment:FSI-DUE").balanceAfterMinor === 60000 && ex.balanceTodayMinor === 70000 && ex.projectedLowMinor === 60000 && ex.projectedLowDate === T && ex.thresholdBreached === true && exView.summary.belowThresholdBy === "1.00" && todayKeys(ex).join() === "actual:out:supplier_payment:FSP-T1,confirmed:out:supplier_instalment:FSI-DUE", todayKeys(ex).join() + ` low=${ex.projectedLowMinor}`);
+    ck("D1-2. The breach exists only after the forecast movement: today's position 700.00 is above 601.00, the forecast takes it to 600.00 -> first breach today", ex.balanceTodayMinor! >= 60100 && ex.firstBreachDate === T);
+    ck("D1-3. The projected low sees the end-of-day balance (= the last row of today, = the projected end here)", ex.projectedLowMinor === ex.events.filter((e: any) => e.cashDate === T).slice(-1)[0].balanceAfterMinor && ex.projectedEndMinor === 60000);
+
+    const inOut = d1({ thresholdMinor: 105000, receipts: [rcpt("FPY-T1", T, 20000)], instalments: [inst("FSI-DUE", T, 10000)] });
+    ck("D1-4. Actual IN today + forecast OUT today: the receipt is applied first (1200.00), then the OUT (1100.00); low 1100.00, not an understated 900.00; threshold 1050.00 not breached", todayKeys(inOut).join() === "actual:in:client_receipt:FPY-T1,confirmed:out:supplier_instalment:FSI-DUE" && row(inOut, "in:client_receipt:FPY-T1").balanceAfterMinor === 120000 && row(inOut, "out:supplier_instalment:FSI-DUE").balanceAfterMinor === 110000 && inOut.projectedLowMinor === 110000 && inOut.thresholdBreached === false, `${todayKeys(inOut)} low=${inOut.projectedLowMinor}`);
+
+    const outIn = d1({ thresholdMinor: 70000, instalments: [inst("FSI-PAID", T, 30000, 30000)], supplierPayments: [pay("FSP-T1", "FSI-PAID", 30000, T)], receivables: [recv("FIV-T1", T, 5000)] });
+    ck("D1-5. Actual OUT today + forecast IN today: Actual first (700.00), then the IN (750.00); low = today's position 700.00; threshold 700.00 not breached", todayKeys(outIn).join() === "actual:out:supplier_payment:FSP-T1,confirmed:in:receivable:FIV-T1" && row(outIn, "in:receivable:FIV-T1").balanceAfterMinor === 75000 && outIn.projectedLowMinor === 70000 && outIn.projectedLowDate === T && outIn.thresholdBreached === false, `${todayKeys(outIn)} low=${outIn.projectedLowMinor}`);
+
+    const multi = d1({ thresholdMinor: 66000, instalments: [inst("FSI-PA", T, 10000, 10000), inst("FSI-PB", T, 20000, 20000), inst("FSI-DUE", T, 10000)], supplierPayments: [pay("FSP-T2", "FSI-PB", 20000, T), pay("FSP-T1", "FSI-PA", 10000, T)], receipts: [rcpt("FPY-T1", T, 5000)], receivables: [recv("FIV-T1", T, 2000)] });
+    ck("D1-6. Several Actual movements today: all Actuals first (in their own OUT-before-IN / source order), then today's forecasts (OUT before IN); today's position 750.00; end of today 670.00; low 650.00 after the forecast OUT; threshold 660.00 breached today", actualFirst(multi) && todayKeys(multi).join() === "actual:out:supplier_payment:FSP-T1,actual:out:supplier_payment:FSP-T2,actual:in:client_receipt:FPY-T1,confirmed:out:supplier_instalment:FSI-DUE,confirmed:in:receivable:FIV-T1" && multi.balanceTodayMinor === 75000 && multi.projectedLowMinor === 65000 && multi.projectedEndMinor === 67000 && multi.firstBreachDate === T, `${todayKeys(multi)} today=${multi.balanceTodayMinor} low=${multi.projectedLowMinor}`);
+
+    const fut = "2026-10-20";
+    ck("D1-7. Future dates keep the approved order exactly (OUT before IN, source type, source id): the Actual rule applies to today only", compareEvents({ cashDate: fut, direction: "in", sourceType: "client_receipt", sourceId: "A", key: "a", state: "actual" }, { cashDate: fut, direction: "out", sourceType: "supplier_instalment", sourceId: "B", key: "b", state: "confirmed" }, T) > 0 && compareEvents({ cashDate: T, direction: "in", sourceType: "client_receipt", sourceId: "A", key: "a", state: "actual" }, { cashDate: T, direction: "out", sourceType: "supplier_instalment", sourceId: "B", key: "b", state: "confirmed" }, T) < 0 && compareEvents({ cashDate: T, direction: "in", sourceType: "receivable", sourceId: "A", key: "a", state: "confirmed" }, { cashDate: T, direction: "out", sourceType: "supplier_instalment", sourceId: "B", key: "b", state: "overdue" }, T) > 0);
+    ck("D1-8. No date is rewritten: every Actual keeps its own cash date; overdue OUT still keeps its true due date", row(ex, "out:supplier_payment:FSP-T1").cashDate === T && row(multi, "in:client_receipt:FPY-T1").cashDate === T && /Today only: cash that has already moved/.test(exView.ordering));
+  }
+
   // =================================================================
   // VW. Views (brief 45-48)
   // =================================================================

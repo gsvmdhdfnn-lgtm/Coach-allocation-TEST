@@ -318,6 +318,34 @@ async function main() {
     ck("PAR2. Other organisations never contribute (their instalment / balance rows are never returned to this organisation's read)", !na.events.some((e) => e.sourceId === IX.instalmentId) && na.balance?.balanceId === B1.balanceId);
   }
 
+  // ===== D1: on TODAY, Actual cash first, then today's forecasts (approved 2026-10-02) =====
+  {
+    // Opening 1000.00 as at yesterday; Actual OUT today 300.00 (paid in full); Confirmed OUT due today 100.00; threshold 601.00.
+    const ID1 = { ...inst({ due: "2026-10-15", amount: 30000, paid: 30000 }) };
+    const ID2 = inst({ due: "2026-10-15", amount: 10000 });
+    const PD1: Payment = { ...PB, paymentId: `FSP-${hex(41)}`, instalmentId: ID1.instalmentId, amountMinor: 30000, paidDate: "2026-10-15", remainingAfterMinor: 0, recordedAt: "2026-10-15T08:00:00.000Z" };
+    db = { suppliers: [S1], instalments: [ID1, ID2], payments: [PD1], versions: [], items: [], months: [], corrections: [], balances: [bal(1, 100000, "2026-10-14")] };
+    world({ finSettings: finSettings(60100) });
+    const c = cr(await run())[0];
+    const na = runCashFlowPass({ now: NOW, organisation: { recordId: ORG, organisationId: ORG_ID, name: "Test Org", timezone: TZ } as any, sources: ctxSources() });
+    const today = "2026-10-15";
+    const wm = coachWorkMonths(today, rangeEnd(today, "3m"));
+    const r = receivablesOf({ invoices: tables["Finance Invoices"], notes: [], payments: [], credits: [], applications: [], dueChanges: [] } as any, ORG, today);
+    const from = `${wm[0]}-01`, to = `${wm[wm.length - 1]}-31`;
+    const occs = tables[COST_TABLES.occurrences].filter((o) => o.fields.Date >= from && o.fields.Date <= to);
+    const allocIds = occs.flatMap((o) => o.fields[COST_F.occurrence.allocations] ?? []);
+    const finWorld: CostWorld = { allocations: tables[COST_TABLES.allocations].filter((a) => allocIds.includes(a.id)), occurrences: new Map(occs.map((o) => [o.id, o])), sessions: new Map(tables[COST_TABLES.sessions].map((s) => [s.id, s])), workers: tables[COST_TABLES.workers], lines: new Map(), summaries: new Map() };
+    const fin = buildCashFlow({
+      organisationId: ORG_ID, today, range: "3m", balance: latestBalance(db.balances), thresholdMinor: 60100,
+      receivables: r.receivables, receipts: r.receipts, awaitingIssue: r.awaitingIssue, suppliers: [S1], instalments: db.instalments, supplierPayments: db.payments,
+      employmentVersions: [], employmentItems: [], coachMonths: coachMonthInputs(finWorld, { months: [], corrections: [] }, wm, today, 20), coachPaymentDayConfigured: true,
+    });
+    const todays = fin.events.filter((e) => e.included && e.cashDate === today);
+    ck("D1a. Finance: today's Actual OUT 300.00 comes first (700.00), then the Confirmed OUT 100.00 (600.00); low 600.00 today; threshold 601.00 breached today", todays.map((e) => `${e.state}:${e.balanceAfterMinor}`).join(",") === "actual:70000,confirmed:60000" && fin.balanceTodayMinor === 70000 && fin.projectedLowMinor === 60000 && fin.projectedLowDate === today && fin.firstBreachDate === today && fin.thresholdBreached === true, JSON.stringify({ t: todays.map((e) => [e.state, e.balanceAfterMinor]), low: fin.projectedLowMinor, fb: fin.firstBreachDate }));
+    ck("D1b. ATT-054 raises the case with the SAME corrected result: low 600.00 on 2026-10-15, threshold 601.00, first breach 2026-10-15, 1.00 below", !!c && c.context.projectedLow === "600.00" && c.context.projectedLowDate === today && c.context.safetyThreshold === "601.00" && c.context.firstBreachDate === today && c.context.belowThresholdBy === "1.00", JSON.stringify(c?.context));
+    ck("D1c. Parity: the Needs Attention pass and Finance give the same timeline, low, first breach and end through the one engine", JSON.stringify(na.events) === JSON.stringify(fin.events) && na.projectedLowMinor === fin.projectedLowMinor && na.firstBreachDate === fin.firstBreachDate && na.projectedEndMinor === fin.projectedEndMinor);
+  }
+
   // ===== PF: bounded reads =====
   {
     db = STD();

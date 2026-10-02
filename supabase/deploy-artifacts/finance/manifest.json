@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "6d45d5e94d69abfd8297030c8211ce1ca247d4ea3cc12d4e6420a0b9edb4944a",
-  "artifactBytes": 656214,
+  "artifactSha256": "ce34776a3abb062646a92a2e24cde88490c5bdc524f25234bfda0b6b4b71236d",
+  "artifactBytes": 656429,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "1ad5903b4a2832895faf991a76645bdb7bb689bfe6046ef27830c287ae7d4532",
+  "sourceSha256": "86543a4ab82fbe9c937bd5f615a07121a108325440acee463f14fdc6d467918c",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -59,7 +59,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-cash-flow.ts",
-      "sha256": "121d5b033ebe567bfe29f4f534c0366f5a6a65fd27fcc80b69c981fb3b86ef8d"
+      "sha256": "a326a5f7b5ad968dae22e08c758063c5b4690b28011dc91dad004f0061a491ba"
     },
     {
       "path": "supabase/functions-test/finance/finance-coach-costs-orchestrator.ts",
