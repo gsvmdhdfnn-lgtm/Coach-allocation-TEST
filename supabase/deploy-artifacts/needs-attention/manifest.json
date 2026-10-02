@@ -2,8 +2,8 @@
   "function": "needs-attention",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/needs-attention/index.js",
-  "artifactSha256": "0d5df081a0f48b1659f5b4c75ffa5419212b2318f29157849d85742882b89939",
-  "artifactBytes": 166807,
+  "artifactSha256": "1d265d794cde3ae308f416a26967c68cc8ce75fd5bd3e95c6aa045486633c742",
+  "artifactBytes": 184460,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "e8a7e47a62154ec8e964cb85665f94b135c7d082a275657da28165d808584f40",
+  "sourceSha256": "f0f45039a1e469b2434c1be502f459e09ec63798de12fbd697b112c458b08177",
   "sources": [
     {
       "path": "supabase/functions-test/needs-attention/coach-schedule.ts",
@@ -55,11 +55,15 @@
     },
     {
       "path": "supabase/functions-test/needs-attention/index.ts",
-      "sha256": "d77633b1d7d09b47c62172be264abf5f97354cb934b8906b47b13295b8c64d99"
+      "sha256": "4c52cf642779dd4e60685cb6d659954709110de8176edf101a8b08e261bbbfdc"
     },
     {
       "path": "supabase/functions-test/needs-attention/lock-client.ts",
       "sha256": "f88c38ba5b4b8966319348abc8fddd195119b862513dab35f49680831b492b9e"
+    },
+    {
+      "path": "supabase/functions-test/needs-attention/money-out.ts",
+      "sha256": "c138794b3134cb43565648df4f7371f7e5dfadf4f432cb25f0513673d5d6c20b"
     },
     {
       "path": "supabase/functions-test/needs-attention/needs-attention.ts",
@@ -67,15 +71,15 @@
     },
     {
       "path": "supabase/functions-test/needs-attention/orchestrator.ts",
-      "sha256": "62f373131f319b3bdaf6a4623c609111a48b8f1114eca7f0082ab52374103090"
+      "sha256": "95728579f5e24623d9aeab1c9ee5faf77f728f8e671218dd2ebb648709ca6553"
     },
     {
       "path": "supabase/functions-test/needs-attention/registry.ts",
-      "sha256": "670738c25232dacbb8c1286f82081bf4e3ae43386da6804c707fac1cf3e1cddc"
+      "sha256": "3daf612195f1874a3413f69a2b70cbbcb99bc716d2a6421caf2a3c2f12456d66"
     },
     {
       "path": "supabase/functions-test/needs-attention/repository.ts",
-      "sha256": "ba241cdb48a67665d8f4c8c7844606099db364ff46ea08c8441aebb135eb6da5"
+      "sha256": "a7537bffd5fe2b49fe9383ab573f9603c690fd45e18c58897174f580a924e3fa"
     },
     {
       "path": "supabase/functions-test/needs-attention/staffing.ts",
@@ -131,7 +135,15 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-settings.ts",
-      "sha256": "290719688ba164232dbb66ec7ffbdcf70c165f7a2a01f86a4675b7e9828f8f95"
+      "sha256": "1b5a0f19b1917562ec6b417fb8ba989c58ec71a9d0aa61489a6ce2e2981b8598"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-overheads.ts",
+      "sha256": "e014a97d217fb71fdc56731e2144397202d0060c7494b1c559132529fd9f2162"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-suppliers.ts",
+      "sha256": "9e77a886ad53e84b3fd2f902c42bf823cb24c724630de330da0f5fe40cd2a108"
     }
   ],
   "unusedSources": []

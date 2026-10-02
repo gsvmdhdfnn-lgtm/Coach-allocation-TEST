@@ -69,6 +69,7 @@ const FULL: FinanceSettings = {
   invoiceNumberPrefix: "INV-",
   invoiceNumberNext: 1001,
   invoiceNumberDigits: 4,
+  estimateReminderDays: null,
 };
 const storedRow = (s: FinanceSettings, over: Record<string, unknown> = {}, id = "recSettingsRow001") => ({
   id,

@@ -12,6 +12,12 @@
  * F8a adds one read-only Supabase lookup: the caller's own F1 Finance grant
  * rows (loadFinanceGrants, copied from finance/repository.ts).
  *
+ * F16 adds read-only Supabase Finance SOURCES for the Money Out rules: only
+ * the tables in FINANCE_SOURCES, each with a fixed organisation-scoped GET
+ * (organisation_id = the caller's profile organisation, never the request),
+ * paged and capped, listed at most once per request through the same Reader
+ * (memoised, counted). Nothing here writes to Supabase.
+ *
  * Read model: createReader() returns a per-request reader that lists each
  * table AT MOST ONCE (memoised promise per table name) and counts every
  * page request per table, so the orchestrator can prove "config tables
@@ -72,6 +78,8 @@ export interface ReadStats {
 
 export interface Reader {
   list(tableName: string): Promise<AirtableRecord[]>;
+  /** F16: one allowlisted Supabase Finance source (FINANCE_SOURCES), organisation-scoped; memoised + counted like list(). */
+  listFinance(source: string, store: GrantStoreConfig, organisationId: string): Promise<Record<string, any>[]>;
   /** Loads several tables, each once, at most `concurrency` at a time. */
   listMany(tableNames: readonly string[], concurrency?: number): Promise<Record<string, AirtableRecord[]>>;
   stats(): ReadStats;
@@ -121,7 +129,18 @@ export function createReader(config: AirtableConfig): Reader {
     return out;
   }
 
-  return { list, listMany, stats: () => ({ lists: { ...stats.lists }, pages: { ...stats.pages } }) };
+  const financeMemo = new Map<string, Promise<Record<string, any>[]>>();
+  function listFinance(source: string, store: GrantStoreConfig, organisationId: string): Promise<Record<string, any>[]> {
+    let p = financeMemo.get(source);
+    if (!p) {
+      stats.lists[source] = (stats.lists[source] ?? 0) + 1;
+      p = loadFinanceSource(store, source, organisationId, () => (stats.pages[source] = (stats.pages[source] ?? 0) + 1));
+      financeMemo.set(source, p);
+    }
+    return p;
+  }
+
+  return { list, listMany, listFinance, stats: () => ({ lists: { ...stats.lists }, pages: { ...stats.pages } }) };
 }
 
 export interface ConfigSnapshot {
@@ -207,3 +226,57 @@ export async function loadFinanceGrants(config: GrantStoreConfig, userId: string
   return rows as FinanceGrantRow[];
 }
 // ===== END COPIED BLOCK =====
+
+// ---------------------------------------------------------------------
+// Finance sources (F16): read-only, allowlisted, organisation-scoped, paged.
+// ---------------------------------------------------------------------
+
+export const FINANCE_SOURCE_PREFIX = "supabase:";
+export const isFinanceSource = (name: string) => name.startsWith(FINANCE_SOURCE_PREFIX);
+
+/**
+ * The ONLY Supabase tables Needs Attention may read as rule sources, each
+ * with its fixed query. `filter` only narrows (cancelled instalments can
+ * never raise a case); every row is still re-checked in code by the
+ * evaluator. Ordered by primary key so paging is stable.
+ */
+export const FINANCE_SOURCES: Readonly<Record<string, { table: string; filter: string | null; order: string }>> = Object.freeze({
+  "supabase:finance_suppliers": { table: "finance_suppliers", filter: null, order: "supplier_id.asc" },
+  "supabase:finance_supplier_instalments": { table: "finance_supplier_instalments", filter: "cancelled_at=is.null", order: "instalment_id.asc" },
+  "supabase:finance_employment_versions": { table: "finance_employment_versions", filter: null, order: "version_id.asc" },
+  "supabase:finance_employment_items": { table: "finance_employment_items", filter: null, order: "item_id.asc" },
+});
+export const FINANCE_PAGE_SIZE = 1000;
+/** A bounded read: more than this many pages of one table fails loudly instead of growing silently. */
+export const FINANCE_MAX_PAGES = 20;
+
+const ORG_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/** Every row of one allowlisted Finance source for exactly this organisation. Throws on anything unexpected (the engine reports the rule incomplete). */
+export async function loadFinanceSource(store: GrantStoreConfig, source: string, organisationId: string, onPage: () => void = () => {}): Promise<Record<string, any>[]> {
+  const spec = FINANCE_SOURCES[source];
+  if (!spec) throw new Error(`Finance source ${source} is not allowlisted`);
+  if (!ORG_ID_RE.test(organisationId)) throw new Error("Finance source read refused: organisation id is malformed");
+  const out: Record<string, any>[] = [];
+  for (let page = 0; ; page++) {
+    if (page >= FINANCE_MAX_PAGES) throw new Error(`${spec.table}: more than ${FINANCE_MAX_PAGES * FINANCE_PAGE_SIZE} rows - refusing an unbounded read`);
+    const url = new URL(`${store.supabaseUrl.replace(/\/+$/, "")}/rest/v1/${spec.table}`);
+    url.searchParams.set("select", "*");
+    url.searchParams.set("organisation_id", `eq.${organisationId}`);
+    if (spec.filter) {
+      const [k, v] = spec.filter.split("=");
+      url.searchParams.set(k, v);
+    }
+    url.searchParams.set("order", spec.order);
+    url.searchParams.set("limit", String(FINANCE_PAGE_SIZE));
+    url.searchParams.set("offset", String(page * FINANCE_PAGE_SIZE));
+    onPage();
+    const response = await fetch(url.toString(), { headers: { apikey: store.serviceRoleKey, Authorization: `Bearer ${store.serviceRoleKey}`, Accept: "application/json" } });
+    if (!response.ok) throw new Error(`${spec.table} read failed: ${response.status} ${await response.text()}`);
+    const rows = await response.json();
+    if (!Array.isArray(rows)) throw new Error(`${spec.table} read returned a non-array body`);
+    if (rows.some((r) => !r || r.organisation_id !== organisationId)) throw new Error(`${spec.table} read returned another organisation's row`);
+    out.push(...rows);
+    if (rows.length < FINANCE_PAGE_SIZE) return out;
+  }
+}

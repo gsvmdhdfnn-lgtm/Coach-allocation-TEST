@@ -26,6 +26,10 @@
  * holding Finance View or Manage - the caller's own F1 grant rows are read
  * (GET, service role) only when a Finance rule would run - and only Finance
  * Manage may create / revoke an exception on a Finance case.
+ *
+ * Finance F16: the Money Out rules read four allowlisted Supabase Finance
+ * tables (GET, service role, organisation-scoped from the profile) - only
+ * when such a rule runs for a caller holding Finance View / Manage.
  */
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { createSupabaseLockClient } from "./lock-client.ts";
@@ -60,7 +64,7 @@ if (!/^app[A-Za-z0-9]{14}$/.test(AIRTABLE_BASE_ID || "")) {
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-/** Used ONLY for the needs_attention_exception_locks RPCs (service_role-only functions) and (F8a) the caller's own Finance grant rows (GET). */
+/** Used ONLY for the needs_attention_exception_locks RPCs (service_role-only functions), (F8a) the caller's own Finance grant rows (GET) and (F16) the allowlisted Finance source tables (GET). */
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const corsHeaders = {
@@ -112,6 +116,8 @@ const deps: Deps = {
       { userId: caller.userId, role: caller.role, active: caller.active, organisationId: caller.organisationId },
       await loadFinanceGrants({ supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY }, caller.userId)
     ).access,
+  // F16: read-only Finance sources for the Money Out rules (repository.ts FINANCE_SOURCES).
+  financeStore: { supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY },
 };
 
 async function readJson(req: Request): Promise<unknown> {

@@ -27,7 +27,11 @@
  *     zero-padded to a minimum number of digits). The Hub's internal FIV-
  *     reference exists either way. The next number is advanced ONLY by a
  *     successful issue (under this organisation's Finance write lock AND
- *     this Settings lock); Management may set it (e.g. the starting number).
+ *     this Settings lock); Management may set it (e.g. the starting number);
+ *   - estimate reminder (F16): how many days before its due date an
+ *     Estimated outgoing cost (F13 instalment / F15 employment month) is
+ *     raised in Needs Attention. Optional: blank = the Finance baseline
+ *     (DEFAULT_ESTIMATE_REMINDER_DAYS, 3 days); never affects completeness.
  * Optional integration connections (Stripe / Xero / Sheets) are not
  * settings here and never affect completeness (nor does the numbering
  * choice: issuing an invoice checks it). Choosing "xero" connects nothing.
@@ -55,6 +59,7 @@ export const SETTINGS_KEYS = [
   "invoiceNumberPrefix",
   "invoiceNumberNext",
   "invoiceNumberDigits",
+  "estimateReminderDays",
 ] as const;
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 
@@ -72,6 +77,8 @@ export interface FinanceSettings {
   invoiceNumberPrefix: string | null;
   invoiceNumberNext: number | null;
   invoiceNumberDigits: number | null;
+  /** F16: how many days before its due date an Estimated outgoing cost is raised in Needs Attention (null = the Finance baseline, DEFAULT_ESTIMATE_REMINDER_DAYS). */
+  estimateReminderDays: number | null;
 }
 
 /** Who assigns the official (customer-facing) invoice number. Explicit - never inferred from whether a number exists. */
@@ -94,6 +101,7 @@ export const EMPTY_SETTINGS: FinanceSettings = Object.freeze({
   invoiceNumberPrefix: null,
   invoiceNumberNext: null,
   invoiceNumberDigits: null,
+  estimateReminderDays: null,
 });
 
 // ---------------------------------------------------------------------
@@ -123,6 +131,7 @@ export const FIELD_NAMES: Record<SettingsKey, string> = {
   invoiceNumberPrefix: "Invoice Number Prefix",
   invoiceNumberNext: "Next Invoice Number",
   invoiceNumberDigits: "Invoice Number Digits",
+  estimateReminderDays: "Estimate Reminder Days",
 };
 
 const VAT_REGISTRATION_CHOICES = { registered: "Registered", notRegistered: "Not registered" } as const;
@@ -135,6 +144,15 @@ const AUTHORITY_CHOICES: Record<InvoiceNumberAuthority, string> = { hub: "Hub", 
 
 export const COACH_PAYMENT_DAY_MIN = 1;
 export const COACH_PAYMENT_DAY_MAX = 31;
+/**
+ * F16 estimate reminder: the Finance baseline (the Finance pack's 3 days) applies while the
+ * organisation has not chosen its own value. 0 = no advance reminder (the due-today and
+ * overdue estimate cases still apply). Never more than 60 days.
+ */
+export const DEFAULT_ESTIMATE_REMINDER_DAYS = 3;
+export const ESTIMATE_REMINDER_DAYS_MAX = 60;
+/** The organisation's reminder window in days: its own setting, else the Finance baseline. */
+export const estimateReminderDaysOf = (s: Pick<FinanceSettings, "estimateReminderDays"> | null): number => s?.estimateReminderDays ?? DEFAULT_ESTIMATE_REMINDER_DAYS;
 
 export type FieldCheck = { ok: true; value: unknown } | { ok: false; error: string };
 
@@ -174,6 +192,7 @@ export const FIELD_VALIDATORS: Record<SettingsKey, (v: unknown) => FieldCheck> =
   invoiceNumberPrefix: (v) => text(v, 12, { pattern: /^[A-Za-z0-9][A-Za-z0-9/_-]*$/, patternError: "must start with a letter or digit and contain only letters, digits, -, _ and /" }),
   invoiceNumberNext: (v) => int(v, 1, INVOICE_NUMBER_MAX + 1),
   invoiceNumberDigits: (v) => int(v, 1, 9),
+  estimateReminderDays: (v) => int(v, 0, ESTIMATE_REMINDER_DAYS_MAX),
 };
 
 /** Rules across fields, checked on the MERGED result of an update. Empty object = consistent. */

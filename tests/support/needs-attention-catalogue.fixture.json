@@ -1,5 +1,5 @@
 {
- "_comment": "Snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e tblyawQ8vSEN945Qp) after the pre-Slice-2 corrections - used by the registry drift tests. Update it whenever the catalogue gains/changes a rule.",
+ "_comment": "Snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e tblyawQ8vSEN945Qp) after the pre-Slice-2 corrections - used by the registry drift tests. Update it whenever the catalogue gains/changes a rule. F16: + ATT-049..053 Money Out rules (Active, module_finance, default off).",
  "rules": [
   {
    "ruleId": "ATT-001",
@@ -316,6 +316,46 @@
   {
    "ruleId": "ATT-048",
    "ruleKey": "invoice_draft_blocked",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_finance",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-049",
+   "ruleKey": "outgoing_payment_due_today",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_finance",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-050",
+   "ruleKey": "outgoing_payment_overdue",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_finance",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-051",
+   "ruleKey": "outgoing_estimate_due_soon",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_finance",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-052",
+   "ruleKey": "outgoing_estimate_due_today",
+   "evaluationStatus": "Active",
+   "requiredModule": "module_finance",
+   "defaultEnabled": false,
+   "active": true
+  },
+  {
+   "ruleId": "ATT-053",
+   "ruleKey": "outgoing_estimate_overdue",
    "evaluationStatus": "Active",
    "requiredModule": "module_finance",
    "defaultEnabled": false,

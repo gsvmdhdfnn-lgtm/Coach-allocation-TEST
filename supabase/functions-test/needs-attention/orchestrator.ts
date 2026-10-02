@@ -30,6 +30,12 @@
  * title, amount or suppressed Finance case can reach that caller. With View
  * the cases are shown but cannot be excepted; only Finance Manage may
  * create or revoke an exception on a Finance case.
+ *
+ * Finance F16 adds Supabase Finance sources (repository.ts FINANCE_SOURCES,
+ * "supabase:<table>"): loaded once each, organisation-scoped from the
+ * resolved organisation, only for rules that still run after the Finance
+ * filter. If one cannot be read, every rule needing it is reported
+ * incomplete (evaluator_error) - never evaluated against missing data.
  */
 import {
   ENGINE_VERSION,
@@ -68,7 +74,7 @@ import {
 } from "./exceptions.ts";
 import type { LockClient } from "./lock-client.ts";
 import { type FinanceAccess, canManageFinanceExceptions, isFinanceRule, needsFinanceAccess, restrictFinanceRules } from "./finance.ts";
-import { type AirtableConfig, type Reader, CONFIG_TABLES, createExceptionRecord, createReader, loadConfig, updateExceptionRecord } from "./repository.ts";
+import { type AirtableConfig, type GrantStoreConfig, type Reader, CONFIG_TABLES, createExceptionRecord, createReader, isFinanceSource, loadConfig, updateExceptionRecord } from "./repository.ts";
 
 export interface Deps {
   airtable: AirtableConfig;
@@ -81,6 +87,8 @@ export interface Deps {
    * run. Missing = "none" (fail closed); a throw = "none" + incomplete.
    */
   financeAccess?: (caller: Caller) => Promise<FinanceAccess>;
+  /** F16: read-only Supabase access for the allowlisted Finance sources. Missing = those sources are unavailable (rules incomplete, never "no cases"). */
+  financeStore?: GrantStoreConfig;
 }
 
 export interface Caller {
@@ -165,7 +173,18 @@ export async function evaluate(deps: Deps, caller: Caller, opts: { onlyRuleKey: 
     plan = restrictFinanceRules(plan, financeAccess);
   }
 
-  const sources = plan.sourcesToLoad.length ? await reader.listMany(plan.sourcesToLoad) : {};
+  const airtableSources = plan.sourcesToLoad.filter((s) => !isFinanceSource(s));
+  const financeSources = plan.sourcesToLoad.filter(isFinanceSource);
+  const sources: Record<string, readonly any[]> = airtableSources.length ? await reader.listMany(airtableSources) : {};
+  // F16: Supabase Finance sources, organisation-scoped; a failed read is reported, never treated as "no rows".
+  const unavailable = new Map<string, string>();
+  const loaded = await Promise.allSettled(
+    financeSources.map((s) => (deps.financeStore ? reader.listFinance(s, deps.financeStore, organisation.organisationId) : Promise.reject(new Error("Finance store not configured"))))
+  );
+  loaded.forEach((r, k) => {
+    if (r.status === "fulfilled") sources[financeSources[k]] = r.value;
+    else unavailable.set(financeSources[k], r.reason instanceof Error ? r.reason.message : String(r.reason));
+  });
 
   const active: NeedsAttentionCase[] = [];
   const suppressed: SuppressedCase[] = [];
@@ -181,6 +200,12 @@ export async function evaluate(deps: Deps, caller: Caller, opts: { onlyRuleKey: 
   for (const entry of plan.entries) {
     if (!entry.run) continue;
     const ev = entry.evaluator!;
+    const missing = ev.sources.filter((s) => unavailable.has(s));
+    if (missing.length) {
+      complete = false;
+      issues.push({ code: "evaluator_error", detail: `Finance source could not be read, so this rule was not evaluated (${missing.map((s) => `${s}: ${unavailable.get(s)}`).join("; ")})`, ruleKey: entry.rule.ruleKey! });
+      continue;
+    }
     const ctxSources: Record<string, readonly any[]> = {};
     for (const s of ev.sources) ctxSources[s] = sources[s] ?? [];
     try {

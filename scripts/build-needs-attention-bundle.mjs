@@ -33,6 +33,7 @@ const ARTIFACT = "index.js";
  * Finance F8b: the ONLY files from outside the needs-attention folder the
  * bundle may contain - Finance's pure F2-F6 modules (no fetch, no Deno, no
  * writes), so invoice_draft_blocked reviews drafts with Finance's own code.
+ * F16 adds F13's and F15's pure modules for the Money Out rules.
  * They are bundled at build time (never a runtime import of another Edge
  * Function), listed in the manifest with their hashes, and covered by
  * --check: any change to one of them changes this artifact.
@@ -50,6 +51,9 @@ export const SHARED_FINANCE_FILES = [
   "finance-lifecycle.ts",
   "finance-money.ts",
   "finance-settings.ts",
+  // F16 Money Out rules: F13's instalment lifecycle (remainingOf / stateOf) and F15's employment month line.
+  "finance-overheads.ts",
+  "finance-suppliers.ts",
 ];
 const FINANCE_DIR = join(ROOT, "supabase/functions-test/finance");
 const PINNED_ESBUILD = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).devDependencies.esbuild;

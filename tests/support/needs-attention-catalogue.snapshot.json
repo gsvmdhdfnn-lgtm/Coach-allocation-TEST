@@ -1,5 +1,5 @@
 {
- "_comment": "Full snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e / tblyawQ8vSEN945Qp) taken 2026-09-29 for Needs Attention Slice 9 (foundation freeze). Airtable REST shape: fields by name, selects as names, unticked checkboxes absent. Description text omitted (non-behavioural). ATT-018 venue_missing corrected Active -> Planned on 2026-09-29 (catalogue status correction: Active means a live evaluator exists). F8a (2026-09-30): + ATT-047 invoice_overdue (Active, module_finance, Default Enabled off, base Warning, no thresholds) and ATT-048 invoice_draft_blocked (Planned until F8b) - 40 rows: 15 Active, 25 Planned, 0 Retired. F8b (2026-10-01): ATT-048 invoice_draft_blocked Planned -> Active (module_finance, Default Enabled off, base Normal) - 40 rows: 16 Active, 24 Planned, 0 Retired.",
+ "_comment": "Full snapshot of the TEST Needs Attention Rules catalogue (appQktredAuGa1X7e / tblyawQ8vSEN945Qp) taken 2026-09-29 for Needs Attention Slice 9 (foundation freeze). Airtable REST shape: fields by name, selects as names, unticked checkboxes absent. Description text omitted (non-behavioural). ATT-018 venue_missing corrected Active -> Planned on 2026-09-29 (catalogue status correction: Active means a live evaluator exists). F8a (2026-09-30): + ATT-047 invoice_overdue (Active, module_finance, Default Enabled off, base Warning, no thresholds) and ATT-048 invoice_draft_blocked (Planned until F8b) - 40 rows: 15 Active, 25 Planned, 0 Retired. F8b (2026-10-01): ATT-048 invoice_draft_blocked Planned -> Active (module_finance, Default Enabled off, base Normal) - 40 rows: 16 Active, 24 Planned, 0 Retired. F16 (2026-10-02): + ATT-049 outgoing_payment_due_today, ATT-050 outgoing_payment_overdue, ATT-051 outgoing_estimate_due_soon, ATT-052 outgoing_estimate_due_today, ATT-053 outgoing_estimate_overdue (module_finance, Default Enabled off, Client Customisable, Supports Override, no thresholds; Active from the F16 code checkpoint, as F8b did) - 45 rows: 21 Active, 24 Planned, 0 Retired.",
  "records": [
   {
    "id": "rec7MaSdZV4VE02uL",
@@ -801,6 +801,96 @@
     "Rule Key": "invoice_draft_blocked",
     "Rule Name": "Invoice draft blocked",
     "Sort Order": 48,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recMjoUeGqUK3GvqJ",
+   "fields": {
+    "Action Label": "Review Outgoing Payment",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Active",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-049",
+    "Rule Key": "outgoing_payment_due_today",
+    "Rule Name": "Outgoing payment due today",
+    "Sort Order": 49,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recfU04VTyQbvjjBM",
+   "fields": {
+    "Action Label": "Review Outgoing Payment",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Active",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-050",
+    "Rule Key": "outgoing_payment_overdue",
+    "Rule Name": "Outgoing payment overdue",
+    "Sort Order": 50,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recQ94RtM9tgwtlJk",
+   "fields": {
+    "Action Label": "Confirm Cost",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Normal",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Active",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-051",
+    "Rule Key": "outgoing_estimate_due_soon",
+    "Rule Name": "Estimated cost due soon",
+    "Sort Order": 51,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recfjhByX0ZBsRrCO",
+   "fields": {
+    "Action Label": "Confirm Cost",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Active",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-052",
+    "Rule Key": "outgoing_estimate_due_today",
+    "Rule Name": "Amount still estimated",
+    "Sort Order": 52,
+    "Supports Override": true
+   }
+  },
+  {
+   "id": "recjqodMX0jfwfQew",
+   "fields": {
+    "Action Label": "Confirm Cost",
+    "Active": true,
+    "Category": "Finance & Billing",
+    "Client Customisable": true,
+    "Default Base Severity": "Warning",
+    "Destination Area": "Finance",
+    "Evaluation Status": "Active",
+    "Required Module": "module_finance",
+    "Rule ID": "ATT-053",
+    "Rule Key": "outgoing_estimate_overdue",
+    "Rule Name": "Estimate overdue",
+    "Sort Order": 53,
     "Supports Override": true
    }
   }

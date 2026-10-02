@@ -21463,3 +21463,333 @@ contract:
 
   - `finance --check` and `needs-attention --check` MATCH;
   - full `node tests/run-all.js` **86/86 files**.
+
+## Finance Foundation — F16 (Money Out Needs Attention: ATT-049..053) — CODE COMPLETE, NOT DEPLOYED — TEST only — 2026-10-02
+
+> **CODE COMPLETE / TESTS PASS / NOT DEPLOYED / NOT LIVE-PROVEN.**
+>
+> - **What F16 adds:** five Management Needs Attention rules for Money
+>   Out, derived live from F13 / F14 supplier instalments and F15
+>   employment months. They use the existing engine, catalogue, Settings,
+>   Exceptions (snooze) and the F8a Finance filter. There is no second task
+>   system, no stored case and no "mark complete".
+> - **Two artifacts changed, both need an operator deploy:**
+>   - `needs-attention` v15: `supabase/deploy-artifacts/needs-attention/index.js`,
+>     184,460 bytes, sha256
+>     `1d265d794cde3ae308f416a26967c68cc8ce75fd5bd3e95c6aa045486633c742`
+>     (deterministic; `--check` MATCH). It was deployed by the operator
+>     before (v13 / v14) and is too large to push through the MCP deploy
+>     tool from here.
+>   - `finance` v24: `supabase/deploy-artifacts/finance/index.js`,
+>     623,858 bytes, sha256
+>     `32c23a7317e0486425678fd0f8b02bc407253a619884ca6f826d7e06a59e206d`
+>     (`--check` MATCH). The only change is the new F2 setting "Estimate
+>     Reminder Days" (FIN16.6). F16 genuinely needs it, because no reminder
+>     timing existed.
+> - **TEST Airtable (applied, additive):**
+>   - catalogue rows ATT-049..053 (Active, Default Enabled **off**);
+>   - Finance Settings field **Estimate Reminder Days**
+>     (`fldXgvptv8SHBkWtp`, number, blank).
+>   - Deployed `needs-attention` v14 has no evaluator for the new rows, so
+>     it skips them (default off). Deployed `finance` v23 ignores the new
+>     field.
+> - **Not built:** F17 Cash Flow, Month Report, payroll, reminder emails.
+>   F12 Coach Month payment cases are excluded on purpose (FIN16.3).
+> - **Production untouched.**
+
+### FIN16.1 Audit (2026-10-02) — no conflicting rule identity
+
+- **Catalogue:**
+  - 40 rows before F16. Finance-active rules: ATT-047 `invoice_overdue`
+    and ATT-048 `invoice_draft_blocked`.
+  - Planned Finance rows: ATT-024 / 025 / 026 / 034. None of them is an
+    outgoing-payment or estimate rule.
+  - No row (Active, Planned or reserved) covers outgoing payments due or
+    overdue, or estimate review.
+  - ATT-016 `coach_cost_exception` is a reserved production number with a
+    different meaning (superseded by `work_summary_blocked`). It is not
+    reused.
+  - New IDs are therefore **ATT-049..053** (next free numbers). There is
+    no duplicate semantic rule.
+- **Architecture reused unchanged:**
+  - catalogue + Settings inheritance (Default Enabled, per-organisation
+    Enabled / Allow Override);
+  - Exceptions = exact-case snooze with `effectiveUntil`;
+  - F8a Finance filter (`restrictFinanceRules`, before any source is
+    loaded);
+  - Manage-only exceptions on Finance cases;
+  - organisation from the profile only;
+  - read-once memoised sources;
+  - deterministic bundle with an allowlist of pure Finance modules (F8b).
+- **One engine extension:**
+  - **The gap:** Money Out data lives in Supabase (F13 / F14 / F15
+    tables), not Airtable.
+  - **The extension:** the Reader gains `listFinance()` for an
+    **allowlist** of four Supabase tables (FIN16.8).
+  - **Why this is safe:**
+    - GET only;
+    - organisation-scoped from the resolved profile organisation;
+    - paged and capped;
+    - memoised and counted like Airtable lists;
+    - a failed read marks the rule incomplete and is never treated as
+      "no rows".
+- **Reminder timing:** none existed in F2 / F15 (FIN13.1 confirmed it for
+  F2), so the smallest organisation setting was added (FIN16.6).
+
+### FIN16.2 Rules (catalogue, TEST `tblyawQ8vSEN945Qp`)
+
+| ID | Rule Key | Name | Base severity | Action label | Record |
+|---|---|---|---|---|---|
+| ATT-049 | `outgoing_payment_due_today` | Outgoing payment due today | Warning | Review Outgoing Payment | `recMjoUeGqUK3GvqJ` |
+| ATT-050 | `outgoing_payment_overdue` | Outgoing payment overdue | Warning | Review Outgoing Payment | `recfU04VTyQbvjjBM` |
+| ATT-051 | `outgoing_estimate_due_soon` | Estimated cost due soon | Normal | Confirm Cost | `recQ94RtM9tgwtlJk` |
+| ATT-052 | `outgoing_estimate_due_today` | Amount still estimated | Warning | Confirm Cost | `recfjhByX0ZBsRrCO` |
+| ATT-053 | `outgoing_estimate_overdue` | Estimate overdue | Warning | Confirm Cost | `recjqodMX0jfwfQew` |
+
+- **Settings shared by all five rows:**
+  - Category Finance & Billing, `module_finance`, Destination Finance;
+  - Client Customisable and Supports Override;
+  - no Warning / Urgent thresholds and no Locked Minimum, so nothing is
+    ever escalated to Urgent automatically;
+  - Default Enabled **off** (the ATT-047 / 048 convention): each
+    organisation turns each rule on separately in Needs Attention
+    Settings.
+- **Catalogue now:** 45 rows (21 Active, 24 Planned, 0 Retired).
+- **Per-case source action:** each case also carries
+  `context.sourceAction`:
+  - "Review Supplier Payment" for a supplier payment;
+  - "Review Employment Cost" for an employment payment;
+  - "Confirm Cost" for an estimate.
+
+### FIN16.3 Source eligibility
+
+| Source | Used | Why |
+|---|---|---|
+| F13 / F14 supplier / venue instalments (`finance_supplier_instalments` + `finance_suppliers`) | Yes | Real Estimated → Confirmed → (Partially) Paid / Cancelled lifecycle. Remaining = amount due − cash paid − supplier credit applied (F13 `remainingOf`) |
+| F15 employment-cost months (`finance_employment_versions` + `finance_employment_items`) | Yes | Estimated (computed) → Confirmed → Paid. F15's own `monthLine()` + `asInstalment()` + F13's `stateOf` / `remainingOf` |
+| F12 Finance Coach Months | **No (excluded)** | F12 records no Paid fact (`paymentState: not_tracked`; FIN12 "never paid merely because finalised"). A coach-payment due / overdue case could never resolve truthfully. Future debt: needs an F12 paid fact first |
+
+- **Excluded data:**
+  - cancelled instalments are filtered at the read
+    (`cancelled_at=is.null`) and ignored again in code;
+  - settled instalments (cash and / or credit) and Paid employment months
+    raise nothing.
+- **No invented state:** an estimate state exists only where F13 / F15
+  have one.
+
+### FIN16.4 Semantics (one case per source at a time)
+
+`d` = due date − organisation-local today, in whole calendar days.
+`N` = reminder days.
+
+| State | d < 0 | d = 0 | 1 ≤ d ≤ N | d > N |
+|---|---|---|---|---|
+| Confirmed / Partially Paid, remaining > 0 | ATT-050 overdue | ATT-049 due today | – | – |
+| Estimated, remaining > 0 | ATT-053 estimate overdue | ATT-052 amount still estimated | ATT-051 due soon | – |
+| Paid / settled / Cancelled / remaining 0 | – | – | – | – |
+
+- **Mutually exclusive by construction** (`bucketOf`):
+  - an Estimated source never raises a payment case;
+  - due today and overdue never coexist;
+  - the three estimate cases supersede each other by date.
+- **Amounts:**
+  - partial payment: the case shows only the outstanding balance;
+  - applied supplier credit is already deducted and shown separately,
+    never as cash.
+- **Overdue days:** whole calendar days in the organisation's time zone,
+  using F7's `daysBetween`, never UTC timestamps.
+- **Resolving by source action:**
+  - Confirm actual / Use Estimate → the estimate case goes; if the cost
+    is due or past due, the payment case appears for the confirmed amount;
+  - Pay → every case for that source goes.
+- **Severity:** the catalogue base only (no escalation).
+
+### FIN16.5 Case identity, payload and destination
+
+- **Case keys:**
+  - `outgoing_payment_overdue|supplier_instalment:FSI-…`
+  - `outgoing_payment_overdue|employment_cost:FEM-…|month:YYYY-MM`
+  - and the same shapes for the other four rules.
+- **What a key is built from:**
+  - record ids and the month only;
+  - never a name, amount or due date;
+  - moving a due date keeps the same key.
+- **Destination:**
+  - supplier instalment: `finance/supplier-instalment`
+    `{instalmentId, supplierId, agreementId}`;
+  - employment month: `finance/employment-cost` `{employmentId, month}`.
+- **Context (display-ready, scalars):**
+
+  | Group | Fields |
+  |---|---|
+  | Source | sourceType / sourceLabel / sourceAction |
+  | Payee | payeeName, supplierType |
+  | IDs | supplierId / agreementId / instalmentId or employmentId / month / itemId |
+  | State | state, estimated |
+  | Amounts | amountDue, cashPaid, creditApplied, remaining |
+  | Dates | dueDate, originalDueDate, dueDateMoved, daysOverdue / daysUntilDue |
+  | Other | partMonth, reminderDays, reminderSource, asOf, sourceApi |
+
+  `sourceApi` is `GET /finance/supplier-instalments/{id}` or
+  `GET /finance/employment-costs/{FEM}?from=&to=`.
+- **Anchor:** local midnight of the due date; "outstanding since" is the
+  next local midnight.
+
+### FIN16.6 Reminder timing — F2 setting "Estimate Reminder Days"
+
+- **Setting:** `estimateReminderDays`, a whole number 0..60 or blank. It
+  is stored in Finance Settings as **Estimate Reminder Days**
+  (`fldXgvptv8SHBkWtp`).
+- **Blank:** the Finance baseline `DEFAULT_ESTIMATE_REMINDER_DAYS` = 3
+  (the Finance pack's example). It is not organisation-specific code.
+- **0:** no advance reminder; due-today and overdue estimate cases still
+  apply.
+- **Effect elsewhere:** it is not part of completeness and changes nothing
+  for F5 / F6 / F12.
+- **How it is set:** through the existing F2 API
+  (`POST /finance/settings { settings: { estimateReminderDays } }`,
+  Finance Manage, audited). This needs `finance` v24.
+- **How NA reads it:** from the organisation's single Finance Settings row
+  (several rows, or an invalid row → loud, incomplete).
+- **Visible in each case:** `reminderDays` and `reminderSource`
+  (`organisation_setting` / `finance_baseline`).
+
+### FIN16.7 Access, snooze, Settings
+
+- **Access (F8a, unchanged):**
+
+  | Caller | Result |
+  |---|---|
+  | No Finance grant | No Money Out source is read; no case, count, amount or payee |
+  | Finance View | Sees the cases; `exceptionAllowed:false`; snooze → 403 `finance_manage_required` |
+  | Finance Manage | Sees and may snooze |
+  | Grant lookup failure | Fails closed (`finance_access_unavailable`) |
+  | `module_finance` off | Nothing evaluated |
+  | Coach / Parent | 403 (Management only) |
+
+- **Snooze:** an existing exact-case Exception with `effectiveUntil`
+  (tomorrow / 3 days / 1 week / chosen date are client presets).
+  - It only hides that case until it expires.
+  - No Finance row is written, so the due date, state and amount are
+    unchanged.
+  - Overdue days keep counting.
+  - A source resolved while the case is snoozed disappears entirely.
+- **Settings:** each rule is enabled per organisation in Needs Attention
+  Settings. Default is off.
+
+### FIN16.8 Reads and performance
+
+- **One shared pass for all five rules**, memoised on the instalments
+  array identity plus now / organisation / timezone / row counts.
+- **Sources, each listed at most once per request:**
+  - four Supabase GETs (`finance_suppliers`, `finance_supplier_instalments`
+    with `cancelled_at=is.null`, `finance_employment_versions`,
+    `finance_employment_items`);
+  - one Airtable list (Finance Settings, shared with ATT-048).
+- **Query shape:** `organisation_id=eq.<profile organisation>`,
+  `order=<primary key>`, `limit=1000`, `offset`.
+- **Limits:** more than 20 pages fails loudly. A returned row from
+  another organisation fails loudly.
+- **What is not done:** no per-source read, no Finance API call, no
+  write.
+- **Employment months computed:** from each employment's start month to
+  the month of (today + N).
+
+### FIN16.9 Code, tests
+
+- **New:** `needs-attention/money-out.ts`.
+- **Changed:**
+  - `repository.ts`: `FINANCE_SOURCES`, `loadFinanceSource`,
+    `Reader.listFinance`;
+  - `orchestrator.ts`: Finance sources loaded separately; an unavailable
+    source → `evaluator_error`;
+  - `registry.ts`, `index.ts` (`financeStore`);
+  - `finance/finance-settings.ts` (F2 setting);
+  - bundle allowlist: + `finance-suppliers.ts`, `finance-overheads.ts`
+    (pure).
+- **Copied verbatim and drift-tested:** the F13 `supplierFromRow` /
+  `instalmentFromRow` and F15 `versionFromRow` / `itemFromRow` row
+  readers.
+- **Imported, never re-implemented:** `remainingOf`, `stateOf`,
+  `monthLine`, `asInstalment`, `chainOf`, `fromStoredRow`.
+- **Tests:** `tests/support/needs-attention-money-out.test.ts` **76/76**,
+  shim `tests/e2e/needsattentionmoneyouttest.js`. Groups:
+
+  | Group | Covers |
+  |---|---|
+  | PD | brief 1–8 |
+  | EM | brief 9–11 |
+  | ES | brief 12–19, incl. part month |
+  | SET | F2 setting |
+  | AC | brief 20–26 |
+  | SN | brief 27–30 |
+  | ID | brief 31–34 |
+  | DT | brief 35–36 (BST and Auckland boundaries) |
+  | PF | one pass, one read per table, paging, the 20-page cap |
+  | DQ | unreadable / foreign / unavailable data |
+  | DR | copied blocks, allowlist, registry vs catalogue, Coach Months excluded, mirror |
+
+- **Mutation:** 21 mutants; **20 killed**. The survivor is equivalent:
+  removing the in-code cancelled skip still raises nothing, because F13
+  `stateOf` returns `cancelled` and `bucketOf` ignores it. The read also
+  filters cancelled rows.
+- **Strict `tsc`:** clean for `money-out.ts`, `repository.ts`,
+  `orchestrator.ts`, `registry.ts` and `finance-settings.ts`.
+- **Full regression:** **87/87** files (86 + the F16 shim).
+  `finance --check` and `needs-attention --check` MATCH.
+- **Updated for the new counts / allowlist:** NA foundation, engine,
+  compliance, coach-schedule and bundle suites; the catalogue fixture +
+  snapshot (45 rows).
+
+### FIN16.10 Open items / future debt
+
+- **Deploy (operator):** `needs-attention` v15 and `finance` v24 from the
+  F16 commit. Then run the live proof A–AD on ZZTEST supplier /
+  employment fixtures, and enable ATT-049..053 for ORG-TEST-001 in Needs
+  Attention Settings.
+- **F12 Coach Months:** no Paid fact, so excluded. A coach-payment rule
+  needs an F12 paid lifecycle first.
+- **Settled instalments are still read:** the F13 table keeps settled
+  instalments forever. The read filters only cancelled rows; remaining
+  cannot be filtered in PostgREST. If volume grows, add an "open
+  instalments" view.
+- **Estimate fully covered by credit:** an Estimated instalment whose
+  remaining is 0 raises nothing. F14 only applies credit to confirmed
+  instalments, so this cannot occur today.
+- **Old employment start dates:** a very old employment start date with
+  unconfirmed months raises one estimate-overdue case per unconfirmed
+  month. That is true, but noisy for back-dated employees.
+- **`f2probe` cleanup** remains an operator item.
+
+### FIN16.11 Resting TEST state (deployment checkpoint)
+
+- **Airtable TEST (additive):**
+  - catalogue rows ATT-049..053 Active, Default Enabled off, no Settings
+    rows (so every organisation has them off);
+  - Finance Settings field Estimate Reminder Days, blank everywhere.
+  - No exception rows were created.
+- **Supabase TEST:** unchanged. No schema change and no data written by
+  F16; F13 / F14 / F15 fixtures as FIN15.15; audit 423.
+- **Deployed:** `finance` v23 and `needs-attention` v14 (F16 code not
+  live). v14 skips the five new Active rows as `not_implemented` (no
+  config issue, default off).
+- Manage grant `28df35d0…` open; `module_finance` ON; harness tokens
+  cleared.
+
+### FIN16.12 Live proof plan (after the operator deploys v15 / v24)
+
+1. **Byte-verify** `needs-attention` v15 and `finance` v24 against the
+   committed artifacts.
+2. **Enable the rules:** add a Needs Attention Settings row per rule for
+   ORG-TEST-001 (Enabled + Allow Override).
+3. **Fixtures:** ZZTEST F16 supplier instalments via the `finance` API
+   (A–F, J–O), and ZZTEST F16 employment via F15 (G–I).
+4. **Read through the `needs-attention` HTTP API**, for P–Z: Manage /
+   View / no grant / module off / Coach / Parent; snooze; organisation
+   date; keys.
+5. **Set the reminder through the F2 API** (`estimateReminderDays`) to
+   prove the organisation setting changes the window.
+6. **Checks AA–AD:** home totals; ATT-047 / 048 unchanged; F12–F15
+   unchanged; production untouched.
+7. **Restore the baseline:** disable the rules, revoke the snooze, clear
+   tokens.
