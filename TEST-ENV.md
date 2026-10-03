@@ -25817,7 +25817,7 @@ new F11 decisions.
 - **REAL STRIPE REFUND: NOT PROVEN.** The emulator only; no real Stripe
   key or account was used.
 
-## Finance Foundation — F22 (No-Xero branded invoice PDF + manual Sent) — LIVE-PROVEN on `finance` v31 / `needs-attention` v21 (FIN22.12) — no-grant probe + resting restore await one gated operator step (FIN22.13) — TEST only — 2026-10-03
+## Finance Foundation — F22 (No-Xero branded invoice PDF + manual Sent) — COMPLETE IN TEST: LIVE-PROVEN on `finance` v31 / `needs-attention` v21 (FIN22.12–FIN22.15) — TEST only — 2026-10-03
 
 > **Status.**
 > - Built on the locked decisions D1–D7 plus "no retroactive
@@ -25837,9 +25837,13 @@ new F11 decisions.
 >     deployment (FIN22.9).
 > - **Deployed by the operator** from `0a6b155`: `finance` v31 /
 >   `needs-attention` v21 (verify_jwt true; artifacts identical to source).
-> - **LIVE-PROVEN** on NEW TEST invoices TEST-INV-001006…001013 (FIN22.12).
->   Open: the no-grant probe and the resting Manage / authority restore wait
->   on one gated grant UPDATE (FIN22.13).
+> - **LIVE-PROVEN** on NEW TEST invoices TEST-INV-001006…001013 (FIN22.12),
+>   including the genuine no-grant proof after the operator step (FIN22.13).
+> - **Resting baseline restored (FIN22.14).** Exactly one Manage grant
+>   `e993823c-c08e-49da-a56c-2b3f24081c47`; authority xero; company number
+>   null; no probe objects.
+> - **F22 = COMPLETE IN TEST.** Finance F1–F22 foundation = COMPLETE IN TEST
+>   (FIN22.15).
 > - Production untouched. No production invoice was issued.
 
 ### FIN22.1 Boundary (locked)
@@ -26404,13 +26408,14 @@ Further rows for the table:
     duplicate-key on (org, invoice, type).
   - On a ready row: UPDATE → `f22:document_immutable`, DELETE →
     `f22:document_is_permanent`, re-record → `f22:document_not_generating`.
-- **Render failure (10) — not injectable live.**
-  - The renderer is a pure function inside the deployed bundle; there is no
-    TEST switch and no code change was made for the proof.
-  - The same failed-state path (issued, number fixed, status failed, retry
-    re-arms with the same snapshot and number) was proven live via
-    storage failure (11).
-  - The render-throw branch is covered by the focused suite (135 checks).
+- **Render failure (10) — LIMITATION: not induced live.**
+  - It could not be induced live without modifying code. The renderer is a
+    pure function inside the deployed bundle with no TEST switch, and no code
+    was changed for the proof.
+  - The focused tests cover renderer failure (render throws → document
+    failed, invoice stays issued, safe retry).
+  - The storage failure (11) proved the same lifecycle live: issued but
+    document failed, then safe retry with the same snapshot and number.
 - **Storage failure (11).**
   - A temporary TEST-only BEFORE INSERT trigger on `storage.objects` failed
     uploads for `*/TEST-INV-001007.pdf`.
@@ -26446,9 +26451,11 @@ Further rows for the table:
     `tests/fixtures/f22/zztest-f22-broken-logo.png`) → logo
     `unavailable`, `logoFallback` "not a JPEG or PNG image"; the invoice
     still issued with a ready PDF (D).
-  - Unreachable source: Airtable refuses to keep an attachment whose URL
-    404s (field left empty) → missing-logo text fallback (H1/H2). Fetch
-    timeouts and non-Airtable hosts are covered by the focused suite.
+  - **LIMITATION — unreachable logo not proven live.** Airtable would not
+    retain an attachment whose source URL returns 404 (the field stayed
+    empty), so the H1/H2 invoices issued after that attempt proved the
+    missing-logo fallback instead. Fetch failures and timeouts are covered
+    only by the focused suite.
   - Embedded: the 360×120 8-bit PNG fixture `zztest-f22-logo.png` (E) →
     one image XObject; it is rendered top-left.
   - Neither the broken nor the missing logo blocks issue or generation.
@@ -26499,7 +26506,7 @@ Further rows for the table:
   - Storage paths are org-prefixed and re-derived, and the document RPCs
     are keyed by the caller's org, so Org A cannot reach Org B's PDF or bank
     details.
-  - No grant → 403: see FIN22.13 (blocked at the MCP confirmation gate).
+  - No grant → 403 `finance_access_denied` (FIN22.13).
 - **Mark as Sent (23).**
   - After generation plus 5 downloads, A was `sent:false`, timesSent 0.
   - `POST sent {note}` → 201 `FSE-958E6B9DE126`:
@@ -26567,27 +26574,111 @@ Further rows for the table:
 - All 59 `tests/support` suites pass. Both bundle `--check` runs MATCH.
 - `npm test` 89/89.
 
-### FIN22.13 Open operator items at this checkpoint (MCP destructive-statement gate)
+### FIN22.13 Operator step + genuine no-grant proof (2026-10-03 17:22–17:23)
 
-These plain WHERE-scoped statements stall at the Supabase MCP
-confirmation gate. They were **not** bypassed.
+**Operator actions (TEST project `dkqubldmfyeuudecxmvh`), done after the
+MCP gate stalled them in this session:**
+- Revoked the temporary View grant `146cff7d-2efb-41f8-b37a-b0cb8838d993`.
+- Dropped the TEST-only F22 fault-injection objects:
+  - triggers `zz_f22probe_storage_fault` (on `storage.objects`) and
+    `zz_f22probe_record_fault` (on `public.finance_invoice_documents`);
+  - functions `f2probe.storage_fault()` and `f2probe.record_fault()`.
 
-1. **Grant step (blocks the no-grant probe and the resting restore).** At
-   17:00 the resting Manage grant `6757aefd` was ended and the temporary View
-   grant `146cff7d` was added, so the View probe ran. The next
-   `UPDATE finance_access_grants SET revoked_at = now() … WHERE id =
-   '146cff7d-2efb-41f8-b37a-b0cb8838d993' AND revoked_at IS NULL` stalls at
-   the gate.
-   - Current TEST state: one active **View** grant.
-   - After the operator approves or runs it:
-     - no-grant probe (expect 403 `finance_access_required`);
-     - INSERT the deliberate resting Manage grant;
-     - restore `invoiceNumberAuthority` = xero and `companyNumber` = null
-       via `POST /settings` (Manage);
-     - clear harness tokens.
-2. **Drop the neutralised probe triggers/functions:**
-   `DROP TRIGGER zz_f22probe_storage_fault ON storage.objects;`,
-   `DROP TRIGGER zz_f22probe_record_fault ON public.finance_invoice_documents;`,
-   `DROP FUNCTION f2probe.storage_fault(), f2probe.record_fault();`.
-   Both functions are already pass-through no-ops.
-3. `f2probe` cleanup (standing operator item).
+Verified afterwards: 0 active Finance grants, 0 `zz_f22probe%` triggers, and
+neither function present.
+
+**No-grant proof (manager, no active grant):**
+
+| Call | Result |
+|---|---|
+| `GET /invoices/FIV-EFE551A07055/document` | 403 `finance_access_denied` |
+| `GET /invoices/FIV-EFE551A07055/pdf` | 403 `finance_access_denied` |
+| `POST /invoices/FIV-6C15E15ED970/pdf` (generate) | 403 `finance_access_denied` |
+| `POST /invoices/FIV-EFE551A07055/sent` | 403 `finance_access_denied` |
+
+- `finance_audit_events` stayed 666 → 666, so the refused probes created no
+  audit event.
+- Send events stayed 2 and document rows 8.
+
+### FIN22.14 Resting baseline (restored 17:23)
+
+- **Finance grant:**
+  - Exactly one active grant: **`e993823c-c08e-49da-a56c-2b3f24081c47`**.
+  - Manage, user `285f819e-e0d4-4257-8121-5f16781e97ba`, `ORG-TEST-001`.
+  - Granted by `f22-live-proof`, note "F22 proof: Manage restored
+    (deliberate resting grant)".
+- **Settings** (`POST /settings`, audited, the only audit row added after the
+  no-grant probe: 666 → 667):
+  - `invoiceNumberAuthority` = **xero**; `companyNumber` = **null**.
+  - Every other setting equals the pre-proof baseline, including:
+    - legal name / address / VAT;
+    - Reporting Start Month **2026-09**;
+    - the intended TEST payment details ("ZZTEST F22 Coaching Ltd (TEST
+      ONLY)", 12-34-56 / 12345678, test IBAN/BIC, TEST-only
+      instructions).
+  - `invoiceNumberNext` is 1014 (consumed by legitimate issues).
+- **Module, timezone and connectors:**
+  - Module `module_finance` ON (`/access`: manage, module enabled).
+  - Organisation & Branding: timezone **Europe/London**, branding name /
+    tagline restored, Logo empty (as before the proof).
+  - WB01 connected (`SBX_F19_TEST_REPORTING_WB01`, sheets-sandbox).
+  - Stripe status deep-equal to the pre-proof resting state.
+- **TEST client and locks:**
+  - The TEST client `FCL-F69982E2FFEC` is restored (contact, email, address).
+  - `finance_write_locks` 0, `finance_settings_locks` 0.
+- **Harness and probes:**
+  - No F22 probe triggers or functions.
+  - `f2probe.tokens` cleared (0 tokens).
+- **External calls:** none during the whole F22 proof. Xero / Stripe /
+  Sheets sandbox request max ids are still 78 / 186 / 124.
+- **Legitimate append-only history kept:**
+  - TEST-INV-001006…001013 and credit note `FCN-DD329B5A0BEF`;
+  - 8 immutable document rows, all ready (SHA-256 per FIN22.12);
+  - 8 private objects in `finance-documents`;
+  - 2 Sent events (`FSE-958E6B9DE126`, `FSE-22E8ECB05E3A`);
+  - all audit history.
+  - Nothing was deleted or rewritten.
+- **Repo fixtures:** `tests/fixtures/f22/` holds the TEST-only logo
+  fixtures, committed in `31f2c9c` and used via Airtable URL ingestion.
+- **Suites after the restore:**
+  - F22 135/135, F21 91, F20 47, F19 99, F18 124, F17 98, NA finance 64,
+    F15 74, F14 78, F13 98, F12 83, F11 67, F10 64, F9 75, NA drafts 99,
+    F7 80, Settings 103, F6 155, F5 147;
+  - all 59 `tests/support` suites;
+  - both bundle `--check` runs MATCH;
+  - `npm test` 89/89.
+
+### FIN22.15 Live-proof limitations (stated, not overstated) and completion
+
+**Limitations:**
+- **Render failure:** could not be induced live without code modification.
+  - The focused tests cover renderer failure.
+  - The storage failure proved the same issued-but-document-failed →
+    safe-retry lifecycle live (same snapshot, same number, one PDF at the
+    end).
+- **Unreachable logo:** Airtable would not retain a 404 attachment.
+  - Proven live: the missing-logo fallback, the broken / non-image logo
+    fallback, and valid PNG embedding.
+  - The network-unreachable / timeout path is covered only by the focused
+    tests.
+- **Characters:** WinAnsi standard fonts only.
+  - Characters outside WinAnsi become their NFD base letter, or "?"
+    (live: Ŵ→W, ź→z, Ł→?).
+  - This is not full Unicode.
+
+**Remaining debt (unchanged from FIN22.11):**
+- credit-note PDFs;
+- no UI (API only);
+- a missing address / payment route is not yet an F5 review blocker;
+- no Needs Attention rules for "PDF failed" or "issued, never sent";
+- PNG 8-bit non-interlaced / JPEG only; no SVG;
+- WinAnsi fonts;
+- `f2probe` cleanup (operator).
+
+**Status:**
+- **F22 = COMPLETE IN TEST.**
+- **Finance Foundation F1–F22 = COMPLETE IN TEST.** This was the final
+  planned Finance slice.
+- Production untouched: Airtable `apprptFotQuVL1mhs` / Supabase
+  `bkkukymqaxawnudoxdjs` were never connected. No real Xero, Stripe or
+  Google call.
