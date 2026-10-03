@@ -24115,3 +24115,200 @@ the **sheets-sandbox emulator only**.
 See FIN19.11 / FIN19.15. Neither real Josh workbook was read or written.
 Production (Airtable `apprptFotQuVL1mhs`, Supabase `bkkukymqaxawnudoxdjs`)
 is untouched. F20 / F21 were not started.
+
+## Finance Foundation — F20 (Legacy Finance History) — AUDIT ONLY — STOPPED BEFORE CODE (mandatory stop conditions hit) — TEST only — 2026-10-03
+
+> **Status.**
+> - Audit complete; **no code, schema, data or deployment changes**.
+> - TEST stays at `finance` v28 / `needs-attention` v18 /
+>   `sheets-sandbox` v1, with the F19 resting state (FIN19.16) unchanged.
+> - The legacy workbooks were read **read-only** through the Drive
+>   connector. Nothing was written to any Google file.
+> - Production untouched. F21 / F22 were not started.
+> - **Product decisions are needed (FIN20.3)** before any F20 build.
+
+### FIN20.1 Legacy source audit (2026-10-03)
+
+**Sources inspected.**
+- Drive: every finance-like file visible to the connector.
+- Notion: the source pages cited by the workbook.
+- The repo's legacy Financials code paths.
+- F18 / F19.
+
+**1. `Josh_Evans_Coaching_PL_and_Schedule`**
+(`1JT60QGjHVGUS1eBHESgJgJW92JF_geENnkfnAuOIAMc`; created **2026-09-15**,
+modified 2026-09-28).
+- **What it is:** a live, formula-driven **run-rate model**, not history.
+  - Summary says "Everything pulls live from the tabs behind this one.
+    Edit blue cells only."
+  - Its figures are a typical **month / week / term**, not a calendar
+    month. Evening monthly: gross £14,478.00, VAT £2,413.00, net
+    £12,065.00, coach £5,374.31, venue £3,750.05, profit £2,940.64.
+  - Day programme: monthly invoiced £17,043.00, net kept £14,202.50, coach
+    £9,101.52, margin £5,100.98.
+  - Combined: "Total monthly profit £8,041.62".
+- **Assumptions tab.**
+  - Weeks / month 4.33 (52/12); monthly = weekly × 4.33.
+  - VAT rate 20%. Evening gross is VAT-inclusive (net = gross / 1.2). Day
+    rates are "the full invoiced amount, with 20% deducted".
+  - Weeks / term 13 ("flat estimate").
+  - Minimum paid session 1 h.
+  - Salaried staff are spread into blended hourly coach rates:
+    - Josh £4,000 / month → £108.60 / h;
+    - David £39,000 / year → £50.85 / h.
+- **Provenance:** "Source: Notion Evening Programme P&L, School Day
+  Programme P&L, School Invoicing Model and Coaching Schedule, **as at
+  13-15 Sep 2026**. Participant numbers from ClassForKids." It also
+  records a deliberate difference from Notion: City of London Freemen's
+  day sessions were added.
+- **Values change when assumptions change.**
+  - Per-session rows (Evening P&L, Day P&L, Financials) are formulas over
+    Prices / Coach Rates / Venues / participants.
+  - The `Coaches` tab already shows `#ERROR!` for Josh's rate, and the
+    `Financials` coach_cost differs from `Financials (backup)` (E01 304.72
+    vs 330.53).
+- **The only dated data is `P&L archive`.**
+  - Weekly, per-session rows `week_commencing, session_id, …,
+    revenue_gross, revenue_net, coach_cost, venue_cost, profit`.
+  - **Coverage: 4 weeks only — w/c 2026-08-31, 09-07, 09-14, 09-21**
+    (200 rows).
+  - The values are the run-rate model divided into weeks, i.e. **estimates,
+    not booked actuals**: E01 gross 213.23 = 924.00 / 4.333.
+  - **Not immutable.** The backup copy "pre term/archive cleanup 20 Sep
+    2026" (`1gpDOSyGb9M4AELhFx4l43orIUWoqth5cpEjhmqOUhTA`) held 56 + 56
+    rows for w/c 08-31 and 09-07. The live copy holds 28 + 52 for the
+    same weeks:
+    - 32 row-keys were removed and 108 were added;
+    - only the 68 row-keys present in both copies are unchanged.
+  - **Structurally inconsistent.**
+    - Some rows (e.g. D29–D31 "Jets FC") lack the `category` column, so
+      their numbers sit one column to the left.
+    - Labels are inconsistent ("jets FC" / "evening").
+    - School rows have participants 0.
+  - **Weeks do not map to months:** w/c 2026-08-31 spans August and
+    September.
+
+**2. `Josh_Evans_Coaching_PL_and_Schedule.xlsx`**
+(`1YpDEhkBy9CktJd7rY65rZ9HPdhzf2DOY`, 2026-09-15) is the import copy of
+the same model.
+
+**3. "Josh Evans Hub"** (`1-ANsySIFZ3LWrgQv3Ob9DKADwy1GA9dUZW3UmdE-p3g`)
+is the Finance-pack template.
+- Its data tabs hold only `EXAMPLE-…` rows.
+- Monthly Summary is a formula layout keyed by "Selected month" /
+  "Reporting view" input cells, not stored history (FIN19.1).
+
+**4. Notion.** The cited sources ("Evening Programme P&L", "School Day
+Programme P&L", "School Invoicing Model") are **not found** through the
+Notion connector: searches for P&L / Evening Programme / School Invoicing
+return nothing relevant. Any older history they hold is unverified.
+
+**5. Other Drive results.** The only other result is an unrelated 2023
+"Josh Evans Invoice" document.
+
+**6. Repo code exposing old totals.**
+- `management.js` `renderManagementDashboard()` decrypts the published
+  `Financials` CSV client-side (`unlock()`). It sums `revenue_net` and
+  `profit` across per-session rows and labels them "Revenue" / "Profit".
+  - Those are **run-rate monthly model values**, not a historical month or
+    F18.
+  - Its tiles promise "Financial dashboard — Baseline, actual and archive"
+    and "Reports & exports — P&L".
+  - This conflicts with any F20 / F18 history model and should eventually
+    be retired or relabelled.
+- `hub-content` reads `FINANCIALS_CSV_URL` server-side for
+  `session_id` → participants only. Revenue / cost columns are discarded.
+  It does not conflict.
+- There is no other historical reporting code. F19 writes Hub → Sheets
+  only and never reads Sheets back.
+
+**7. F18 boundary.**
+- `GET /month-report` accepts **any** month 2000-2100 and always returns
+  a canonical (possibly empty) report.
+- There is **no cutover / go-live setting** anywhere: no Airtable field
+  and no `finance-settings.ts` key.
+- "Canonical month" is therefore undefined today. TEST canonical data
+  exists for September / October 2026 (F18 / F19 proofs).
+
+### FIN20.2 What genuinely exists, and the stop conditions hit
+
+| Question | Finding |
+|---|---|
+| Authoritative legacy source | **None established.** The only dated source is the P&L archive. It is a 4-week, mutable, model-derived table in a workbook created 2026-09-15. The cited Notion originals are not reachable |
+| Historical coverage | **2026-08-31 → 2026-09-27 at most** (weekly). Nothing earlier was found. No pre-cutover history exists to import |
+| Actual vs forecast | **Forecast / run-rate.** Values derive from participants × price ÷ 4.33 and assumed rates. Nothing is labelled Actual and nothing is booked |
+| VAT | **Assumed, not recorded**: a 20% Assumptions cell applied to VAT-inclusive evening prices; day schools mix "Added to rate" and "Absorbed in rate" |
+| Definitions vs F18 | **Differ materially.** See the definitions note below |
+| Formulas change with assumptions | **Yes.** Every P&L tab is live; the archive itself was edited between 20 Sep and now |
+| Stable reproducible values | **No.** The archive rows changed between copies, and some rows are column-shifted |
+| Programme detail | Categories exist (Academy / Pre Academy / TDC / Futsal / Technical Training / Jets / Little Legends / School). Labels are inconsistent, and nothing maps to Finance Services |
+| Overlap with F18 | **Total.** Every archive week falls in August / September 2026, and September 2026 is a canonical TEST month. Week → month allocation would also need a rule |
+| Cutover month | **Undefined** |
+
+**Definitions note.**
+- Legacy `profit` = net − coach − venue, with **no overheads**.
+- Salaried staff are inside coach cost as blended hourly rates.
+- F18 instead puts employment in overheads (F15 `emp:` rows) and
+  computes `programmeContribution` and `finalBusinessProfit` after
+  overheads.
+- So legacy "profit" is neither F18 contribution nor F18 profit.
+
+Mandatory stop conditions hit:
+- authoritative source;
+- coverage;
+- VAT definition;
+- actual vs forecast;
+- profit / cost definitions;
+- cutover month;
+- overlap precedence;
+- programme trust;
+- formulas change on edit;
+- not reproducible.
+
+**Per the brief, F20 stops here.**
+
+### FIN20.3 Product decisions needed before any F20 build
+
+1. **Is there genuine pre-Hub history to preserve?** If yes, where is it?
+   Candidates: the Notion P&L pages, accounting / Xero exports, bank
+   statements, ClassForKids exports. They need read access or an exported
+   file (CSV / xlsx) supplied as TEST input. The current workbook holds no
+   history before w/c 2026-08-31.
+2. **Cutover month.** Which month does canonical Hub Finance (F18) own
+   from? Should it be a Finance Setting (e.g. `canonicalFinanceFromMonth`),
+   per organisation?
+3. **Overlap precedence.** Recommended: F18 always wins from the cutover
+   month onwards. Legacy is accepted only for months before cutover, and an
+   overlapping legacy month is rejected at validation as
+   `overlap_requires_resolution`, never merged.
+4. **Run-rate estimates.** Should they ever be importable? Recommended:
+   **no**. If wanted at all, they would be stored as `basis = forecast`,
+   kept out of Month Report Actuals, and shown only as "historical
+   estimate".
+5. **Legacy definition.** Approve storing legacy months with an explicit
+   `definition = legacy_pl_v1` (profit = net − coach − venue; salaries in
+   coach cost; no overheads) and showing them side by side, not
+   recalculated. Cross-boundary comparison would be **unavailable**
+   (incompatible definition).
+6. **Granularity.** Month-only legacy facts (recommended), or weekly rows
+   with an approved week → month rule (e.g. allocate by days)?
+7. **The legacy management dashboard** (`management.js`, decrypted
+   `Financials` CSV). Keep it labelled as "run-rate model", or retire it
+   once F18 / F20 cover reporting?
+
+**Recommended direction once answered.** Build only after a real source
+exists:
+- `finance_legacy_import_batches` and `finance_legacy_months` (optionally
+  `finance_legacy_programmes`), append-only with a void / replace version;
+- a dry-run + commit import from a supplied CSV / xlsx file (not
+  continuous Sheets sync);
+- a Month Report `source = legacy` branch for pre-cutover months only;
+- no F4–F17 writes, no Cash Flow / Needs Attention impact.
+
+**If no genuine history exists, F20 can close as "no legacy history to
+import" plus a cutover setting**, which is the smallest safe outcome.
+
+### FIN20.4 Resting state
+
+Unchanged from FIN19.16. No legacy fixtures, tables, routes or audit
+events were created, and no workbook was modified.
