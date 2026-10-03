@@ -25817,7 +25817,7 @@ new F11 decisions.
 - **REAL STRIPE REFUND: NOT PROVEN.** The emulator only; no real Stripe
   key or account was used.
 
-## Finance Foundation — F22 (No-Xero branded invoice PDF + manual Sent) — CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN — TEST only — 2026-10-03
+## Finance Foundation — F22 (No-Xero branded invoice PDF + manual Sent) — LIVE-PROVEN on `finance` v31 / `needs-attention` v21 (FIN22.12) — no-grant probe + resting restore await one gated operator step (FIN22.13) — TEST only — 2026-10-03
 
 > **Status.**
 > - Built on the locked decisions D1–D7 plus "no retroactive
@@ -25835,8 +25835,11 @@ new F11 decisions.
 >   too large for this session's deploy tool.
 >   - `finance` **v31** and `needs-attention` **v21** await operator
 >     deployment (FIN22.9).
-> - **NOT LIVE-PROVEN.** The live proof A–BB runs only after the deploy,
->   on NEW TEST invoices only (FIN22.10).
+> - **Deployed by the operator** from `0a6b155`: `finance` v31 /
+>   `needs-attention` v21 (verify_jwt true; artifacts identical to source).
+> - **LIVE-PROVEN** on NEW TEST invoices TEST-INV-001006…001013 (FIN22.12).
+>   Open: the no-grant probe and the resting Manage / authority restore wait
+>   on one gated grant UPDATE (FIN22.13).
 > - Production untouched. No production invoice was issued.
 
 ### FIN22.1 Boundary (locked)
@@ -26271,3 +26274,320 @@ Until then, live TEST is `finance` v30 / `needs-attention` v20:
 - Fonts are the standard 14 only (WinAnsi). Characters outside it are
   shown as their base letter or "?".
 - `f2probe` cleanup remains an operator item.
+
+### FIN22.12 Live proof on `finance` v31 / `needs-attention` v21 (2026-10-03, NEW TEST invoices only)
+
+Deployed by the operator from commit `0a6b155`: `finance` v31 and
+`needs-attention` v21, both ACTIVE, verify_jwt true, artifacts identical
+to the committed source. Harness: pg_net (`f2probe`), results kept in
+`f2probe.f22_marks`. Times are UTC.
+
+**Setup (TEST only).**
+- Module `module_finance` ON. Deliberate Manage grant (`6757aefd`).
+  Europe/London. WB01 connected. Reporting Start Month 2026-09. Stripe at
+  rest (`stripe_not_connected`).
+- Settings for the proof: `invoiceNumberAuthority` = hub, company number
+  `ZZ000022`, TEST payment details: "ZZTEST F22 Coaching Ltd (TEST ONLY)",
+  12-34-56 / 12345678, IBAN GB33BUKB20201555555555, BIC BUKBGB22, and
+  "TEST ONLY - not a real bank account." instructions.
+- New TEST client `FCL-F69982E2FFEC` "ZZTEST F22 Riverside Academy":
+  - contact "Pat O'Brien & Co (Bursar)";
+  - billing `zztest.f22.billing@test.invalid`, CC
+    `zztest.f22.head@test.invalid`;
+  - address "ZZTEST Riverside Academy / 1 Café Lane / Llanfair / Gwynedd /
+    LL61 5UJ / United Kingdom";
+  - 14 days; PO required.
+- Services (all ZZTEST F22):
+  - PPA cover: £47.50 + 20% VAT, per session.
+  - Breakfast Club: £33.33, VAT included at 20%.
+  - After-school: per player, £3.17 × 13, no VAT.
+  - Long multi-sport: £12.34 + 5% VAT; a long name with ' & é —.
+- Inactive Airtable sessions with confirmed occurrences supply the
+  billable work.
+- No historical Hub invoice is used as a successful PDF example.
+
+**Invoices issued for the proof (all `ORG-TEST-001`):**
+
+| Fixture | Invoice | Official number | Document | PDF SHA-256 | Bytes | Logo |
+|---|---|---|---|---|---|---|
+| A: 3 lines, 1–7 Sep | `FIV-EFE551A07055` | TEST-INV-001006 | `FDC-DDB54A279A31` | `cda51ef46a0b5e04ed6d5eb307e7067d8beefd440721b4ed7555989f511a6f42` | 7778 | none |
+| C: storage failure → orphan adopted | `FIV-F1410D2FF6D0` | TEST-INV-001007 | `FDC-CDA922D1BE75` | `acd9c70fd30a2f80394dddebfecc9d8bd827ea5d77128b54c901f2f5ea992ec2` | 6507 | none |
+| D: broken logo | `FIV-6FADDBD908CE` | TEST-INV-001008 | `FDC-8FFC149FF119` | `d5862645a37bcb27311de30fbf35f1f6a100e6ecc4e802e0d05505c9e4ec30bc` | 6509 | unavailable |
+| E: PNG logo | `FIV-43FB0B7A90CB` | TEST-INV-001009 | `FDC-3FC18C2E644F` | `03a171cab18be4787d55f852715044f5afe43d855d765b9e81563ed050401fa4` | 16540 | embedded |
+| H1: concurrent issue | `FIV-6C15E15ED970` | TEST-INV-001010 | `FDC-0ABCD12230CF` | `89310ea1d956d5b38b7d55e45673b394c8cb0691f930f4da5eaed8c16657fbd5` | — | none |
+| H2: concurrent issue, then credited | `FIV-D2260FF9C7E0` | TEST-INV-001011 | `FDC-CB3CE8E561CB` | `d89915a176f89681f8df7528c7cd62f5284b3c134ff2ae697ccf28bdfe5db851` | — | none |
+| B: long, 31 lines, Aug | `FIV-62A53FA998B6` | TEST-INV-001012 | `FDC-2F2A0F786A3D` | `9c2b8bd4ab5ed42e4a41fa092314a2fa93b7d59e03ca3f31882a9ad3bcb0ef1f` | 40533 | none |
+| R: replacement for 001011 | `FIV-15C27D4A927D` | TEST-INV-001013 | `FDC-8DD5BCB052D8` | `b93c1b456d22a18f1e199b775aa8542584475e24ab59221e2766ad68691dcd93` | 6418 | none |
+
+Further rows for the table:
+- Credit note `FCN-DD329B5A0BEF` credits all of 001011 (£33.33). No
+  credit-note PDF exists.
+- The numbers 1006–1013 are contiguous with no duplicates; the next number
+  is 1014.
+- The proof leaves 8 document rows and 8 private objects.
+
+**Results (proof step → what was observed):**
+
+- **Issue / numbering (2).**
+  - Ready draft `FID-0C84897F0256` issued with 201, giving exactly one number,
+    TEST-INV-001006 (hubSequence 1006). The PDF was generated after the
+    commit (`pdfGenerationStatus` ready).
+  - A simultaneous duplicate issue → 409 `finance_commercial_busy`.
+  - Re-issuing → 409 `draft_already_issued`. There is no renumbering.
+  - Two different drafts issued at the same time (H1/H2): one 201, one
+    409 busy. Retried, H2 took 1011, the next number.
+  - The PDF shows the official number as both the invoice number and the
+    payment reference. The internal `FIV-…` reference appears nowhere in the
+    PDF.
+- **Frozen snapshot (3).** The issue response freezes:
+  - issuer: legal name, trading name, address, company/VAT;
+  - client: id, name, contact, billing email + CCs, the full billing
+    address;
+  - terms (14 days, client), PO, payment details;
+  - the lines: description, date, qty, unit, VAT treatment/rate, net/VAT/
+    gross;
+  - totals and stable branding fields;
+  - `frozenAt` / `frozenBy`.
+  - Document `snapshot_sha256` for A:
+    `87049b59fabc41a8f0ebf4104e995fdc9fa1731a3ca33ba102ea23ac03c0f277`.
+- **PDF generation (4).**
+  - One immutable row per invoice in `finance_invoice_documents`, holding:
+    status ready, `sha256`, `byte_size`, `renderer_version`
+    `hub-invoice-pdf-1`, `generated_at`, `generated_by`, `attempts`, and
+    `storage_path` `ORG-TEST-001/invoices/{FIV}/{number}.pdf`.
+  - One private object in `finance-documents`. Audits:
+    `finance_invoice_document.generated` / `.generation_failed` /
+    `.downloaded`.
+- **PDF content (5).** A was decoded and rendered (pymupdf) and inspected.
+  It shows:
+  - INVOICE, the number, issue date (3 Oct 2026) and due date (17 Oct 2026);
+  - From: legal name, "Trading as", address, company and VAT numbers;
+  - Bill To: name, "For the attention of", the full address, email;
+  - service period, payment terms, PO;
+  - the line table (date, description, qty, unit, VAT rate, net, VAT,
+    total), plus the footnote "* Unit price includes VAT";
+  - Net / VAT / Total due (GBP);
+  - How to pay: account name, sort code, account no, IBAN, BIC, payment
+    reference = number, the instructions, "Please pay by";
+  - footer: legal identity and "Page 1 of 1".
+  - A regex scan of A and B finds no FIV/FDC/FDR/FID/FVL/FCL/FSV ids and no
+    `rec…` ids. There are no secrets, and nothing other than invoice data.
+- **Exact money (6).**
+  - Independently parsed from the PDF text and compared in integer pence
+    with the issue snapshot.
+  - A: lines [4750,4750,950,5700], [3333,2777,556,3333]
+    (VAT-inclusive, unit marked \*) and [317,4121,0,4121] (13 × 3.17).
+    Totals 11648 / 1506 / 13154 = the snapshot = the sum of the lines.
+  - B: 31 × [1234,1234,62,1296], totals 38254 / 1922 / 40176. Exact.
+- **Secure storage / download (7).**
+  - The bucket is private (public=false, PDF-only, 5 MB) with no storage
+    policy for clients.
+  - Public URL → 400 "Bucket not found". Anon / authenticated direct GET →
+    404. Signed URL → 404. List → `[]`.
+  - Direct upload with the user JWT → refused. In SQL as `authenticated`:
+    0 objects visible, INSERT → RLS violation.
+  - Privileged UPDATE / DELETE (even with `storage.allow_delete_query`) →
+    `f22:official_document_object_immutable`.
+  - `GET /invoices/{FIV}/pdf` returned `application/pdf`,
+    `private, no-store`, `nosniff`, `attachment; filename=…`, and
+    `X-Content-SHA256`.
+  - The bytes hash to the stored SHA for A, B, C, D, E and R.
+  - No auth → 401. A caller-supplied `?path=` → 400
+    `unexpected_parameter`; the path is re-derived from org + FIV + number.
+- **Idempotency (8).** Re-POST on A → 200 `already_generated`, with the same
+  document, SHA, number and object version/etag. No new row, no
+  overwrite. The same is true after the immutability changes.
+- **Concurrency (9).**
+  - Three simultaneous POSTs → one 200, two 409 `finance_commercial_busy`.
+  - Two simultaneous retries on C → one 201, one 409.
+  - Database rule (rolled-back probe): a second document row →
+    duplicate-key on (org, invoice, type).
+  - On a ready row: UPDATE → `f22:document_immutable`, DELETE →
+    `f22:document_is_permanent`, re-record → `f22:document_not_generating`.
+- **Render failure (10) — not injectable live.**
+  - The renderer is a pure function inside the deployed bundle; there is no
+    TEST switch and no code change was made for the proof.
+  - The same failed-state path (issued, number fixed, status failed, retry
+    re-arms with the same snapshot and number) was proven live via
+    storage failure (11).
+  - The render-throw branch is covered by the focused suite (135 checks).
+- **Storage failure (11).**
+  - A temporary TEST-only BEFORE INSERT trigger on `storage.objects` failed
+    uploads for `*/TEST-INV-001007.pdf`.
+  - Issue C → 201, invoice issued as TEST-INV-001007; document failed
+    (`storage_failed`).
+  - Retry → 503 `pdf_generation_failed` (attempts 2, no object); download
+    → 409 `pdf_generation_failed`. No second number.
+  - Orphan: the fault was removed and a TEST-only trigger made the "ready"
+    record step fail. Retry → 503 `pdf_generation_unrecorded`: object
+    stored (6507 bytes), row still `generating`, download → 409
+    `pdf_generating`.
+  - The record fault was removed. Two simultaneous retries → 201 (adopted)
+    + 409 busy, attempts 4.
+  - The adopted object kept the same version, etag and created_at (not
+    overwritten). Its bytes match the recorded SHA and the storage MD5
+    etag. A later retry → `already_generated`.
+- **Immutability (12–14).** These were changed together:
+  - Airtable branding name/tagline;
+  - settings legal name/address/bank details/IBAN/BIC/instructions;
+  - client contact, email and address (with Ŵ/Ł/ź).
+  
+  After the changes:
+  - A, B and E re-hash to the same SHA;
+  - A's and E's invoice snapshot and lines are deep-equal to the baseline;
+  - every document row and storage object (version/etag) is unchanged;
+  - re-generate → `already_generated`.
+  
+  The settings and client were restored exactly; only the number counter
+  moved on (1014). The branding was restored.
+- **Logo (15).**
+  - None → text brand (A).
+  - Broken: an Airtable attachment that is not an image (fixture
+    `tests/fixtures/f22/zztest-f22-broken-logo.png`) → logo
+    `unavailable`, `logoFallback` "not a JPEG or PNG image"; the invoice
+    still issued with a ready PDF (D).
+  - Unreachable source: Airtable refuses to keep an attachment whose URL
+    404s (field left empty) → missing-logo text fallback (H1/H2). Fetch
+    timeouts and non-Airtable hosts are covered by the focused suite.
+  - Embedded: the 360×120 8-bit PNG fixture `zztest-f22-logo.png` (E) →
+    one image XObject; it is rendered top-left.
+  - Neither the broken nor the missing logo blocks issue or generation.
+- **Long / multi-page (16).** B is 4 A4 pages (595.28×841.89):
+  - the line-table header repeats on every page;
+  - continuation pages carry the title "Invoice TEST-INV-001012
+    (continued)";
+  - long descriptions wrap with no clipping or overlap;
+  - totals and How to pay are on the last page;
+  - footers read "Page 1 of 4" to "Page 4 of 4";
+  - all 31 dates are present.
+- **Special characters (17).**
+  - ' & £ é — render exactly: O'Brien & Co, "PO-F22/0001 & A", Café,
+    St Mary's, £, em dash.
+  - **Renderer limitation:** WinAnsi (Latin-1 plus “ ” ‘ ’ – — • … € ™ and
+    similar) with the standard fonts only. Anything else becomes its NFD
+    base letter when that is Latin-1, else "?".
+  - Live (replacement R, address changed): "Ŵyn" → "Wyn", "Łódź" → "?ódz",
+    "Łukasz" → "?ukasz". This is not full Unicode.
+- **Old pre-F22 invoices (18).**
+  - TEST-INV-001001…001005 (Hub, frozen before F22) → document
+    eligibility `invoice_snapshot_incomplete`, missing [client billing
+    address, payment details, branding].
+  - `POST /pdf` on 001004 → 409 `invoice_snapshot_incomplete`; GET pdf →
+    409.
+  - No row, no object, nothing back-filled from today's client/bank data.
+- **Xero boundary (19).**
+  - The external_accounting invoices (SBX-INV-0001…0004, plus the 3 still
+    awaiting_external_issue) → eligibility `xero_invoice_document`.
+  - POST pdf, GET pdf and POST sent → 409 `xero_invoice_document`.
+  - No row, object or send event. `xero_sandbox_requests` max id stays
+    78 and there are still 4 sandbox invoices: no Xero call.
+- **View (20).** Temporary View grant `146cff7d`:
+  - document 200 (`access` view, actions generate=false, markSent=false);
+  - download 200 with the same SHA;
+  - POST pdf / POST sent → 403 `finance_manage_required`.
+- **Manage (21).** Generate/retry 201/200, download, and Mark Sent 201 (all
+  above).
+- **Access (22).**
+  - Coach / Parent → 403 `management_required` (document, pdf, generate).
+  - No auth → 401.
+  - Module `module_finance` OFF → 403 `finance_module_disabled` (document,
+    pdf, generate); turned back ON.
+  - `?organisationId=` / `?org=` / body `organisationId` → 400
+    `tenant_param_rejected`.
+  - An unknown or other-org FIV → 404 `invoice_not_found` ("in your
+    organisation"). A path traversal → 404.
+  - Storage paths are org-prefixed and re-derived, and the document RPCs
+    are keyed by the caller's org, so Org A cannot reach Org B's PDF or bank
+    details.
+  - No grant → 403: see FIN22.13 (blocked at the MCP confirmation gate).
+- **Mark as Sent (23).**
+  - After generation plus 5 downloads, A was `sent:false`, timesSent 0.
+  - `POST sent {note}` → 201 `FSE-958E6B9DE126`:
+    - sentOn 2026-10-03, recordedBy manager, recordedAt;
+    - recipients defaulted to the frozen billing email + CC;
+    - documentSha256 and number recorded.
+  - Resend with explicit `sentTo` → `FSE-22E8ECB05E3A`; history now 2
+    entries.
+  - sentOn 2026-10-04 → 400 `sent_on_in_future`; sentOn 2026-10-02 →
+    400 `sent_before_issue`.
+  - In the database, UPDATE / DELETE of a send →
+    `f22:send_history_is_append_only`. Audit:
+    2 × `finance_invoice.sent_manually`.
+- **Sent ≠ Paid (24).**
+  - A's receivable (state not_due, settlement unpaid, outstanding £131.54)
+    is deep-equal before and after generation, downloads and both Sent
+    records.
+  - Cash received stayed £212.00 (F7 truth).
+- **Correction (25).**
+  - F6 credit note `FCN-DD329B5A0BEF` on 001011 → invoice credited.
+  - Its PDF still downloads with the same SHA (`d89915a1…`); the row and
+    object are unchanged.
+  - No credit-note PDF or object exists.
+  - Replacement draft `FID-0D4861A2B94C` → TEST-INV-001013
+    (`replacesInvoiceId` FIV-D2260FF9C7E0) with its own PDF. That PDF
+    snapshots the then-current (changed) client and bank data.
+- **F17–F21 regression (26).** Re-read after the proof versus the pre-proof
+  baseline (timestamps and the access level ignored).
+  - **Identical:**
+    - Month Report Aug (pre-boundary);
+    - Month Report Sep actual;
+    - receipts;
+    - refund decisions (F21);
+    - Needs Attention cases;
+    - Sheets status (F19);
+    - Stripe status.
+  - **Changed only by the new invoices:**
+    - receivables: outstanding 273.00 → 1067.63, exactly +794.63 =
+      131.54 + 4 × 57.00 + 401.76 + 33.33, with 001011 nothing_due;
+    - Cash Flow: expected/included in +794.63, 7 new events, every outflow
+      unchanged;
+    - Month Report Sep/Oct expected programmes, and the Oct revenue
+      correction (001011 credit);
+    - the Overview cash summary.
+  - Cash received is unchanged.
+- **External side effects (27).** Since 16:20 there are 0 requests to the
+  xero-, stripe- or sheets-sandbox. The last ones were id 78 / 186 / 124,
+  all before the proof.
+
+**TEST-only probe objects:**
+- Neutralised:
+  - Triggers `zz_f22probe_storage_fault` (on `storage.objects`) and
+    `zz_f22probe_record_fault` (on `finance_invoice_documents`).
+  - Their functions `f2probe.storage_fault()` / `f2probe.record_fault()`
+    were replaced by pass-through no-ops (`return new`) as soon as each
+    fault was finished.
+- The physical `DROP` stalls at the MCP destructive-statement confirmation
+  gate. It is an operator item (FIN22.13); it was not bypassed.
+
+**Suites after the proof:**
+- F22 135/135, F21 91, F20 47, F19 99, F18 124, F17 98, F16 (NA) 64,
+  F15 74, F14 78, F13 98, F12 83, F11 67, F10 64, F9 75, F8b 99, F7 80,
+  Settings 103, F6 155, F5 147, F4 105, F3 100, F2 47, F1 56 — all
+  passed.
+- All 59 `tests/support` suites pass. Both bundle `--check` runs MATCH.
+- `npm test` 89/89.
+
+### FIN22.13 Open operator items at this checkpoint (MCP destructive-statement gate)
+
+These plain WHERE-scoped statements stall at the Supabase MCP
+confirmation gate. They were **not** bypassed.
+
+1. **Grant step (blocks the no-grant probe and the resting restore).** At
+   17:00 the resting Manage grant `6757aefd` was ended and the temporary View
+   grant `146cff7d` was added, so the View probe ran. The next
+   `UPDATE finance_access_grants SET revoked_at = now() … WHERE id =
+   '146cff7d-2efb-41f8-b37a-b0cb8838d993' AND revoked_at IS NULL` stalls at
+   the gate.
+   - Current TEST state: one active **View** grant.
+   - After the operator approves or runs it:
+     - no-grant probe (expect 403 `finance_access_required`);
+     - INSERT the deliberate resting Manage grant;
+     - restore `invoiceNumberAuthority` = xero and `companyNumber` = null
+       via `POST /settings` (Manage);
+     - clear harness tokens.
+2. **Drop the neutralised probe triggers/functions:**
+   `DROP TRIGGER zz_f22probe_storage_fault ON storage.objects;`,
+   `DROP TRIGGER zz_f22probe_record_fault ON public.finance_invoice_documents;`,
+   `DROP FUNCTION f2probe.storage_fault(), f2probe.record_fault();`.
+   Both functions are already pass-through no-ops.
+3. `f2probe` cleanup (standing operator item).
