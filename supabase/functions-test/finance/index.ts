@@ -53,7 +53,16 @@
  *   POST /invoices/{FIV-id}/credit-notes            { lineIds?, reason }  credit whole lines (all remaining if omitted)
  *   GET  /credit-notes/{FCN-id}                     credit note + links
  *   POST /credit-notes/{FCN-id}/replacement-draft   { reason }  start the replacement draft (F5) for the credited work
- *   No sending, PDF, payment, overdue, Stripe or accounting-system routes here (payments + overdue: F7 below).
+ *   No payment, overdue, Stripe or accounting-system routes here (payments + overdue: F7 below; official PDF + Sent: F22 below).
+ *
+ * F22 official Hub invoice PDF + manual Sent (Finance read = GET, Finance manage = POST); Hub-authority issued invoices only
+ * (a Xero invoice never gets a Hub PDF); rendered from the frozen F6 issuance snapshot, stored once in the PRIVATE bucket
+ * finance-documents, never changed; a Hub issue generates it automatically (reported as document.pdfGenerationStatus):
+ *   POST /invoices/{FIV-id}/pdf                     {} or { reason }  generate / retry (adopts an existing document - never a second one)
+ *   GET  /invoices/{FIV-id}/pdf                     the stored PDF (application/pdf; X-Content-SHA256 re-verified; download audited)
+ *   GET  /invoices/{FIV-id}/document                generation status + Sent history + allowed actions (no generation)
+ *   POST /invoices/{FIV-id}/sent                    { sentOn?, sentTo?, note? }  record a manual send (append-only; never payment)
+ *   No email is sent by the Hub; Sent is history only, and never marks an invoice paid.
  *
  * F7 receivables + payments received + client credit (Finance read = GET, Finance manage = POST):
  *   GET  /receivables[?clientId=FCL-..][&asOf=YYYY-MM-DD]   issued invoices' derived receivable state + summary
@@ -230,6 +239,8 @@ import { checkInvoicingQuery, matchInvoicingRoute, parseDetails, parseDraftCreat
 import { listClientDrafts, markLineNotBillable, readDraft, readEligibleWork, writeDraft } from "./finance-invoicing-orchestrator.ts";
 import { checkInvoiceListQuery, matchIssueRoute, parseCreditNote, parseIssue, parseReplacement } from "./finance-issue.ts";
 import { createCreditNote, issueDraft, listInvoiceCreditNotes, listInvoices, readCreditNote, readInvoice, startReplacementDraft } from "./finance-issue-orchestrator.ts";
+import { checkDocumentQuery, matchDocumentRoute, parseGenerateBody, parseSentBody } from "./finance-invoice-documents.ts";
+import { downloadInvoicePdf, generateAfterIssue, generateInvoiceDocument, markInvoiceSent, readInvoiceDocument } from "./finance-invoice-documents-orchestrator.ts";
 import { checkReceiptsQuery, checkReceivablesQuery, matchReceivablesRoute, parseApplication, parseCreditCreate, parseDueDateChange, parsePayment, parseRequiredReason } from "./finance-receivables.ts";
 import { matchXeroRoute, parseContactLink, parseXeroAction, parseXeroSettings } from "./finance-xero.ts";
 import { type XeroDeps, issueToXero, linkXeroContact, readXeroInvoiceState, readXeroStatus, updateXeroSettings } from "./finance-xero-orchestrator.ts";
@@ -511,7 +522,8 @@ async function handleIssue(req: Request, url: URL, match: NonNullable<ReturnType
   if (r.name === "draft.issue") {
     const p = parseIssue(raw, isTenantKey);
     if (!p.ok) return commercialResponse({ status: "error", ...p });
-    return commercialResponse(await issueDraft(deps, caller, r.params.draftId, p.revision, p.reason));
+    // F22: a Hub-authority issue then generates its official PDF (reported in the response; never fails the issue).
+    return commercialResponse(await issueDraft(deps, caller, r.params.draftId, p.revision, p.reason, (org, userId, invoiceId) => generateAfterIssue(deps, org, userId, invoiceId)));
   }
   if (r.name === "invoice.credit_note_create") {
     const p = parseCreditNote(raw, isTenantKey);
@@ -906,6 +918,42 @@ async function handleRefundExecution(req: Request, url: URL, match: NonNullable<
   return commercialResponse(await reconcileRefund(deps, caller, r.params.decisionId, p.reason));
 }
 
+/** F22 routes: same order as F3-F21 - 405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleDocuments(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchDocumentRoute>>): Promise<Response> {
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const q = checkDocumentQuery(url.searchParams, isTenantKey);
+  if (!q.ok) return commercialResponse({ status: "error", ...q });
+  const r = match.route;
+  if (r.name === "invoice.document") return commercialResponse(await readInvoiceDocument(deps, caller, r.params.invoiceId));
+  if (r.name === "invoice.pdf") {
+    const out = await downloadInvoicePdf(deps, caller, r.params.invoiceId);
+    if (out.status !== "ok") return commercialResponse(out);
+    return new Response(out.pdf.bytes, {
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="${out.pdf.fileName}"`,
+        "X-Content-SHA256": out.pdf.sha256,
+        "Cache-Control": "private, no-store",
+        "Access-Control-Expose-Headers": "Content-Disposition, X-Content-SHA256",
+      },
+    });
+  }
+  const raw = await req.text();
+  if (r.name === "invoice.pdf_generate") {
+    const p = parseGenerateBody(raw, isTenantKey);
+    if (!p.ok) return commercialResponse({ status: "error", ...p });
+    return commercialResponse(await generateInvoiceDocument(deps, caller, r.params.invoiceId, p.reason));
+  }
+  const p = parseSentBody(raw, isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  return commercialResponse(await markInvoiceSent(deps, caller, r.params.invoiceId, p.req));
+}
+
 /** Path segments URL-decoded (an Occurrence ID contains ":"); null when a segment is not valid percent-encoding. */
 function decodedPath(route: string): string | null {
   try {
@@ -965,6 +1013,10 @@ Deno.serve(async (req: Request) => {
     // F10 next: it owns only stripe/..., and returns null for the rest.
     const stripe = matchStripeRoute(route, req.method);
     if (stripe) return await handleStripe(req, url, stripe);
+
+    // F22 next: it owns only invoices/{FIV}/pdf, invoices/{FIV}/document and invoices/{FIV}/sent (before F7 / F6).
+    const documents = matchDocumentRoute(route, req.method);
+    if (documents) return await handleDocuments(req, url, documents);
 
     // F9 next: it owns only xero/..., invoices/{id}/xero[-*] and clients/{id}/xero-contact, and returns null for the rest.
     const xero = matchXeroRoute(route, req.method);

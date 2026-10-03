@@ -93,7 +93,7 @@ const g = (level: unknown): FinanceGrantRow => ({ organisation_id: ORG, access_l
 const mgr = { userId: MGR, role: "management", active: true, organisationId: ORG };
 const viewer = { userId: VIEWER, role: "management", active: true, organisationId: ORG };
 
-const SETTINGS = { ...EMPTY_SETTINGS, invoiceLegalName: "T Ltd", invoiceAddress: "1 St", vatRegistered: true, vatNumber: "GB1", defaultVatRateBasisPoints: 2000, defaultVatTreatment: "plus_vat" as const, defaultPaymentTermsDays: 30, coachPaymentDayOfFollowingMonth: 7, invoiceNumberAuthority: "hub" as const, invoiceNumberPrefix: "INV-", invoiceNumberNext: 1001 };
+const SETTINGS = { ...EMPTY_SETTINGS, invoiceLegalName: "T Ltd", invoiceAddress: "1 St", vatRegistered: true, vatNumber: "GB1", defaultVatRateBasisPoints: 2000, defaultVatTreatment: "plus_vat" as const, defaultPaymentTermsDays: 30, coachPaymentDayOfFollowingMonth: 7, invoiceNumberAuthority: "hub" as const, invoiceNumberPrefix: "INV-", invoiceNumberNext: 1001, paymentAccountName: "T Ltd", paymentSortCode: "12-34-56", paymentAccountNumber: "12345678" };
 const settingsRow = (s: any) => ({ id: "recSettingsRow001", fields: { Organisation: [ORG_REC], "Finance Settings ID": "FINSET", Revision: 1, ...Object.fromEntries(Object.entries(toStoredFields(s, Object.keys(s) as any)).filter(([, v]) => v !== null)) } });
 
 // ---------------------------------------------------------------------------
@@ -332,8 +332,8 @@ const S = { ppa: "recSessPPA0000001", after: "recSessAFT0000001", breakfast: "re
 
 async function seed() {
   reset();
-  const pk = (await W({ route: "clients.create", client: { name: "TEST Parkside Primary", billingEmail: "billing.parkside@test.invalid", paymentTermsDaysOverride: 30, poRequired: true }, reason: null })).body.client.clientId as string;
-  const sa = (await W({ route: "clients.create", client: { name: "TEST St Anne's", billingEmail: "office@stannes.test" }, reason: null })).body.client.clientId as string;
+  const pk = (await W({ route: "clients.create", client: { name: "TEST Parkside Primary", billingEmail: "billing.parkside@test.invalid", paymentTermsDaysOverride: 30, poRequired: true, billingAddress: { line1: "1 School Lane", townCity: "Testville", postcode: "TE1 1ST" } }, reason: null })).body.client.clientId as string;
+  const sa = (await W({ route: "clients.create", client: { name: "TEST St Anne's", billingEmail: "office@stannes.test", billingAddress: { line1: "1 School Lane", townCity: "Testville", postcode: "TE1 1ST" } }, reason: null })).body.client.clientId as string;
   const mk = async (clientId: string, name: string, input: any) => (await W({ route: "services.create", clientId, name, initial: { effectiveFrom: "2026-09-01", input }, reason: null })).body.service.serviceId as string;
   const ids = { parkside: pk, stannes: sa, ppa: await mk(pk, "PPA", PPA), after: await mk(pk, "After-school", AFTER), breakfast: await mk(pk, "Breakfast club", BREAKFAST), camp: await mk(pk, "Holiday camp", CAMP), sa: await mk(sa, "PPA", STANNES) };
   addSession(S.ppa, "TEST-PPA", ids.ppa);

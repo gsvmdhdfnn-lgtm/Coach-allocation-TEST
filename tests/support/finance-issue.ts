@@ -47,11 +47,18 @@
  *     replacement draft started from THAT credit note may bill it again.
  *   - No payment, due / overdue tracking, sending, PDF, Xero or Stripe here
  *     (F7 / F9 / F22).
+ *   - F22 (no-Xero official document): the issue ALSO freezes what the official
+ *     Hub invoice PDF needs - the client's billing address (every authority,
+ *     when recorded), and for a HUB-authority issue the organisation's payment
+ *     details and stable invoice branding. A Hub-authority issue refuses
+ *     without a billing address or a usable payment route. The PDF is only a
+ *     rendering of this frozen record - never a second invoice record - and a
+ *     pre-F22 invoice is never back-filled from today's data.
  */
 import { type Minor, type VatTreatment, formatMinor, formatRatePercent } from "./finance-money.ts";
 import { isIsoDate } from "./finance-effective-dating.ts";
-import { type ChargeType, CHARGE_TYPE_LABELS, REASON_MAX, auditEvent } from "./finance-commercial.ts";
-import { type FinanceSettings, type InvoiceNumberAuthority, INVOICE_NUMBER_MAX } from "./finance-settings.ts";
+import { type BillingAddress, type ChargeType, CHARGE_TYPE_LABELS, REASON_MAX, auditEvent } from "./finance-commercial.ts";
+import { type FinanceSettings, type InvoiceNumberAuthority, type PaymentDetails, INVOICE_NUMBER_MAX, paymentRouteOf } from "./finance-settings.ts";
 import {
   type Draft,
   type Line,
@@ -134,6 +141,48 @@ export interface Issuer {
   vatNumber: string | null;
 }
 
+/**
+ * F22: the stable invoice branding frozen at a Hub-authority issue (Organisation & Branding as it was).
+ * Colours follow the Hub's one rule (content-provider.js resolveColour): a valid custom hex wins over the
+ * preset. The logo is NOT frozen here (an Airtable attachment URL expires) - it is embedded when the
+ * official PDF is generated, and from then on is part of that immutable document.
+ */
+export interface InvoiceBranding {
+  tradingName: string | null;
+  primaryColour: string | null;
+  accentColour: string | null;
+  tagline: string | null;
+  website: string | null;
+  supportEmail: string | null;
+}
+/** The Hub's colour-preset palette (identical to content-provider.js COLOUR_PRESETS). */
+export const COLOUR_PRESETS: Record<string, string> = {
+  Navy: "#062a59", "Royal Blue": "#1187ee", "Sky Blue": "#52b9ef", Teal: "#0f8a82", "Forest Green": "#1d4a39", "Grass Green": "#3d7a34", Lime: "#c8ed21", "Sunshine Yellow": "#f5c518",
+  Amber: "#e6841f", Red: "#d94b5c", Pink: "#e0559c", Purple: "#7a4fd6", Charcoal: "#1c2733", "Slate Grey": "#55637a", White: "#ffffff", Black: "#000000",
+};
+const HEX_RE = /^#?([0-9a-fA-F]{6})$/;
+const sel = (v: unknown): string | null => (typeof v === "string" ? v : v && typeof v === "object" && typeof (v as any).name === "string" ? (v as any).name : null);
+const txt = (v: unknown, max: number): string | null => (typeof v === "string" && v.trim() && v.trim().length <= max && !/[\u0000-\u001F\u007F]/.test(v.trim()) ? v.trim() : null);
+export function resolveColour(customHex: unknown, preset: unknown): string | null {
+  const m = typeof customHex === "string" ? HEX_RE.exec(customHex.trim()) : null;
+  if (m) return `#${m[1].toLowerCase()}`;
+  const p = sel(preset);
+  return p && COLOUR_PRESETS[p] ? COLOUR_PRESETS[p] : null;
+}
+/** Organisation & Branding row fields -> the frozen invoice branding (nothing invented: absent stays null). */
+export function invoiceBrandingOf(f: Record<string, unknown> | null, organisationName: string | null): InvoiceBranding {
+  const x = f ?? {};
+  const email = txt(x["Support Email"], 254);
+  return {
+    tradingName: txt(x["Organisation Name"], 200) ?? organisationName,
+    primaryColour: resolveColour(x["Custom Primary Colour (hex)"], x["Primary Colour Preset"]),
+    accentColour: resolveColour(x["Custom Accent Colour (hex)"], x["Accent Colour Preset"]) ?? resolveColour(x["Custom Secondary Colour (hex)"], x["Secondary Colour Preset"]),
+    tagline: txt(x["Tagline"], 200),
+    website: txt(x["Website"], 200),
+    supportEmail: email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null,
+  };
+}
+
 export interface Invoice {
   invoiceId: string;
   sourceDraftId: string;
@@ -175,6 +224,12 @@ export interface Invoice {
   /** JSON: what Management reviewed (draft revision, Ready by / at, warnings accepted). */
   reviewSnapshot: string;
   issuer: Issuer;
+  /** F22: the client's billing address frozen at issue (null = none recorded then; pre-F22 invoices are never back-filled). */
+  billingAddress: BillingAddress | null;
+  /** F22: Hub-authority only - the payment details frozen at issue (null for Xero authority and for pre-F22 invoices). */
+  paymentDetails: PaymentDetails | null;
+  /** F22: Hub-authority only - the stable invoice branding frozen at issue (null for Xero authority and pre-F22 invoices). */
+  branding: InvoiceBranding | null;
   /** When / by whom the Hub froze this immutable package (every invoice). Never an issue date. */
   frozenBy: string;
   frozenAt: string;
@@ -269,11 +324,12 @@ export interface IssueInput {
   lines: readonly Line[];
   /** The F5 review computed NOW, under the lock (never a stored one). */
   review: Review;
-  client: { clientId: string; name: string; billingMethod: string; billingContactName: string | null; billingEmail: string | null; billingCcEmails: readonly string[] } | null;
-  settings: ({ invoiceLegalName: string | null; invoiceAddress: string | null; companyNumber: string | null; vatRegistered: boolean | null; vatNumber: string | null } & NumberingSettings) | null;
+  client: { clientId: string; name: string; billingMethod: string; billingContactName: string | null; billingEmail: string | null; billingCcEmails: readonly string[]; billingAddress?: BillingAddress | null } | null;
+  settings: ({ invoiceLegalName: string | null; invoiceAddress: string | null; companyNumber: string | null; vatRegistered: boolean | null; vatNumber: string | null } & NumberingSettings & Partial<PaymentSettings>) | null;
   /** "hub" numbering: an invoice of this organisation already carries the number the plan would assign. */
   numberTaken: boolean;
-  organisation: { organisationId: string; name: string | null };
+  /** branding: F22 - the organisation's invoice branding as it is NOW (frozen onto a Hub-authority invoice). */
+  organisation: { organisationId: string; name: string | null; branding?: InvoiceBranding | null };
   /** Invoices already recorded with this draft as their source (must be none). */
   existingFromDraft: readonly { invoiceId: string }[];
   /** For a replacement draft: the invoice it replaces (null when not found). */
@@ -285,6 +341,7 @@ export interface IssueInput {
 
 export type NumberPlan = { authority: "xero"; number: null; sequence: null; nextAfter: null } | { authority: "hub"; number: string; sequence: number; nextAfter: number };
 type NumberingSettings = Pick<FinanceSettings, "invoiceNumberAuthority" | "invoiceNumberPrefix" | "invoiceNumberNext" | "invoiceNumberDigits">;
+type PaymentSettings = Pick<FinanceSettings, "paymentAccountName" | "paymentSortCode" | "paymentAccountNumber" | "paymentIban" | "paymentBic" | "paymentInstructions">;
 
 /** prefix + n, zero-padded to `digits` when set (a longer number is never cut). */
 export function formatHubInvoiceNumber(prefix: string, n: number, digits: number | null): string {
@@ -348,6 +405,14 @@ export function planIssue(input: IssueInput): { ok: true; invoice: Invoice; line
   const np = invoiceNumberPlan(settings);
   if (!np.ok) return np;
   const numbering = np.plan;
+  // F22: a Hub-authority invoice is the official customer document - it must carry a billing address and a usable payment route, both frozen now.
+  let paymentDetails: PaymentDetails | null = null;
+  if (numbering.authority === "hub") {
+    if (!client.billingAddress) return refuse(409, "client_billing_address_missing", `${client.name} has no billing address - a Hub invoice must show the customer's billing address; add it to the client, then issue (nothing was issued)`);
+    const pr = paymentRouteOf({ paymentAccountName: settings.paymentAccountName ?? null, paymentSortCode: settings.paymentSortCode ?? null, paymentAccountNumber: settings.paymentAccountNumber ?? null, paymentIban: settings.paymentIban ?? null, paymentBic: settings.paymentBic ?? null, paymentInstructions: settings.paymentInstructions ?? null });
+    if (!pr.ok) return refuse(409, "payment_details_missing", `Finance Settings need payment details before a Hub invoice can be issued (missing: ${pr.missing.join("; ")}) - nothing was issued`);
+    paymentDetails = pr.details;
+  }
   if (numbering.authority === "hub" && input.numberTaken) return refuse(409, "invoice_number_taken", `${numbering.number} is already the number of an issued invoice - set the next invoice number in Finance Settings past it (numbers are never reused); nothing was issued`);
   if (draft.replacesInvoiceId) {
     if (!input.replaced || input.replaced.invoiceId !== draft.replacesInvoiceId) return refuse(409, "replaced_invoice_not_found", `The invoice this draft replaces (${draft.replacesInvoiceId}) cannot be found - nothing was issued`);
@@ -440,6 +505,9 @@ export function planIssue(input: IssueInput): { ok: true; invoice: Invoice; line
       vatRegistered: settings.vatRegistered === true,
       vatNumber: settings.vatNumber,
     },
+    billingAddress: client.billingAddress ? { ...client.billingAddress } : null,
+    paymentDetails: paymentDetails ? { ...paymentDetails } : null,
+    branding: hub ? { ...(input.organisation.branding ?? invoiceBrandingOf(null, input.organisation.name)) } : null,
     frozenBy: meta.userId,
     frozenAt: meta.at,
     issuedBy: hub ? meta.userId : null,
@@ -577,6 +645,10 @@ export function publicInvoice(i: Invoice, st: CreditState | null = null) {
     sourceDraftId: i.sourceDraftId,
     client: { clientId: i.clientId, name: i.clientName, billingContactName: i.billingContactName, billingEmail: i.billingEmail, billingCcEmails: [...i.billingCcEmails] },
     issuer: { ...i.issuer },
+    /** F22: frozen at issue - never today's client / Settings / branding. */
+    billingAddress: i.billingAddress ? { ...i.billingAddress } : null,
+    paymentDetails: i.paymentDetails ? { ...i.paymentDetails } : null,
+    branding: i.branding ? { ...i.branding } : null,
     /** false while awaiting external issue: not a receivable yet (no due date, no payment countdown, never overdue). */
     receivable: isIssued(i),
     invoiceDate: i.invoiceDate,
@@ -688,6 +760,9 @@ export const auditInvoice = (i: Invoice) => ({
   replacesInvoiceId: i.replacesInvoiceId,
   correctionId: i.correctionId,
   approvedOmissions: i.approvedOmissions.map((e) => e.occurrenceId),
+  billingAddressFrozen: i.billingAddress !== null,
+  paymentDetailsFrozen: i.paymentDetails !== null,
+  brandingFrozen: i.branding !== null,
   frozenAt: i.frozenAt,
   issuedAt: i.issuedAt,
   revision: i.revision,

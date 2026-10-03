@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "144fe334f7932474109c36875349b751dbcd4c64e0d99f98218d79299ceb9973",
-  "artifactBytes": 786077,
+  "artifactSha256": "a5332aa38600507b051b17b4b3cab80f2ef4d2bf315c7cb571f42ca3eabf9e38",
+  "artifactBytes": 839028,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "540a2ac1235f8f22d1504a939fc9f0df8ce66be972552807c0755838ad4b958d",
+  "sourceSha256": "f7b2f4d1eb2028aa22d323d59d1c79d39886f46e9448d8fe96f1accba99c7ba1",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -75,7 +75,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-commercial-mapping.ts",
-      "sha256": "58230883675f530e99693cffc0156c20e3849041cf771a3d93f172b0b50994d2"
+      "sha256": "eebafd50fabb916e6d49db8e48f0ae6d39f0e1e3d5ef98ec6b6b22d001b13aa1"
     },
     {
       "path": "supabase/functions-test/finance/finance-commercial-orchestrator.ts",
@@ -87,7 +87,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-commercial.ts",
-      "sha256": "9d75a0141929a684dd4db7b98e6b6c2b9a6a42d85f296c22ee145afbc2af2601"
+      "sha256": "b1bbc71e6333a05a53daba9d3d75764cde34e683c4a0bf381b341baeda2f9058"
     },
     {
       "path": "supabase/functions-test/finance/finance-effective-dating.ts",
@@ -104,6 +104,18 @@
     {
       "path": "supabase/functions-test/finance/finance-family.ts",
       "sha256": "d29b89cb39017ebfbadc4e7f29793675bbbb8c3ec4aa56ea33b7a370962ade47"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-invoice-documents-orchestrator.ts",
+      "sha256": "f8b53530711c3611827cb1995620d0c3b615f5e878267dd6704207f96f1a0dcc"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-invoice-documents-repository.ts",
+      "sha256": "479290c6303ee7d1691bbb58b02a9be926ca4339599327fafe4bc2cdb1c829b0"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-invoice-documents.ts",
+      "sha256": "927119b4acb2e76902826114c27fc2c8c2cb0041c594927220d6a5c2a6c94957"
     },
     {
       "path": "supabase/functions-test/finance/finance-invoicing-mapping.ts",
@@ -123,11 +135,11 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-mapping.ts",
-      "sha256": "ae8ec5fb381a20d5d9075e5217e24906f0c958e20e82496bb4a4ed002dda12a8"
+      "sha256": "2c5b6765dd370dea01ef1d12255fa50aa66a2e42a50fb4f5205eab61ac813870"
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-orchestrator.ts",
-      "sha256": "6c4a23add929c229fc8b79f4cd48c034010be9a3f6e742eb75ceb932b320be76"
+      "sha256": "5191c32ce31cb9e7c41cd317759199d32b2893c0afd0674d749ab33c8286c48d"
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-repository.ts",
@@ -135,7 +147,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-issue.ts",
-      "sha256": "1cb820111ff603ffb1fcd39d3a2fdc1629aaeedf89d24f01f1d0a628b70caa52"
+      "sha256": "c3d3534e9547f32f8aa762e5e8ae2841eb8b546f7dd5b39835f0fd71a664ffd9"
     },
     {
       "path": "supabase/functions-test/finance/finance-lifecycle.ts",
@@ -168,6 +180,10 @@
     {
       "path": "supabase/functions-test/finance/finance-overheads.ts",
       "sha256": "e014a97d217fb71fdc56731e2144397202d0060c7494b1c559132529fd9f2162"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-pdf.ts",
+      "sha256": "ce482bb3cf5c48f760f4031f441e0e0ad242c2c23f9455ee19e3d99116a8c453"
     },
     {
       "path": "supabase/functions-test/finance/finance-receivables-mapping.ts",
@@ -215,7 +231,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-settings.ts",
-      "sha256": "6a15c5dbb9e83fe1a4ab894049be8638dc05a5594bdf98b72627b1786b8017f5"
+      "sha256": "01be7fad3f3539376ca4b0294c63e6d6cc90d4216478f6924e95571dd91ce85e"
     },
     {
       "path": "supabase/functions-test/finance/finance-stripe-orchestrator.ts",
@@ -287,7 +303,7 @@
     },
     {
       "path": "supabase/functions-test/finance/index.ts",
-      "sha256": "49ac7681bdddfa0624b039df1afa42f32e45e871f9c023c102db2ded853f2a20"
+      "sha256": "8029410d06731ed732d825588378a634e679a6fd2a1346d0300e1890e375507d"
     },
     {
       "path": "supabase/functions-test/finance/orchestrator.ts",

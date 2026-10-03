@@ -98,6 +98,21 @@ const VAT_LABELS: Record<VatTreatment, string> = { plus_vat: "Plus VAT", vat_inc
 // Domain records
 // ---------------------------------------------------------------------
 
+/**
+ * F22: a client's billing address - the Hub's existing structured address shape (as Players):
+ * line 1 + town / city + postcode required, line 2 / county / country optional. Required for a
+ * Hub-authority invoice and frozen onto it at issue (a later edit never changes an issued invoice).
+ */
+export interface BillingAddress {
+  line1: string;
+  line2: string | null;
+  townCity: string;
+  county: string | null;
+  postcode: string;
+  country: string | null;
+}
+export const BILLING_ADDRESS_KEYS = ["line1", "line2", "townCity", "county", "postcode", "country"] as const;
+
 export interface Client {
   clientId: string;
   name: string;
@@ -105,6 +120,8 @@ export interface Client {
   billingContactName: string | null;
   billingEmail: string | null;
   billingCcEmails: string[];
+  /** F22: null = no billing address recorded (a Hub-authority issue refuses). */
+  billingAddress: BillingAddress | null;
   paymentTermsDaysOverride: number | null;
   poRequired: boolean;
   billingMethod: BillingMethod;
@@ -233,7 +250,25 @@ function section(v: unknown, name: string, allowed: readonly string[], isTenantK
 
 // ----- Clients -----
 
-export const CLIENT_FIELDS = ["name", "status", "billingContactName", "billingEmail", "billingCcEmails", "paymentTermsDaysOverride", "poRequired", "billingMethod"] as const;
+export const CLIENT_FIELDS = ["name", "status", "billingContactName", "billingEmail", "billingCcEmails", "billingAddress", "paymentTermsDaysOverride", "poRequired", "billingMethod"] as const;
+
+/** F22: { line1, line2?, townCity, county?, postcode, country? } or null (clears it). Whole object only - never a partial merge. */
+export function checkBillingAddress(v: unknown): Check<BillingAddress | null> {
+  if (v === null) return { ok: true, value: null };
+  if (!v || typeof v !== "object" || Array.isArray(v)) return { ok: false, error: "must be an object { line1, line2?, townCity, county?, postcode, country? } or null" };
+  const o = v as Record<string, unknown>;
+  const extra = Object.keys(o).filter((k) => !(BILLING_ADDRESS_KEYS as readonly string[]).includes(k));
+  if (extra.length) return { ok: false, error: `has unknown part(s): ${extra.join(", ")}` };
+  const parts: Record<string, string | null> = {};
+  for (const [k, req, max] of [["line1", true, 120], ["line2", false, 120], ["townCity", true, 80], ["county", false, 80], ["postcode", true, 12], ["country", false, 60]] as const) {
+    const r = text(o[k], max, req);
+    if (!r.ok) return { ok: false, error: `${k} ${r.error}` };
+    parts[k] = r.value;
+  }
+  const pc = (parts.postcode as string).toUpperCase().replace(/\s+/g, " ");
+  if (!/^[A-Z0-9][A-Z0-9 -]{1,10}$/.test(pc)) return { ok: false, error: "postcode may contain only letters, digits, spaces and hyphens" };
+  return { ok: true, value: { line1: parts.line1 as string, line2: parts.line2, townCity: parts.townCity as string, county: parts.county, postcode: pc, country: parts.country } };
+}
 export type ClientPatch = Partial<Omit<Client, "clientId" | "revision" | "updatedAt">>;
 
 function clientField(k: string, v: unknown): Check<unknown> {
@@ -257,6 +292,8 @@ function clientField(k: string, v: unknown): Check<unknown> {
       }
       return { ok: true, value: out };
     }
+    case "billingAddress":
+      return checkBillingAddress(v);
     case "paymentTermsDaysOverride":
       return intIn(v, 0, 365, true);
     case "poRequired":
@@ -308,6 +345,7 @@ export function newClient(id: string, input: ClientPatch & { name: string }): Cl
     billingContactName: input.billingContactName ?? null,
     billingEmail: input.billingEmail ?? null,
     billingCcEmails: input.billingCcEmails ?? [],
+    billingAddress: input.billingAddress ?? null,
     paymentTermsDaysOverride: input.paymentTermsDaysOverride ?? null,
     poRequired: input.poRequired ?? false,
     billingMethod: input.billingMethod ?? "hub",
@@ -701,6 +739,7 @@ export function publicClient(c: Client) {
     billingContactName: c.billingContactName,
     billingEmail: c.billingEmail,
     billingCcEmails: [...c.billingCcEmails],
+    billingAddress: c.billingAddress ? { ...c.billingAddress } : null,
     paymentTermsDaysOverride: c.paymentTermsDaysOverride,
     poRequired: c.poRequired,
     billingMethod: c.billingMethod,

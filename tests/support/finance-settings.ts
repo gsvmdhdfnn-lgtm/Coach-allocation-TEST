@@ -41,7 +41,14 @@
  *     Hub Finance report ("history unavailable", never a 0.00 report). A
  *     reporting boundary only: it never hides, filters or deletes
  *     operational records and never changes Cash Flow. Blank = no boundary
- *     (every month is reported as before); never affects completeness.
+ *     (every month is reported as before); never affects completeness;
+ *   - payment details (F22): how a customer pays a HUB-authority invoice -
+ *     account name, UK sort code + account number and/or IBAN (+ optional
+ *     BIC) and an optional payment note. Organisation-scoped only (never on
+ *     a client). Frozen onto each Hub-authority invoice at issue, so a later
+ *     change here never changes an issued invoice or its official PDF.
+ *     Never part of completeness (a Xero organisation does not need them);
+ *     a Hub-authority issue refuses without a usable route (paymentRouteOf).
  * Optional integration connections (Stripe / Xero / Sheets) are not
  * settings here and never affect completeness (nor does the numbering
  * choice: issuing an invoice checks it). Choosing "xero" connects nothing.
@@ -73,6 +80,12 @@ export const SETTINGS_KEYS = [
   "cashSafetyThresholdMinor",
   "overviewCashSummaryVisible",
   "reportingStartMonth",
+  "paymentAccountName",
+  "paymentSortCode",
+  "paymentAccountNumber",
+  "paymentIban",
+  "paymentBic",
+  "paymentInstructions",
 ] as const;
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 
@@ -98,6 +111,16 @@ export interface FinanceSettings {
   overviewCashSummaryVisible: boolean | null;
   /** F20: Finance Reporting Start Month (YYYY-MM) - the first month Hub Finance is authoritative for reporting (null = no boundary). Optional - never part of completeness. */
   reportingStartMonth: string | null;
+  /** F22 payment details (Hub-authority invoices). Optional here - never part of completeness. */
+  paymentAccountName: string | null;
+  /** UK sort code, stored "12-34-56". */
+  paymentSortCode: string | null;
+  /** UK account number, 8 digits (text: leading zeros kept). */
+  paymentAccountNumber: string | null;
+  /** IBAN without spaces, upper case, checksum-valid. */
+  paymentIban: string | null;
+  paymentBic: string | null;
+  paymentInstructions: string | null;
 }
 
 /** Who assigns the official (customer-facing) invoice number. Explicit - never inferred from whether a number exists. */
@@ -124,6 +147,12 @@ export const EMPTY_SETTINGS: FinanceSettings = Object.freeze({
   cashSafetyThresholdMinor: null,
   overviewCashSummaryVisible: null,
   reportingStartMonth: null,
+  paymentAccountName: null,
+  paymentSortCode: null,
+  paymentAccountNumber: null,
+  paymentIban: null,
+  paymentBic: null,
+  paymentInstructions: null,
 });
 
 // ---------------------------------------------------------------------
@@ -157,6 +186,12 @@ export const FIELD_NAMES: Record<SettingsKey, string> = {
   cashSafetyThresholdMinor: "Cash Safety Threshold (Pence)",
   overviewCashSummaryVisible: "Show Cash Summary on Finance Overview",
   reportingStartMonth: "Finance Reporting Start Month",
+  paymentAccountName: "Payment Account Name",
+  paymentSortCode: "Payment Sort Code",
+  paymentAccountNumber: "Payment Account Number",
+  paymentIban: "Payment IBAN",
+  paymentBic: "Payment BIC",
+  paymentInstructions: "Payment Instructions",
 };
 
 const VAT_REGISTRATION_CHOICES = { registered: "Registered", notRegistered: "Not registered" } as const;
@@ -220,6 +255,51 @@ function reportingMonth(v: unknown): FieldCheck {
   return { ok: true, value: s };
 }
 
+/** UK sort code: 6 digits, accepted with spaces / hyphens, stored "12-34-56". */
+function sortCode(v: unknown): FieldCheck {
+  if (v === null) return { ok: true, value: null };
+  if (typeof v !== "string") return { ok: false, error: "must be text or null" };
+  const d = v.replace(/[\s-]/g, "");
+  if (!d) return { ok: true, value: null };
+  if (!/^[0-9]{6}$/.test(d)) return { ok: false, error: "must be a UK sort code (6 digits, e.g. 12-34-56)" };
+  return { ok: true, value: `${d.slice(0, 2)}-${d.slice(2, 4)}-${d.slice(4)}` };
+}
+/** UK account number: 8 digits (spaces ignored). */
+function accountNumber(v: unknown): FieldCheck {
+  if (v === null) return { ok: true, value: null };
+  if (typeof v !== "string") return { ok: false, error: "must be text or null" };
+  const d = v.replace(/\s/g, "");
+  if (!d) return { ok: true, value: null };
+  if (!/^[0-9]{8}$/.test(d)) return { ok: false, error: "must be a UK account number (8 digits)" };
+  return { ok: true, value: d };
+}
+/** ISO 13616 mod-97 check over the rearranged IBAN, digit by digit (no big integers). */
+export function ibanChecksumOk(iban: string): boolean {
+  const r = iban.slice(4) + iban.slice(0, 4);
+  let rem = 0;
+  for (const ch of r) {
+    const v = /[0-9]/.test(ch) ? ch : String(ch.charCodeAt(0) - 55);
+    for (const d of v) rem = (rem * 10 + Number(d)) % 97;
+  }
+  return rem === 1;
+}
+function iban(v: unknown): FieldCheck {
+  if (v === null) return { ok: true, value: null };
+  if (typeof v !== "string") return { ok: false, error: "must be text or null" };
+  const s = v.replace(/\s/g, "").toUpperCase();
+  if (!s) return { ok: true, value: null };
+  if (!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/.test(s) || !ibanChecksumOk(s)) return { ok: false, error: "must be a valid IBAN" };
+  return { ok: true, value: s };
+}
+function bic(v: unknown): FieldCheck {
+  if (v === null) return { ok: true, value: null };
+  if (typeof v !== "string") return { ok: false, error: "must be text or null" };
+  const s = v.replace(/\s/g, "").toUpperCase();
+  if (!s) return { ok: true, value: null };
+  if (!/^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(s)) return { ok: false, error: "must be a valid BIC (8 or 11 characters)" };
+  return { ok: true, value: s };
+}
+
 export const FIELD_VALIDATORS: Record<SettingsKey, (v: unknown) => FieldCheck> = {
   invoiceLegalName: (v) => text(v, 200),
   invoiceAddress: (v) => text(v, 500, { multiline: true }),
@@ -238,7 +318,35 @@ export const FIELD_VALIDATORS: Record<SettingsKey, (v: unknown) => FieldCheck> =
   cashSafetyThresholdMinor: (v) => int(v, 0, MAX_MINOR),
   overviewCashSummaryVisible: (v) => (v === null || typeof v === "boolean" ? { ok: true, value: v } : { ok: false, error: "must be true, false or null" }),
   reportingStartMonth: (v) => reportingMonth(v),
+  paymentAccountName: (v) => text(v, 140),
+  paymentSortCode: (v) => sortCode(v),
+  paymentAccountNumber: (v) => accountNumber(v),
+  paymentIban: (v) => iban(v),
+  paymentBic: (v) => bic(v),
+  paymentInstructions: (v) => text(v, 500, { multiline: true }),
 };
+
+/**
+ * F22: the payment details a Hub-authority invoice freezes at issue, or why there are none. A usable
+ * route is an account name AND either a UK sort code + account number or an IBAN (BIC optional). Nothing
+ * is ever invented: a missing route refuses the issue (payment_details_missing).
+ */
+export interface PaymentDetails {
+  accountName: string;
+  sortCode: string | null;
+  accountNumber: string | null;
+  iban: string | null;
+  bic: string | null;
+  instructions: string | null;
+}
+export function paymentRouteOf(s: Pick<FinanceSettings, "paymentAccountName" | "paymentSortCode" | "paymentAccountNumber" | "paymentIban" | "paymentBic" | "paymentInstructions"> | null): { ok: true; details: PaymentDetails } | { ok: false; missing: string[] } {
+  const missing: string[] = [];
+  if (!s?.paymentAccountName) missing.push("paymentAccountName");
+  const uk = !!(s?.paymentSortCode && s?.paymentAccountNumber);
+  if (!uk && !s?.paymentIban) missing.push("paymentSortCode + paymentAccountNumber (or paymentIban)");
+  if (missing.length || !s) return { ok: false, missing };
+  return { ok: true, details: { accountName: s.paymentAccountName as string, sortCode: uk ? s.paymentSortCode : null, accountNumber: uk ? s.paymentAccountNumber : null, iban: s.paymentIban, bic: s.paymentBic, instructions: s.paymentInstructions } };
+}
 
 /** Rules across fields, checked on the MERGED result of an update. Empty object = consistent. */
 export function crossFieldErrors(s: FinanceSettings): Partial<Record<SettingsKey, string>> {
@@ -247,6 +355,12 @@ export function crossFieldErrors(s: FinanceSettings): Partial<Record<SettingsKey
     if (s.vatNumber !== null) errors.vatNumber = "must be empty when the organisation is not VAT registered";
     if (s.defaultVatRateBasisPoints !== null) errors.defaultVatRateBasisPoints = "must be empty when the organisation is not VAT registered";
     if (s.defaultVatTreatment !== null && s.defaultVatTreatment !== "no_vat") errors.defaultVatTreatment = "must be no_vat or empty when the organisation is not VAT registered";
+  }
+  // F22: a UK route needs both halves (never half a bank account on an invoice).
+  if ((s.paymentSortCode === null) !== (s.paymentAccountNumber === null)) {
+    const e = "the sort code and account number must be given together (or both left empty)";
+    if (s.paymentSortCode === null) errors.paymentSortCode = e;
+    else errors.paymentAccountNumber = e;
   }
   return errors;
 }

@@ -18,6 +18,7 @@ import { isIsoDate } from "./finance-effective-dating.ts";
 import { isRateBasisPoints, isVatTreatment, type VatTreatment } from "./finance-money.ts";
 import { type LifecyclePeriod, checkLifecycle } from "./finance-lifecycle.ts";
 import {
+  type BillingAddress,
   type BillingMethod,
   type ChargeType,
   type Client,
@@ -31,6 +32,7 @@ import {
   ID_PATTERNS,
   MAX_BILLABLE_QUANTITY,
   MAX_UNIT_AMOUNT_MINOR,
+  checkBillingAddress,
 } from "./finance-commercial.ts";
 
 export const TABLES = { clients: "Finance Clients", services: "Finance Client Services", terms: "Finance Commercial Terms", lifecycle: "Finance Service Lifecycle" } as const;
@@ -50,6 +52,13 @@ export const F = {
     terms: "Payment Terms Override (Days)",
     po: "PO Required",
     billingMethod: "Billing Method",
+    /** F22 billing address (the Hub's structured address shape). */
+    addressLine1: "Billing Address Line 1",
+    addressLine2: "Billing Address Line 2",
+    townCity: "Billing Town / City",
+    county: "Billing County",
+    postcode: "Billing Postcode",
+    country: "Billing Country",
   },
   service: { id: "Finance Service ID", client: "Client", name: "Service Name", status: "Status" },
   terms: {
@@ -133,12 +142,20 @@ export function clientFromRow(r: Row): Parsed<Client> {
   const bmRaw = f[F.client.billingMethod];
   const billingMethod = bmRaw === undefined || bmRaw === null || bmRaw === "" ? "hub" : reverse(BILLING_METHOD, bmRaw);
   if (!billingMethod) return { ok: false, problem: `client ${id}: invalid Billing Method` };
+  // F22: no address part stored = no billing address; any part stored must make a valid address (never guessed / half-read).
+  const addrRaw = { line1: f[F.client.addressLine1], line2: f[F.client.addressLine2], townCity: f[F.client.townCity], county: f[F.client.county], postcode: f[F.client.postcode], country: f[F.client.country] };
+  let billingAddress: BillingAddress | null = null;
+  if (Object.values(addrRaw).some((v) => str(v) !== null)) {
+    const a = checkBillingAddress(Object.fromEntries(Object.entries(addrRaw).map(([k, v]) => [k, str(v)])));
+    if (!a.ok || !a.value) return { ok: false, problem: `client ${id}: invalid billing address (${a.ok ? "empty" : a.error})` };
+    billingAddress = a.value;
+  }
   return {
     ok: true,
     parent: null,
     stored: {
       recordId: r.id,
-      value: { clientId: id, name, status, billingContactName: str(f[F.client.contact]), billingEmail: email, billingCcEmails: cc, paymentTermsDaysOverride: terms, poRequired: po === true, billingMethod, ...m },
+      value: { clientId: id, name, status, billingContactName: str(f[F.client.contact]), billingEmail: email, billingCcEmails: cc, billingAddress, paymentTermsDaysOverride: terms, poRequired: po === true, billingMethod, ...m },
     },
   };
 }
@@ -311,6 +328,12 @@ export function clientFields(c: Client, meta: { userId: string; at: string }, or
     [F.client.terms]: c.paymentTermsDaysOverride,
     [F.client.po]: c.poRequired,
     [F.client.billingMethod]: BILLING_METHOD[c.billingMethod],
+    [F.client.addressLine1]: c.billingAddress?.line1 ?? null,
+    [F.client.addressLine2]: c.billingAddress?.line2 ?? null,
+    [F.client.townCity]: c.billingAddress?.townCity ?? null,
+    [F.client.county]: c.billingAddress?.county ?? null,
+    [F.client.postcode]: c.billingAddress?.postcode ?? null,
+    [F.client.country]: c.billingAddress?.country ?? null,
     [F.revision]: c.revision,
     [F.changedBy]: meta.userId,
     [F.changedAt]: meta.at,

@@ -171,6 +171,17 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   const fop405 = await call('PUT', 'overview');
   ck('B25. F18 Month Report / Finance Overview routes are live in the artifact: GET only (401 without a token, 405 otherwise); read only - the routes are matched before F17 cash-flow', [mr401, fo401].every((r) => r.status === 401) && [mrp405, fop405].every((r) => r.status === 405) && flat.indexOf('finance-month-report-v1') > -1 && flat.indexOf('finance-overview-v1') > -1);
 
+  const pdf401 = await call('GET', 'invoices/FIV-0123456789AB/pdf');
+  const pdfg401 = await call('POST', 'invoices/FIV-0123456789AB/pdf');
+  const doc401 = await call('GET', 'invoices/FIV-0123456789AB/document');
+  const docp405 = await call('POST', 'invoices/FIV-0123456789AB/document');
+  const snt401 = await call('POST', 'invoices/FIV-0123456789AB/sent');
+  const sntg405 = await call('GET', 'invoices/FIV-0123456789AB/sent');
+  const pdfd405 = await call('DELETE', 'invoices/FIV-0123456789AB/pdf');
+  const cnpdf404 = await call('GET', 'credit-notes/FCN-0123456789AB/pdf');
+  ck('B28. F22 official PDF routes are live in the artifact: pdf GET (download) + POST (generate), document GET-only, sent POST-only (401 without a token, 405 otherwise); a PDF is never DELETEd (405); no credit-note PDF route yet (404)', [pdf401, pdfg401, doc401, snt401].every((r) => r.status === 401) && [docp405, sntg405, pdfd405].every((r) => r.status === 405) && cnpdf404.status === 404, [pdf401, pdfg401, doc401, docp405, snt401, sntg405, pdfd405, cnpdf404].map((r) => r.status).join('/'));
+  ck('B29. F22 writes go through its database functions + the private bucket only (finance_invoice_document_* / finance_invoice_send_record RPCs, finance-documents, x-upsert false)', ['finance_invoice_document_reserve', 'finance_invoice_document_record', 'finance_invoice_send_record', 'finance_invoice_documents_insert_audit', 'finance-documents', 'x-upsert', 'finance-invoice-documents-v1'].every((f) => flat.includes(f)));
+
   for (const [s, n, x] of results) console.log(`${s}  ${n}${x ? `  -- ${x}` : ''}`);
   const failed = results.filter((r) => r[0] === 'FAIL').length;
   console.log(`\n${results.length - failed}/${results.length} passing`);

@@ -2,7 +2,7 @@
  * Test-suite copy of the canonical finance/finance-issue-orchestrator.ts, kept in sync by hand
  * exactly like every other deployed copy (drift-checked in
  * the finance *.test.ts files). Only import paths adjusted:
- * ./orchestrator.ts -> ./finance-orchestrator.ts.
+ * ./orchestrator.ts -> ./finance-orchestrator.ts; ./repository.ts -> ./finance-repository.ts.
  */
 /**
  * Finance invoice issue + credit notes + corrections - orchestration
@@ -49,6 +49,7 @@ import { type ClientWork, type InvoicingDeps, DraftTxn, draftBody, loadClientWor
 import {
   type CreditNote,
   type Invoice,
+  type InvoiceBranding,
   type InvoiceLine,
   ENTITY_CREDIT_NOTE,
   ENTITY_INVOICE,
@@ -62,6 +63,7 @@ import {
   invoiceNumberPlan,
   isIssued,
   issueAuditEvent,
+  invoiceBrandingOf,
   issueGate,
   newIssueId,
   notIssuedMessage,
@@ -71,6 +73,7 @@ import {
   publicInvoice,
   publicInvoiceLine,
 } from "./finance-issue.ts";
+import { loadOrganisationFields } from "./finance-invoice-documents-repository.ts";
 import { type StoredInvoice, ISSUE_TABLES, buildCreditNotes, buildInvoiceLines, buildInvoices, creditNoteCreateFields, invoiceCreateFields, invoiceLineCreateFields, invoiceMatchesLines, invoiceStateFields } from "./finance-issue-mapping.ts";
 import {
   findCreditNoteRows,
@@ -352,8 +355,9 @@ async function underLock(deps: IssueDeps, caller: FinanceCaller, route: string, 
  * "Awaiting external issue" - no issue / due date, no number, not a receivable,
  * audited as prepared_for_external_issue (F9 records the real issue).
  */
-export function issueDraft(deps: IssueDeps, caller: FinanceCaller, draftId: string, revision: number, reason: string | null): Promise<Ok | Fail> {
-  return underLock(deps, caller, `POST /invoice-drafts/${draftId}/issue`, async (c) => {
+export async function issueDraft(deps: IssueDeps, caller: FinanceCaller, draftId: string, revision: number, reason: string | null, afterIssue?: AfterIssue): Promise<Ok | Fail> {
+  let issued: { org: OrganisationContext; invoice: Invoice } | null = null;
+  const res = await underLock(deps, caller, `POST /invoice-drafts/${draftId}/issue`, async (c) => {
     // Settings (issuer + official numbering) are read and the Hub number advanced under the Settings lock too.
     const busy = await c.lockSettings();
     if (busy) return busy;
@@ -380,11 +384,16 @@ export function issueDraft(deps: IssueDeps, caller: FinanceCaller, draftId: stri
     }
     // Hub numbering: the number this issue would take must not already be on an issued invoice (never reused).
     let numberTaken = false;
+    let branding: InvoiceBranding | null = null;
     const np = invoiceNumberPlan(cw.settings);
     if (np.ok && np.plan.authority === "hub") {
       const taken = await guarded(() => listInvoiceRowsByHubNumber(deps.airtable, c.org.recordId, np.plan.number as string));
       if (isFail(taken)) return taken;
       numberTaken = taken.length > 0;
+      // F22: the stable branding is frozen onto a Hub-authority invoice at issue (Organisation & Branding as it is now).
+      const orgFields = await guarded(() => loadOrganisationFields(deps.airtable, c.org.recordId));
+      if (isFail(orgFields)) return orgFields;
+      branding = invoiceBrandingOf(orgFields, c.org.name);
     }
     const review = reviewDraft({ draft, lines, client: cw.client?.value ?? null, current: cw.current, work: cw.work, claims: cw.claims });
     const included = lines.filter((x) => x.status === "included");
@@ -397,7 +406,7 @@ export function issueDraft(deps: IssueDeps, caller: FinanceCaller, draftId: stri
       review,
       client: cl,
       settings: cw.settings,
-      organisation: { organisationId: c.org.organisationId, name: c.org.name },
+      organisation: { organisationId: c.org.organisationId, name: c.org.name, branding },
       existingFromDraft,
       numberTaken,
       replaced,
@@ -426,11 +435,21 @@ export function issueDraft(deps: IssueDeps, caller: FinanceCaller, draftId: stri
         ];
         if (replaced) events.push(c.ev(ISSUE_EVENTS.replacementLinked, ENTITY_INVOICE, replaced.invoiceId, { status: replaced.status, revision: replaced.revision }, { replacementInvoiceId: inv.invoiceId, correctionId: inv.correctionId, status: replaced.status, revision: replaced.revision }, reason, { replacementDraftId: draft.draftId }));
         const stored: LoadedInvoice = { invoice: { recordId: created.id, value: inv }, lines: p.lines, notes: [] };
+        issued = { org: c.org, invoice: inv };
         return { events, body: () => ({ outcome: issuedNow ? "issued" : "prepared_for_external_issue", ...invoiceBody(stored, { drafts: [], invoices: [] }), draft: publicDraft(after) }) };
       },
     };
   });
+  // F22: a committed Hub-authority issue then generates its official PDF (own lock, after the issue's was released).
+  // The issue never depends on it: a failure is reported (pdfGenerationStatus) and retried from the frozen snapshot.
+  const done = issued as { org: OrganisationContext; invoice: Invoice } | null;
+  if (res.status === "ok" && done && afterIssue && done.invoice.numberAuthority === "hub" && isIssued(done.invoice)) {
+    res.body.document = await afterIssue(done.org, caller.userId, done.invoice.invoiceId);
+  }
+  return res;
 }
+/** F22 hook: generate the official PDF of a just-issued Hub invoice; returns the status to report (never throws). */
+export type AfterIssue = (org: OrganisationContext, userId: string, invoiceId: string) => Promise<Record<string, unknown>>;
 
 function uniqueFvl(deps: IssueDeps, n: number): string[] {
   const taken = new Set<string>();

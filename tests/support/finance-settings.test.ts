@@ -73,6 +73,12 @@ const FULL: FinanceSettings = {
   cashSafetyThresholdMinor: 500000,
   overviewCashSummaryVisible: false,
   reportingStartMonth: "2026-09",
+  paymentAccountName: "Test Coaching Ltd",
+  paymentSortCode: "12-34-56",
+  paymentAccountNumber: "12345678",
+  paymentIban: null,
+  paymentBic: null,
+  paymentInstructions: "Quote the invoice number\nBACS only",
 };
 const storedRow = (s: FinanceSettings, over: Record<string, unknown> = {}, id = "recSettingsRow001") => ({
   id,

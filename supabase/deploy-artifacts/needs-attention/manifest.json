@@ -2,8 +2,8 @@
   "function": "needs-attention",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/needs-attention/index.js",
-  "artifactSha256": "2dd53468c0c21d0e335132227dc10704f3f7e04e178577424c56fba9d184850d",
-  "artifactBytes": 215265,
+  "artifactSha256": "33dbb88d44846d3f7a405a618ccb0be7dc0a3f94e5ff763c348bec7dac310597",
+  "artifactBytes": 219515,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "6f119ef7e91555ce425d489e1062387f9e4be350ba21c9e9eb7f90ff0d346ba3",
+  "sourceSha256": "497b3ffe568b538b4f58b8c8db617761d48447d8115362613bb3ffbc7e8cab92",
   "sources": [
     {
       "path": "supabase/functions-test/needs-attention/cash-flow.ts",
@@ -103,11 +103,11 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-commercial-mapping.ts",
-      "sha256": "58230883675f530e99693cffc0156c20e3849041cf771a3d93f172b0b50994d2"
+      "sha256": "eebafd50fabb916e6d49db8e48f0ae6d39f0e1e3d5ef98ec6b6b22d001b13aa1"
     },
     {
       "path": "supabase/functions-test/finance/finance-commercial.ts",
-      "sha256": "9d75a0141929a684dd4db7b98e6b6c2b9a6a42d85f296c22ee145afbc2af2601"
+      "sha256": "b1bbc71e6333a05a53daba9d3d75764cde34e683c4a0bf381b341baeda2f9058"
     },
     {
       "path": "supabase/functions-test/finance/finance-effective-dating.ts",
@@ -123,11 +123,11 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-issue-mapping.ts",
-      "sha256": "ae8ec5fb381a20d5d9075e5217e24906f0c958e20e82496bb4a4ed002dda12a8"
+      "sha256": "2c5b6765dd370dea01ef1d12255fa50aa66a2e42a50fb4f5205eab61ac813870"
     },
     {
       "path": "supabase/functions-test/finance/finance-issue.ts",
-      "sha256": "1cb820111ff603ffb1fcd39d3a2fdc1629aaeedf89d24f01f1d0a628b70caa52"
+      "sha256": "c3d3534e9547f32f8aa762e5e8ae2841eb8b546f7dd5b39835f0fd71a664ffd9"
     },
     {
       "path": "supabase/functions-test/finance/finance-lifecycle.ts",
@@ -139,7 +139,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-settings.ts",
-      "sha256": "6a15c5dbb9e83fe1a4ab894049be8638dc05a5594bdf98b72627b1786b8017f5"
+      "sha256": "01be7fad3f3539376ca4b0294c63e6d6cc90d4216478f6924e95571dd91ce85e"
     },
     {
       "path": "supabase/functions-test/finance/finance-overheads.ts",

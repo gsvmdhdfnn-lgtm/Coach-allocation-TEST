@@ -39,13 +39,15 @@ import {
   type InvoiceStatus,
   type IssueAuthority,
   type Issuer,
+  type InvoiceBranding,
   CREDIT_NOTE_ID_PATTERN,
   CURRENCY,
   HUB_INVOICE_NUMBER_PATTERN,
   INVOICE_ID_PATTERN,
   INVOICE_LINE_ID_PATTERN,
 } from "./finance-issue.ts";
-import { type InvoiceNumberAuthority, INVOICE_NUMBER_MAX } from "./finance-settings.ts";
+import { type InvoiceNumberAuthority, type PaymentDetails, FIELD_VALIDATORS as SETTINGS_VALIDATORS, INVOICE_NUMBER_MAX, paymentRouteOf } from "./finance-settings.ts";
+import { type BillingAddress, BILLING_ADDRESS_KEYS, checkBillingAddress } from "./finance-commercial.ts";
 
 export const ISSUE_TABLES = { invoices: "Finance Invoices", lines: "Finance Invoice Lines", creditNotes: "Finance Credit Notes" } as const;
 
@@ -86,6 +88,10 @@ export const FV = {
     omissions: "Approved Omissions",
     review: "Review Snapshot",
     issuer: "Issuer Snapshot",
+    /** F22 frozen snapshots (JSON; blank on pre-F22 invoices - never back-filled). */
+    billingAddress: "Billing Address Snapshot",
+    paymentDetails: "Payment Details Snapshot",
+    branding: "Branding Snapshot",
     frozenBy: "Frozen By User ID",
     frozenAt: "Frozen At",
     issuedBy: "Issued By User ID",
@@ -198,6 +204,40 @@ function issuerOf(v: unknown): Issuer | undefined {
   return { organisationId: o.organisationId, organisationName: o.organisationName, legalName: o.legalName, address: o.address, companyNumber: o.companyNumber, vatRegistered: o.vatRegistered, vatNumber: o.vatNumber };
 }
 
+/** F22: blank = none frozen (null); otherwise exactly the frozen shape, re-validated (undefined = invalid data, never repaired). */
+function billingAddressSnapshotOf(v: unknown): BillingAddress | null | undefined {
+  if (v === undefined || v === null || v === "") return null;
+  const o = json(v) as any;
+  if (!o || typeof o !== "object" || Array.isArray(o) || Object.keys(o).sort().join(",") !== [...BILLING_ADDRESS_KEYS].sort().join(",")) return undefined;
+  const a = checkBillingAddress(o);
+  return a.ok && a.value && JSON.stringify(a.value) === JSON.stringify(Object.fromEntries(BILLING_ADDRESS_KEYS.map((k) => [k, o[k]]))) ? a.value : undefined;
+}
+const PAYMENT_KEYS = ["accountName", "sortCode", "accountNumber", "iban", "bic", "instructions"] as const;
+function paymentSnapshotOf(v: unknown): PaymentDetails | null | undefined {
+  if (v === undefined || v === null || v === "") return null;
+  const o = json(v) as any;
+  if (!o || typeof o !== "object" || Array.isArray(o) || Object.keys(o).sort().join(",") !== [...PAYMENT_KEYS].sort().join(",")) return undefined;
+  const checks: [unknown, (x: unknown) => { ok: boolean; value?: unknown }][] = [
+    [o.accountName, SETTINGS_VALIDATORS.paymentAccountName], [o.sortCode, SETTINGS_VALIDATORS.paymentSortCode], [o.accountNumber, SETTINGS_VALIDATORS.paymentAccountNumber],
+    [o.iban, SETTINGS_VALIDATORS.paymentIban], [o.bic, SETTINGS_VALIDATORS.paymentBic], [o.instructions, SETTINGS_VALIDATORS.paymentInstructions],
+  ];
+  for (const [val, check] of checks) {
+    const r = check(val);
+    if (!r.ok || r.value !== val) return undefined;
+  }
+  const pr = paymentRouteOf({ paymentAccountName: o.accountName, paymentSortCode: o.sortCode, paymentAccountNumber: o.accountNumber, paymentIban: o.iban, paymentBic: o.bic, paymentInstructions: o.instructions });
+  return pr.ok && JSON.stringify(pr.details) === JSON.stringify(Object.fromEntries(PAYMENT_KEYS.map((k) => [k, o[k]]))) ? pr.details : undefined;
+}
+const BRANDING_KEYS = ["tradingName", "primaryColour", "accentColour", "tagline", "website", "supportEmail"] as const;
+function brandingSnapshotOf(v: unknown): InvoiceBranding | null | undefined {
+  if (v === undefined || v === null || v === "") return null;
+  const o = json(v) as any;
+  if (!o || typeof o !== "object" || Array.isArray(o) || Object.keys(o).sort().join(",") !== [...BRANDING_KEYS].sort().join(",")) return undefined;
+  for (const k of BRANDING_KEYS) if (o[k] !== null && (typeof o[k] !== "string" || !o[k] || o[k].length > 254)) return undefined;
+  for (const k of ["primaryColour", "accentColour"] as const) if (o[k] !== null && !/^#[0-9a-f]{6}$/.test(o[k])) return undefined;
+  return { tradingName: o.tradingName, primaryColour: o.primaryColour, accentColour: o.accentColour, tagline: o.tagline, website: o.website, supportEmail: o.supportEmail };
+}
+
 export function invoiceFromRow(r: Row): Parsed<Invoice> {
   const f = r.fields ?? {};
   const x = FV.invoice;
@@ -254,6 +294,12 @@ export function invoiceFromRow(r: Row): Parsed<Invoice> {
   if (!review || !json(review)) return bad("missing Review Snapshot");
   const issuer = issuerOf(f[x.issuer]);
   if (!issuer) return bad("invalid Issuer Snapshot");
+  const billingAddress = billingAddressSnapshotOf(f[x.billingAddress]);
+  const paymentDetails = paymentSnapshotOf(f[x.paymentDetails]);
+  const branding = brandingSnapshotOf(f[x.branding]);
+  if (billingAddress === undefined || paymentDetails === undefined || branding === undefined) return bad("invalid F22 snapshot (billing address / payment details / branding)");
+  // Payment details + branding are frozen only on Hub-authority issues (Xero owns its own document).
+  if (numberAuthority !== "hub" && (paymentDetails !== null || branding !== null)) return bad("a Xero-numbered invoice cannot carry Hub payment details or branding");
   const frozenBy = str(f[x.frozenBy]);
   const frozenAt = str(f[x.frozenAt]);
   const issuedBy = str(f[x.issuedBy]);
@@ -312,6 +358,9 @@ export function invoiceFromRow(r: Row): Parsed<Invoice> {
       approvedOmissions: omissions,
       reviewSnapshot: review,
       issuer,
+      billingAddress,
+      paymentDetails,
+      branding,
       frozenBy,
       frozenAt,
       issuedBy,
@@ -563,6 +612,9 @@ export function invoiceCreateFields(i: Invoice, orgRecordId: string): Record<str
     [x.omissions]: i.approvedOmissions.length ? JSON.stringify(i.approvedOmissions) : null,
     [x.review]: i.reviewSnapshot,
     [x.issuer]: JSON.stringify(i.issuer),
+    [x.billingAddress]: i.billingAddress ? JSON.stringify(i.billingAddress) : null,
+    [x.paymentDetails]: i.paymentDetails ? JSON.stringify(i.paymentDetails) : null,
+    [x.branding]: i.branding ? JSON.stringify(i.branding) : null,
     [x.frozenBy]: i.frozenBy,
     [x.frozenAt]: i.frozenAt,
     [x.issuedBy]: i.issuedBy,

@@ -25816,3 +25816,458 @@ new F11 decisions.
 - The rest of FIN21.13 stands.
 - **REAL STRIPE REFUND: NOT PROVEN.** The emulator only; no real Stripe
   key or account was used.
+
+## Finance Foundation — F22 (No-Xero branded invoice PDF + manual Sent) — CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN — TEST only — 2026-10-03
+
+> **Status.**
+> - Built on the locked decisions D1–D7 plus "no retroactive
+>   reconstruction".
+> - **TEST schema applied:**
+>   - Supabase migrations `finance_f22_invoice_documents` and
+>     `finance_f22_document_objects_immutable`.
+>   - The private bucket `finance-documents`.
+>   - 17 Airtable TEST fields (FIN22.3).
+> - **Code complete, all tests pass:**
+>   - F22 suite 135/135;
+>   - all 59 `tests/support` suites;
+>   - `npm test` 89/89, including finance bundle 29/29.
+> - **Awaiting the operator:** the `finance` artifact (839,028 bytes) is
+>   too large for this session's deploy tool.
+>   - `finance` **v31** and `needs-attention` **v21** await operator
+>     deployment (FIN22.9).
+> - **NOT LIVE-PROVEN.** The live proof A–BB runs only after the deploy,
+>   on NEW TEST invoices only (FIN22.10).
+> - Production untouched. No production invoice was issued.
+
+### FIN22.1 Boundary (locked)
+
+**F6 stays the only issue authority.**
+- F22 renders the F6 issuance snapshot. It is not a second numbering or
+  issue workflow.
+- The official number on the PDF is the F6 Hub number.
+
+**Which invoices get a Hub PDF:**
+- Only an invoice whose number authority AND issue authority are both
+  `hub`, and which is canonically issued (`issued` / `partially_credited`
+  / `credited`).
+- Refused with `xero_invoice_document` (no Xero call):
+  - a Xero-numbered invoice, whether awaiting external issue or issued in
+    Xero.
+- Never reachable through these routes:
+  - drafts and Ready drafts (`FID` ids never match the `FIV` route).
+
+**Everything printed is frozen at issue:**
+- dates, terms and PO;
+- client name, contact, billing email and CCs;
+- billing address;
+- issuer legal name / address / company number / VAT number;
+- payment details;
+- stable branding.
+
+Today's client, Settings or branding are never read for any of these.
+
+**Money:**
+- Every figure is the stored minor amount, formatted only.
+- Totals are the stored totals; nothing is re-added or recalculated.
+
+**Old invoices:**
+- An invoice frozen before F22 (no address / payment / branding snapshot)
+  is refused with 409 `invoice_snapshot_incomplete`.
+- The response lists exactly what is missing.
+- Nothing is reconstructed from live data.
+
+**Lifecycle states stay distinct:**
+- ISSUED (F6);
+- PDF generated (document row `ready`);
+- downloaded (audit only);
+- SENT (manual, append-only history);
+- PAID (F7, untouched).
+
+Generating or downloading is not sending. Sending is not payment.
+
+**Credit notes:**
+- Crediting never regenerates or alters the issued PDF.
+- The PDF never shows credit state.
+- Credit-note PDFs are deferred (debt, FIN22.11).
+
+### FIN22.2 Decisions as built
+
+**D1 — payment details (Finance Settings, organisation-scoped):**
+- Fields: Account Name, Sort Code (normalised `12-34-56`), Account Number
+  (8 digits), IBAN (mod-97 checked; optional), BIC (8 / 11; optional) and
+  Payment Instructions (≤500, multi-line; optional).
+- A sort code and an account number must be given together.
+- **A usable route** = account name + (sort code + account number, or an
+  IBAN).
+- A Hub-authority issue without a usable route → 409
+  `payment_details_missing` (nothing issued, number not consumed).
+- The details are frozen onto the invoice at issue.
+- They are not part of Settings completeness.
+
+**D2 — client billing address (structured, on the Finance client):**
+- Parts: Line 1, Line 2, Town / City, County, Postcode (upper-cased) and
+  Country.
+- Line 1, Town / City and Postcode are required.
+- A partial stored address is invalid data.
+- A Hub-authority issue without an address → 409
+  `client_billing_address_missing`.
+- The address is frozen at issue (also on Xero-authority invoices when
+  present).
+
+**D3 — branding (hybrid):**
+- Frozen at a Hub issue, from Organisation & Branding:
+  - trading name;
+  - primary colour (custom hex beats the preset — the Hub's
+    `resolveColour` rule, same palette as `content-provider.js`);
+  - accent colour (falls back to secondary);
+  - tagline, website and support email.
+- **The logo is embedded at official generation:**
+  - It comes from the organisation's `Logo` attachment.
+  - It is fetched from Airtable's attachment host only, over https, with a
+    timeout and a 2 MB cap.
+  - JPEG is passed through; 8-bit PNG is decoded and flattened onto white.
+  - Once stored, it is part of the immutable PDF.
+- A missing, unreachable, corrupt or unsupported logo → text brand, with
+  `logo_status` `none` / `unavailable`. It never blocks generation.
+- Neutral fallback (no branding): the legal name in neutral ink.
+
+**D4 — renderer:**
+- A dependency-free PDF 1.4 writer inside `finance` (`finance-pdf.ts`):
+  - standard Helvetica / Helvetica-Bold, WinAnsi;
+  - 7-bit ASCII output (octal escapes, ASCIIHex image data);
+  - deterministic — no clock.
+- No PDF library and no new Edge Function.
+
+**D5 — storage:**
+- **Bucket:** the private Supabase Storage bucket `finance-documents`
+  (`public=false`, 5 MB, `application/pdf` only).
+- **Path:** `{organisation}/invoices/{FIV}/{official-number}.pdf`.
+  - The database CHECK derives it.
+  - Download re-derives and compares it; it is never trusted for
+    authorisation.
+- **Write once:** each object is written once, with the service role and
+  `x-upsert: false`.
+- **Immutable:** a `storage.objects` trigger refuses any update or delete
+  in the bucket (`f22:official_document_object_immutable`).
+- **Retrieval:**
+  - authenticated streaming through `finance` only;
+  - SHA-256 and size re-verified before a byte is served;
+  - no public or signed URL is ever returned.
+
+**D6 — Mark as Sent:**
+- Manage only, Hub-authority invoices only, and only once the official PDF
+  is `ready`.
+- **Append-only history:** `sent_on`, `sent_to` (default = the frozen
+  billing email + CCs), an optional note, `recorded_by` / `at`, and the
+  exact document id + SHA-256 sent.
+- Resends are allowed.
+- Validation: `sent_on` cannot be in the future or before the issue date.
+- It never changes the invoice, its status or F7.
+
+**D7:** credit-note PDFs deferred.
+
+### FIN22.3 Schema (applied to TEST 2026-10-03)
+
+**Supabase `dkqubldmfyeuudecxmvh`:**
+
+- **`public.finance_invoice_documents`** — one row per invoice (unique
+  `(organisation_id, invoice_id, document_type)`).
+  - Columns:
+    - `document_id FDC-…`;
+    - `official_number` (Hub pattern);
+    - `status generating|ready|failed`;
+    - `snapshot_sha256`;
+    - `renderer_version`;
+    - `storage_bucket` / `storage_path` (unique; CHECK = derived path);
+    - `sha256`, `byte_size`, `logo_status`;
+    - `attempts`, `last_error_code`;
+    - `reserved_at` / `by`, `generated_at` / `by`.
+  - CHECK: ready ⇔ hash / size / generated / logo are all set.
+  - RLS on; anon / authenticated revoked.
+  - Guard trigger:
+    - DELETE → `f22:document_is_permanent`;
+    - any change to a ready row → `f22:document_immutable`;
+    - identity columns are immutable;
+    - transitions allowed: generating→ready|failed and
+      failed|generating→generating;
+    - attempts never decrease.
+- **`public.finance_invoice_send_events`** — append-only (guard →
+  `f22:send_history_is_append_only`).
+  - It has an FK to the document.
+  - `sent_to` holds 1–10 entries.
+- **RPCs** (security definer, `service_role` only):
+  - `finance_invoice_document_reserve(org, doc)`:
+    - adopts a ready row;
+    - re-arms a failed / interrupted row only for the SAME
+      `snapshot_sha256` + number (else `f22:snapshot_changed`);
+    - otherwise inserts.
+  - `finance_invoice_document_record(org, document_id, result, events)`:
+    - generating → ready / failed, plus the audit, in one transaction.
+  - `finance_invoice_send_record(org, send, events)`:
+    - requires a READY document with a matching SHA-256 / number, plus the
+      audit.
+  - `finance_invoice_documents_insert_audit(org, events)`:
+    - for downloads;
+    - the organisation must match.
+- **Bucket** `finance-documents`, private.
+- **Trigger** `finance_documents_objects_guard` on `storage.objects`.
+- **Smoke check (rolled back):** every rule above was proven, including a
+  cross-organisation audit refusal and a foreign path refusal.
+
+**Airtable TEST `appQktredAuGa1X7e` — 17 fields:**
+
+- **Finance Settings `tblbQDDt3cgQmfCwB`:**
+  - Payment Account Name `fldDlfmHT41C97gDh`
+  - Payment Sort Code `flddNDE92Zestc99t`
+  - Payment Account Number `fldSBT3d8Qj7fPJDe`
+  - Payment IBAN `fldto91NgYGLgb8BG`
+  - Payment BIC `fldgEwm1CmMC1fsBY`
+  - Payment Instructions `fldLCggUrb3uvpHF3`
+- **Finance Clients `tblT55ZsoCkDtTY5y`:**
+  - Billing Address Line 1 `fldX0WJhcWbnydM0Y`
+  - Billing Address Line 2 `fldI0HahjRSHcRJSy`
+  - Billing Town / City `fld7n0aL7lEuIQAOc`
+  - Billing County `fldc2nEwRt5emmbYj`
+  - Billing Postcode `fldeAomhuO0vnlVHB`
+  - Billing Country `fldDCZiETAXOzw1Uw`
+- **Finance Invoices `tblqPaocmsi5LYOMA`:**
+  - Billing Address Snapshot `fld2ryTEdszz5mwea`
+  - Payment Details Snapshot `flduxpyY0r0QJqIYk`
+  - Branding Snapshot `fldgFBnaH2xkEfigT`
+
+**Snapshot storage rules:**
+- Snapshots are strict JSON with exact keys, re-validated on read.
+- An invalid snapshot → 409 `invoice_data_invalid`.
+- A Xero-numbered row may not carry payment or branding snapshots.
+
+### FIN22.4 Generation (inside `finance`, under the shared write lock `commercial:{org}`)
+
+Steps:
+1. Load the stored F6 invoice + lines.
+2. Run the official-document contract (`xero_invoice_document` /
+   `invoice_not_issued` / `invoice_snapshot_incomplete`).
+3. Compute `snapshot_sha256` = SHA-256 of the canonical JSON of exactly
+   what is printed.
+4. RESERVE: adopt a ready document (200 `already_generated`; no upload,
+   no audit).
+5. Fetch and embed the logo, or fall back to the text brand.
+6. Render.
+7. Upload once. If an object already exists (an earlier attempt that was
+   not recorded), it is downloaded and ADOPTED as-is, never overwritten.
+8. RECORD ready (SHA-256 / size / logo) or failed (code), with the audit
+   `finance_invoice_document.generated` / `.generation_failed`.
+
+Triggers:
+- **Hub issue:** `POST /invoice-drafts/{id}/issue` runs this after the
+  issue has committed and its locks were released.
+  - The issue response carries `document.pdfGenerationStatus`
+    (`ready` / `failed` / `pending`, plus a retry route).
+  - A failure never un-issues or renumbers.
+- **Retry:** `POST /invoices/{FIV}/pdf` (Manage) renders the same frozen
+  snapshot.
+
+`pdfGenerationStatus` values: `pending` / `generating` / `ready` /
+`failed` / `not_available`.
+
+**Concurrency:**
+- The write lock, the unique row, the reserve row-lock and the no-upsert
+  upload together guarantee exactly one document and one object.
+
+### FIN22.5 PDF content (A4)
+
+- **Header:**
+  - logo, or the brand name in the primary colour;
+  - tagline;
+  - primary / accent bars;
+  - "INVOICE";
+  - invoice number, issue date and due date (long form).
+- **From:**
+  - legal name and "Trading as …";
+  - address lines;
+  - company number, VAT number;
+  - support email, website.
+- **Bill To:**
+  - client;
+  - "For the attention of" contact;
+  - every address line;
+  - billing email.
+- **Details row:** service period, payment terms, purchase order.
+- **Lines table:**
+  - columns: Date, Description (wrapped; long words broken; nothing
+    clipped), Qty, Unit price (`*` = includes VAT), VAT rate (`No VAT` for
+    no_vat), Net, VAT, Total;
+  - the header is repeated on every continuation page.
+- **Totals:** the stored Net / VAT / Total due (GBP).
+- **How to pay:**
+  - account name, sort code / account number or IBAN / BIC;
+  - payment reference = the official number;
+  - instructions;
+  - "Please pay by {due date}".
+- **Footer, every page:** legal name | company number | VAT number, and
+  "Page x of y".
+- **Never printed:** no internal ids (FIV / FVL / FID / FCL / FDC /
+  organisation / record ids) and no secrets.
+- **Metadata:**
+  - Title / Subject "Invoice {number}";
+  - Author = the legal name;
+  - CreationDate = the frozen Issued At.
+
+### FIN22.6 Routes (Finance read = GET, Finance manage = POST)
+
+| Route | Access | What |
+|---|---|---|
+| `POST /invoices/{FIV}/pdf` | Manage | generate / retry: 201 generated, 200 already_generated, 409 contract / busy, 503 failed (invoice stays issued) |
+| `GET /invoices/{FIV}/pdf` | View | `application/pdf`, `Content-Disposition` attachment `{number}.pdf`, `X-Content-SHA256`, `Cache-Control: private, no-store`; 409 `pdf_not_generated` / `pdf_generating` / `pdf_generation_failed`; 500 `pdf_integrity_failed` / `pdf_missing` (never served); audited `finance_invoice_document.downloaded`; never generates |
+| `GET /invoices/{FIV}/document` | View | eligibility, `pdfGenerationStatus`, document (no path / URL), Sent history, actions honest per access level; never audited, never generates |
+| `POST /invoices/{FIV}/sent` | Manage | `{ sentOn?, sentTo?, note? }` → 201; audited `finance_invoice.sent_manually`; 409 `pdf_not_ready` / `xero_invoice_document` |
+
+Access:
+- No grant → 403.
+- Coach / Parent → 403.
+- Module off → 403.
+- Any tenant query / body key → 400.
+- Another organisation's invoice → 404 `invoice_not_found`.
+- The F22 routes are matched before F9 / F7 / F6.
+
+### FIN22.7 Code and tests
+
+**New files:**
+- `finance-pdf.ts` (pure writer);
+- `finance-invoice-documents.ts` (pure contract / layout / requests /
+  audit);
+- `finance-invoice-documents-repository.ts`;
+- `finance-invoice-documents-orchestrator.ts`.
+
+**Changed files:**
+- `finance-settings.ts` (payment fields + validators + `paymentRouteOf`);
+- `finance-commercial.ts` / `-mapping.ts` (billing address);
+- `finance-issue.ts` (gates + frozen address / payment / branding);
+- `finance-issue-mapping.ts` (strict snapshot fields);
+- `finance-issue-orchestrator.ts`:
+  - branding read for Hub issues;
+  - the `afterIssue` hook;
+- `index.ts` (routes).
+
+**Tests:**
+- `tests/support/finance-invoice-documents.test.ts` **135/135**.
+  - It covers the brief's tests 1–101 by section: AS, IN, SN, PC, MO, ST,
+    IM, OI, LG, LD, AC, SE, XE, CO, BO, Z.
+  - It runs the real orchestrators against:
+    - fake database functions with the migration's rules;
+    - a fake private bucket;
+    - real PNG / JPEG logos.
+  - It parses the produced PDFs: xref offsets, stream lengths and drawn
+    text.
+- **Mutations 15/15 caught:**
+  - hash re-verify removed;
+  - Xero refusal removed;
+  - adopt removed;
+  - address gate removed;
+  - payment gate removed;
+  - totals recalculated;
+  - download audit removed;
+  - path trust removed;
+  - payment snapshot not required;
+  - recipients not frozen;
+  - future sentOn allowed;
+  - long word not broken;
+  - no page break;
+  - issue hook removed.
+
+  The weakened Sent readiness check is caught only by drift: the database
+  function refuses the same way (`f22:document_not_ready`).
+- **Updated fixtures:** F6 155/155, F7 80/80, F9 75/75, Settings
+  103/103.
+  - The Hub-authority fixtures now carry payment details and client
+    addresses.
+  - The legacy Xero-row simulations drop the Hub-only snapshots.
+- **Bundle test:** B28 / B29 added (F22 routes + RPCs / bucket in the
+  artifact).
+- **Full regression:** all 59 `tests/support` suites pass, including
+  F21…F7, Settings and Needs Attention. `npm test` 89/89.
+
+**Artifacts** (deterministic `--check` MATCH):
+- `finance` `index.js` 839,028 bytes, sha256
+  `a5332aa38600507b051b17b4b3cab80f2ef4d2bf315c7cb571f42ca3eabf9e38`.
+- `needs-attention` `index.js` 219,515 bytes, sha256
+  `33dbb88d44846d3f7a405a618ccb0be7dc0a3f94e5ff763c348bec7dac310597`.
+  - It changes because it bundles the shared Settings / client / invoice
+    mapping (it now accepts the new stored fields).
+  - No Needs Attention rule changed.
+
+### FIN22.8 Financial boundaries
+
+**Unchanged:**
+- F7 receivables, payments and credit;
+- F17 Cash Flow;
+- F18 Month Report / Overview;
+- F19 workbook;
+- F20 boundary;
+- F21 refunds.
+
+None of these modules was edited.
+
+**Calls and writes:**
+- F22 makes no Airtable write; it only reads the invoice, lines and the
+  organisation row.
+- It makes no Stripe, Google, Xero or e-mail call.
+- The Hub sends no email; "Sent" is history recorded by Management.
+
+**Needs Attention:**
+- No new rules.
+- A missing address or payment route surfaces at issue as an explicit
+  refusal (`client_billing_address_missing` / `payment_details_missing`).
+- It is not (yet) an F5 review blocker (debt).
+
+### FIN22.9 Deployment checkpoint (operator)
+
+1. Deploy `finance` **v31** from the committed artifact (verify_jwt
+   true), and check its sha256 against the manifest.
+2. Deploy `needs-attention` **v21** from its committed artifact
+   (verify_jwt true), and check its sha256.
+3. Schema and the bucket are already applied (FIN22.3).
+
+Until then, live TEST is `finance` v30 / `needs-attention` v20:
+- the F22 routes are absent;
+- the new tables, bucket and Airtable fields are unused;
+- the v30 issue ignores the new fields.
+
+### FIN22.10 Live proof plan A–BB (after the deploy; NEW TEST invoices only)
+
+**Setup:**
+- Configure TEST payment details (TEST values only) and a TEST client
+  billing address.
+- Switch the TEST invoice authority to Hub for the proof.
+- Issue new TEST invoices only.
+
+**Proof steps:**
+- Generate on issue; download and verify the SHA-256.
+- Adopt on re-generate; concurrency.
+- A failure then a retry, if injectable.
+- Logo, then the neutral fallback.
+- A long invoice.
+- The access matrix and cross-organisation 404.
+- Mark Sent and a resend.
+- Xero refusals.
+- A credit note leaves the PDF unchanged.
+- Old invoices → `invoice_snapshot_incomplete`.
+- The database / storage immutability rules live.
+- F7 / F17 / F18 / F19 / F21 unchanged.
+
+**Afterwards:**
+- Restore the authority baseline.
+- Keep the issued invoices, documents and Sent history (append-only).
+- Clear tokens.
+
+### FIN22.11 Future debt
+
+- Credit-note PDFs (D7).
+- No UI yet: the routes are API-only.
+- Missing address / payment route as an F5 review blocker, and Needs
+  Attention for "PDF failed" or "issued but never sent" — rules not
+  added.
+- PNG logos must be 8-bit and non-interlaced (others fall back to text).
+  SVG logos are not supported.
+- Fonts are the standard 14 only (WinAnsi). Characters outside it are
+  shown as their base letter or "?".
+- `f2probe` cleanup remains an operator item.
