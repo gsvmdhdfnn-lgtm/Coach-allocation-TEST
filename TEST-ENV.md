@@ -24116,9 +24116,41 @@ See FIN19.11 / FIN19.15. Neither real Josh workbook was read or written.
 Production (Airtable `apprptFotQuVL1mhs`, Supabase `bkkukymqaxawnudoxdjs`)
 is untouched. F20 / F21 were not started.
 
-## Finance Foundation — F20 (Legacy Finance History → Finance Reporting Start Month) — CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN (finance v29 + needs-attention v19 await operator) — NO LEGACY IMPORT — TEST only — 2026-10-03
+## Finance Foundation — F20 (Legacy Finance History → Finance Reporting Start Month) — COMPLETE IN TEST (finance v29 / needs-attention v19 live-proven) — NO LEGACY IMPORT — TEST only — 2026-10-03
 
 > **Status (latest first).**
+> - **F20 = COMPLETE IN TEST (live proof FIN20.13–FIN20.21).**
+>   - The operator deployed `finance` v29 and `needs-attention` v19 from
+>     commit `5d6f97d`. Both are ACTIVE with verify_jwt true, and both
+>     deployed `index.js` files are byte-identical to the committed
+>     artifacts.
+>   - Every item in the live proof passed against TEST:
+>     - setting read / write;
+>     - validation;
+>     - the access matrix;
+>     - exactly one audit event per change;
+>     - the pre-start, start and later months;
+>     - the comparison;
+>     - the Overview;
+>     - the F19 refusal and the canonical sync;
+>     - F17 Cash Flow unchanged;
+>     - operational records unchanged;
+>     - no legacy data.
+>   - **Resting TEST Finance Reporting Start Month = `2026-09`.**
+>     - It is TEST-only, chosen as the first month of the F18 / F19 TEST
+>       fixture world, so the boundary stays visible in TEST.
+>     - It is **not** a production value. No production start month was
+>       chosen or set.
+>   - Post-proof checks:
+>     - all 57 `tests/support` suites pass;
+>     - both bundle checks MATCH;
+>     - `npm test` 89/89.
+>   - **Operator closure resolved.** The temporary View grant is revoked.
+>     The single resting grant is Manage
+>     `0595bf70-c600-4550-b777-da583da40b80`. Harness tokens are cleared
+>     (FIN20.20).
+>   - Production untouched. F21 / F22 not started. REAL GOOGLE WRITE
+>     remains NOT PROVEN.
 > - **Build (FIN20.5–FIN20.12), on the locked decisions D1–D9.**
 >   - No legacy history exists to import, so **nothing was imported** and
 >     no import infrastructure was built.
@@ -24139,7 +24171,8 @@ is untouched. F20 / F21 were not started.
 >     unchanged.
 >   - Live TEST stays `finance` v28 / `needs-attention` v18; the new field
 >     is ignored there.
->   - **Not live-proven.**
+>   - *(Superseded: deployed by the operator and live-proven — see the
+>     first bullet and FIN20.13–FIN20.21.)*
 > - **Audit (FIN20.1–FIN20.4).**
 >   - The audit made no code, schema, data or deployment changes.
 > - TEST stays at `finance` v28 / `needs-attention` v18 /
@@ -24489,7 +24522,10 @@ message }`.
   | `supabase/deploy-artifacts/finance/index.js` | 749,213 | `43657c6d97a85a324c20bd08a79cb0b952b50006997e8e0322c5251718ae1249` | v29; was 746,061 on v28 |
   | `supabase/deploy-artifacts/needs-attention/index.js` | 215,265 | `9c6989680003dcc2cf2f9d80d056b68a490c8d8349fd6d2bbeb16944a565dc7e` | v19; rebuilt only for the shared `finance-settings.ts`; was 214,784 on v18 |
 
-### FIN20.8 Deployment checkpoint (operator)
+### FIN20.8 Deployment checkpoint (operator) — DONE
+
+> **Done 2026-10-03.** The operator deployed `finance` v29 and
+> `needs-attention` v19 from commit `5d6f97d`. Verified in FIN20.13.
 
 1. Deploy `finance` v29 from the committed artifact (verify_jwt true, as
    v28). Check the deployed `index.js` sha256 against the manifest.
@@ -24527,6 +24563,8 @@ setting has no effect.
 
 ### FIN20.10 Resting TEST state (build)
 
+> Superseded by the post-proof resting state in FIN20.20.
+
 - **Functions:** `finance` v28 / `needs-attention` v18 / `sheets-sandbox`
   v1 (v29 / v19 await the operator).
 - **Airtable TEST:**
@@ -24561,8 +24599,11 @@ setting has no effect.
 
 ### FIN20.12 Debt
 
-- **Operator deploy** of `finance` v29 / `needs-attention` v19, then the
-  FIN20.9 live proof.
+- ~~Operator deploy of `finance` v29 / `needs-attention` v19, then the
+  FIN20.9 live proof.~~ **Done** (FIN20.8, FIN20.13–FIN20.21).
+- ~~Operator closure: revoke the temporary View grant (stalled at the
+  confirmation gate) and restore the Manage grant.~~ **Resolved** by the
+  operator: Manage `0595bf70-c600-4550-b777-da583da40b80` (FIN20.20).
 - **Frontend:**
   - `management.js`'s legacy dashboard must be relabelled "run-rate model"
     or retired; it decrypts the run-rate `Financials` CSV and labels it
@@ -24574,3 +24615,310 @@ setting has no effect.
 - **Comparison wording:** the Month Report's top-level `previousMonth`
   field still names the previous calendar month. The `comparison` object
   is what says it is unavailable.
+- **TEST start month:** the resting TEST value `2026-09` is a TEST
+  fixture choice. Clear it or change it only by a deliberate, audited
+  Settings change.
+- **Log evidence:** the function log stream does not record the
+  Overview's internal call to `needs-attention`, for either month
+  (FIN20.16). That proof therefore rests on the response bodies and the
+  code path, not on logs.
+- **Unchanged:** REAL GOOGLE WRITE remains NOT PROVEN. `f2probe`
+  harness cleanup remains an operator item.
+
+### FIN20.13 Live proof — deployment and baseline (2026-10-03, TEST only)
+
+**Harness.** The `f2probe` pg_net harness ran on Supabase TEST
+`dkqubldmfyeuudecxmvh` (logins manager / coach.a / parent.a). No fake
+legacy data was created.
+
+**Deployment.**
+- `finance` v29: ACTIVE, verify_jwt true. Its deployed `index.js` is
+  byte-identical to the committed artifact (749,213 bytes, sha256
+  `43657c6d…1249`).
+- `needs-attention` v19: ACTIVE, verify_jwt true. Byte-identical
+  (215,265 bytes, sha256 `9c698968…5dc7e`).
+
+**Baseline before any F20 change** (setting `reportingStartMonth` null,
+F18 canonical):
+
+| Month | Mode | Net revenue | Direct costs | Overheads | Final profit |
+|---|---|---|---|---|---|
+| 2026-08 | Actual | 0.00 | — | — | −1793.00 |
+| 2026-09 | Actual | 90.00 | — | — | −6902.99 |
+| 2026-09 | Expected | 1842.00 | — | — | −5240.99 |
+| 2026-10 | Actual | 0.00 | −60.00 | 6915.50 | −6855.50 |
+| 2026-10 | Expected | 1030.00 | 1819.75 | 7230.50 | −8020.25 |
+| 2026-11 | Actual | 0.00 | 0.00 | 4070.00 | −4070.00 |
+| 2026-11 | Expected | 541.00 | 450.00 | 7885.00 | −7794.00 |
+
+**Baseline marks:**
+- `fin_hash_ng` = `9ebaa586d4081efbcc9c3b76b6ade094` (unchanged since
+  F19);
+- F19 runs 22;
+- sandbox requests 106;
+- Finance audit events 537.
+
+### FIN20.14 Setting, validation, access matrix and audit
+
+**Read / write.**
+- `GET /finance/settings` (Manage) returns `reportingStartMonth`.
+- S1: Manage `POST /finance/settings` `{settings:{reportingStartMonth:"2026-10"}, reason}`
+  → 200, revision 24 → 25.
+
+**Audit: exactly one event per change.**
+- Each change wrote exactly one `finance_settings.updated` event, with:
+  - `before.settings.reportingStartMonth` → `after.settings.reportingStartMonth`;
+  - `before.revision` → `after.revision`;
+  - `changedFields: [reportingStartMonth]`;
+  - the reason;
+  - actor = manager, organisation `ORG-TEST-001`.
+- The three proof changes:
+  - S1: `null → 2026-10`, revisions 24 → 25, 07:40:06Z;
+  - S2: `2026-10 → 2026-12`, revisions 25 → 26, 07:42:53Z;
+  - S3: `2026-12 → 2026-09`, revisions 26 → 27, 07:44:03Z.
+- Finance audit grew 537 → 541: these 3 events plus 1
+  `finance_reporting.synced` for the canonical F19 sync in FIN20.16.
+- Every rejected / denied probe wrote **no** audit.
+
+**Validation.** All of these → 400 `invalid_settings` with a field error,
+and no write:
+- `2026-13`;
+- `2026-9`;
+- `Sep 2026`;
+- `1999-12` (below 2000-01);
+- `2101-01` (above 2100-12);
+- `2026-10-01`;
+- `202610`.
+
+**Access matrix:**
+
+| Caller | settings GET | settings POST | month-report | overview | F19 sync |
+|---|---|---|---|---|---|
+| Manage | 200 | 200 | 200 | 200 | 200 / 409 (FIN20.16) |
+| View (temporary grant) | 200, `access:view`, value `2026-09` | 403 `finance_manage_required` | 200 (Aug `history_unavailable`; Sep canonical, comparison unavailable) | 200 | 403 `finance_manage_required` |
+| No grant | 403 `finance_access_denied` | 403 `finance_access_denied` | 403 `finance_access_denied` | 403 `finance_access_denied` | — |
+| Coach / Parent | 403 `management_required` | 403 `management_required` | 403 `management_required` | 403 `management_required` | — |
+| Module off (Feature Controls `module_finance` Enabled = false) | 403 `finance_module_disabled` | 403 `finance_module_disabled` | 403 `finance_module_disabled` | 403 `finance_module_disabled` | — |
+
+**Tenant override.** These all → 400 `tenant_param_rejected`:
+- `organisationId` in the POST body;
+- `organisationId` inside the `settings` object;
+- a tenant key on the month-report query;
+- a tenant key on the settings query.
+
+**Module and grants.** The module was switched back ON at once. The
+temporary View / no-grant states were plain, WHERE-scoped grant changes
+(see FIN20.20).
+
+### FIN20.15 Pre-start, start and later months; comparison
+
+**Pre-start month** (start `2026-10`, `GET month-report?month=2026-09`,
+both modes):
+- 200, about 515 bytes;
+- `reportingState: "history_unavailable"`, `source: "pre_hub"`;
+- `financeReportingStartMonth: "2026-10"`;
+- `reason: "hub_finance_not_authoritative_for_period"`;
+- `figures: null`;
+- message "Hub Finance records start from October 2026. There is no Hub
+  Finance report for September 2026."
+
+No figure keys and no money values of any kind were present (never a
+£0.00 report). `2025-06` behaved the same.
+
+**No Finance source data for a pre-start month.** The orchestrator reads
+settings first and returns before `loadSources`, so no Finance ledgers
+are read.
+
+**Start month** (`2026-10`, both modes):
+- The F18 body is identical to the baseline except:
+  - the boundary metadata (`reportingState: "canonical"`,
+    `financeReportingStartMonth`);
+  - the `comparison` object.
+- Actual and Expected + Actual totals equal the baseline exactly:
+  −6855.50 and −8020.25, with net revenue, direct costs and overheads as
+  in FIN20.13.
+- The comparison is
+  `{available:false, previousMonth:"2026-09", reason:"previous_month_before_reporting_start", financeReportingStartMonth:"2026-10"}`,
+  with message "No previous-month comparison: Hub Finance records start
+  from October 2026."
+
+**Later month** (`2026-11`, both modes): body **and** comparison are
+identical to the baseline (F18 unchanged).
+
+**After S3** (start `2026-09`):
+- Aug is `history_unavailable`.
+- Sep is canonical (Actual profit −6902.99, as the baseline), with its
+  comparison unavailable.
+- Oct's comparison is available again, with previous profit −6902.99.
+
+### FIN20.16 Overview and F19 interaction
+
+**Overview, pre-start month.**
+- 200 `history_unavailable`, `metrics: null`.
+- No `upcomingPayments`, `cashSummary`, `needsAttention` or
+  `completeness` keys, and no money values.
+- Re-proved at the resting value: `overview?month=2026-08` → 200
+  `history_unavailable`, with no `needsAttention` key.
+
+**Overview, current month.**
+- Identical to the baseline except `financeReportingStartMonth` and the
+  live `needsAttention` block (status ok, total 0).
+- Re-proved at the resting value: 200 canonical, NA status ok, total 0.
+
+**No Needs Attention request for a pre-start month.** `readFinanceOverview`
+returns the `history_unavailable` body *before* the Needs Attention
+promise is created. The function log stream does not record the
+Overview's internal `needs-attention` sub-call for either month, so the
+proof is:
+- the code path;
+- the response bodies: the pre-start body has no NA key at all, while
+  the current-month body carries a live NA result.
+
+**F19, pre-start sync.** `POST reporting/google-sheets/sync {month:"2026-09"}`
+with start `2026-10` → **409 `reporting_history_unavailable`**: "Hub
+Finance records start from October 2026. 2026-09 is before it, so there
+is no Hub Finance report to export - nothing was written to the
+workbook". Nothing else happened:
+- no run row (runs stayed 22);
+- no `sheets-sandbox` call (sandbox count unchanged, and no sandbox
+  entries in the function logs);
+- no audit event;
+- WB01 doc / data hashes unchanged;
+- locks 0.
+
+**F19, canonical sync.** `{month:"2026-10"}` → 200.
+- Run `FRS-6BFDD5CEE4DA` succeeded with 6 Google API requests (all to
+  the sandbox).
+- The control totals match F18 exactly: Actual −6855.50 / Expected
+  −8020.25.
+- The Oct rows are identical to the previous export.
+- The existing Sep rows are untouched. They are the earlier genuine
+  export (−6902.99); F20 never deletes or rewrites exported history.
+- Exactly 1 new run (22 → 23) and 1 `finance_reporting.synced` audit;
+  locks 0.
+
+### FIN20.17 F17 Cash Flow unchanged
+
+At start `2026-10`, these were identical to the baseline:
+- `cash-flow?range=3m&view=position`;
+- `cash-flow?range=3m` (timeline);
+- the Needs Attention cases.
+
+At S2 (a **future** start month, `2026-12`):
+- Cash Flow was still identical. The reporting boundary never touches
+  Cash Flow.
+- The current-month Overview was `history_unavailable` ("Hub Finance
+  records start from December 2026.").
+
+### FIN20.18 Operational boundaries
+
+- **Snapshots.** X1 (at start `2026-12`) and X2 (after S3 = `2026-09`)
+  are byte-identical for all six routes:
+  - `receivables`;
+  - `receipts?from=2026-08-01&to=2026-10-31`;
+  - `coach-summaries`;
+  - `coach-cost-facts?from=2026-08&to=2026-11`;
+  - `revenue-corrections?from=2026-08-01&to=2026-10-31`;
+  - `family-credits`.
+- **Hash.** `fin_hash_ng` stayed `9ebaa586d4081efbcc9c3b76b6ade094` from
+  baseline to end. It covers every `finance%` business table (invoices,
+  payments, Coach Months, suppliers / agreements / instalments, credits,
+  employment, balances) except audit / reporting / locks / grants.
+- **Result.** No invoice, payment, Coach Month, supplier agreement,
+  credit, employment record or Needs Attention case was created, edited
+  or deleted.
+
+### FIN20.19 No legacy import
+
+- **Tables:** none whose name matches
+  `legacy|import|run_rate|runrate|historical|history_month|pnl_archive`
+  in any schema.
+- **Data:** a row-level scan of every `public.finance*` table found zero
+  rows containing:
+  - the run-rate figures (`14478.00` / `1447800`, `2940.64` / `294064`);
+  - `legacy`;
+  - `run rate`.
+- **Repo:** the only match for those patterns in the Finance / NA code,
+  SQL or tests is test BD30, which asserts that they are absent.
+- **Reports:** no legacy figure is ever shown as Actual. Pre-start months
+  carry `figures: null`.
+
+### FIN20.20 Resting TEST state (final, F20 complete)
+
+**Functions:** `finance` v29 / `needs-attention` v19 / `sheets-sandbox`
+v1, all ACTIVE.
+
+**Airtable TEST `appQktredAuGa1X7e`:**
+- Finance module ON (Feature Controls `recI5wFXcjUfY6BXy`, Enabled =
+  true, re-read after closure);
+- Europe/London (the live Overview reports organisation timezone
+  `Europe/London`);
+- Finance Settings `Finance Reporting Start Month`
+  (`fldaLDaNcne3J7LUt`) = **`2026-09`** (revision 27), re-read after
+  closure.
+
+**Final counters:**
+- F19 runs 23;
+- Finance audit 541;
+- `fin_hash_ng` `9ebaa586d4081efbcc9c3b76b6ade094` (unchanged from the
+  F20 baseline).
+
+**Final TEST Finance Reporting Start Month = `2026-09`.**
+- It is the first month of the F18 / F19 TEST fixture world. TEST
+  overheads begin in July, but Sep is the first month with Actual
+  revenue (90.00) in the fixtures.
+- It was chosen deliberately so that TEST keeps showing both sides of the
+  boundary (Aug = history unavailable; Sep = canonical, comparison
+  unavailable).
+- It is **TEST-only and not a production value**. No production start
+  month was chosen or set.
+
+**Supabase TEST:**
+- **Grants:** exactly one active Finance grant for the manager
+  (`285f819e…`, `ORG-TEST-001`). It is also the only active Finance
+  grant in TEST:
+  - Manage **`0595bf70-c600-4550-b777-da583da40b80`**;
+  - granted_by `f20-live-proof`;
+  - note "F20 proof: Manage restored (deliberate resting grant)".
+
+  The proof's earlier grants are revoked:
+  - Manage `37afc9ba-8135-4958-b5d6-5472e91658f8` (F19 resting grant),
+    revoked 07:47:05Z for the no-grant probe;
+  - temporary View `1a69d47e-d96e-4e08-918d-919d299af688`, revoked
+    08:17:31Z.
+- **Operator item (resolved).** The plain, WHERE-scoped UPDATE that
+  revoked the temporary View grant stalled twice at the MCP
+  destructive-statement confirmation gate. It was never routed around:
+  the operator applied that revoke and the Manage restore. A post-closure
+  check confirmed the grant state above, and a live
+  `GET /finance/settings` → 200 `access: manage`,
+  `reportingStartMonth: 2026-09`, revision 27.
+- **F19:** WB01 `SBX_F19_TEST_REPORTING_WB01` connected (last sync
+  succeeded); 23 runs; 112 sandbox requests (106 + 6); Finance write /
+  settings locks 0; no active emulator faults (all sheets / Stripe fault
+  rows exhausted, `remaining` 0).
+- **Harness:** `f2probe.tokens` cleared (0 of 3 set). `f2probe`
+  cleanup itself remains an operator item.
+- **No legacy tables.**
+
+**Google:** no real Google workbook was read or written. REAL GOOGLE
+WRITE remains NOT PROVEN.
+
+**Production** (Airtable `apprptFotQuVL1mhs`, Supabase
+`bkkukymqaxawnudoxdjs`): untouched.
+
+### FIN20.21 Post-proof checks
+
+- `tests/support`: all 57 suites pass. The focused ones:
+  - F20 boundary 47/47;
+  - F19 Sheets 99/99;
+  - F18 month report 124/124;
+  - F17 cash flow 97/97;
+  - settings 103/103;
+  - all 19 finance suites pass.
+- `build-finance-bundle --check` and `build-needs-attention-bundle --check`:
+  MATCH (sha256 `43657c6d…1249` / `9c698968…5dc7e`).
+- `npm test`: 89/89 test files.
+- No code changed in the live-proof phase.
+
+**F20 = COMPLETE IN TEST.** F21 / F22 not started.
