@@ -182,6 +182,9 @@
  *   GET  /overview[?month=YYYY-MM]                               ACTUAL-only headline figures + Needs Attention counts (one call
  *                                                                to needs-attention as the caller) + Upcoming Payments + optional
  *                                                                F17 cash summary (F2 setting overviewCashSummaryVisible)
+ *   F20 reporting boundary (F2 setting reportingStartMonth, "Finance Reporting Start Month", POST /settings, Manage):
+ *   a month before it returns reportingState "history_unavailable" (no figures - never a 0.00 report), the start
+ *   month's previous-month comparison is unavailable, and F19 refuses to export a pre-start month. No legacy import.
  *
  * F19 Google Sheets reporting writer (Finance read = GET, Finance manage = POST): Hub -> Sheets ONLY, one-way; the
  * figures are the canonical F18 Month Report (never recalculated); only the "Hub ·" tabs are ever written; the

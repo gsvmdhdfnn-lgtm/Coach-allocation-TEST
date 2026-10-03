@@ -72,6 +72,7 @@ const FULL: FinanceSettings = {
   estimateReminderDays: null,
   cashSafetyThresholdMinor: 500000,
   overviewCashSummaryVisible: false,
+  reportingStartMonth: "2026-09",
 };
 const storedRow = (s: FinanceSettings, over: Record<string, unknown> = {}, id = "recSettingsRow001") => ({
   id,

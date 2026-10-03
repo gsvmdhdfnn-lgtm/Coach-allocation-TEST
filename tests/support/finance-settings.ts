@@ -34,7 +34,14 @@
  *     (DEFAULT_ESTIMATE_REMINDER_DAYS, 3 days); never affects completeness;
  *   - cash safety threshold (F17): optional, in pence. When set, Cash Flow
  *     flags a projected bank balance below it (and Needs Attention ATT-054
- *     may raise it). Blank = no cash-risk warning; never affects completeness.
+ *     may raise it). Blank = no cash-risk warning; never affects completeness;
+ *   - Finance Reporting Start Month (F20): optional YYYY-MM - the first
+ *     calendar month for which the Hub's canonical Finance (F18) is the
+ *     authoritative management-reporting record. Months before it have no
+ *     Hub Finance report ("history unavailable", never a 0.00 report). A
+ *     reporting boundary only: it never hides, filters or deletes
+ *     operational records and never changes Cash Flow. Blank = no boundary
+ *     (every month is reported as before); never affects completeness.
  * Optional integration connections (Stripe / Xero / Sheets) are not
  * settings here and never affect completeness (nor does the numbering
  * choice: issuing an invoice checks it). Choosing "xero" connects nothing.
@@ -65,6 +72,7 @@ export const SETTINGS_KEYS = [
   "estimateReminderDays",
   "cashSafetyThresholdMinor",
   "overviewCashSummaryVisible",
+  "reportingStartMonth",
 ] as const;
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 
@@ -88,6 +96,8 @@ export interface FinanceSettings {
   cashSafetyThresholdMinor: number | null;
   /** F18: show the compact F17 cash summary on Finance Overview (null = the default, shown). Optional - never part of completeness. */
   overviewCashSummaryVisible: boolean | null;
+  /** F20: Finance Reporting Start Month (YYYY-MM) - the first month Hub Finance is authoritative for reporting (null = no boundary). Optional - never part of completeness. */
+  reportingStartMonth: string | null;
 }
 
 /** Who assigns the official (customer-facing) invoice number. Explicit - never inferred from whether a number exists. */
@@ -113,6 +123,7 @@ export const EMPTY_SETTINGS: FinanceSettings = Object.freeze({
   estimateReminderDays: null,
   cashSafetyThresholdMinor: null,
   overviewCashSummaryVisible: null,
+  reportingStartMonth: null,
 });
 
 // ---------------------------------------------------------------------
@@ -145,6 +156,7 @@ export const FIELD_NAMES: Record<SettingsKey, string> = {
   estimateReminderDays: "Estimate Reminder Days",
   cashSafetyThresholdMinor: "Cash Safety Threshold (Pence)",
   overviewCashSummaryVisible: "Show Cash Summary on Finance Overview",
+  reportingStartMonth: "Finance Reporting Start Month",
 };
 
 const VAT_REGISTRATION_CHOICES = { registered: "Registered", notRegistered: "Not registered" } as const;
@@ -153,6 +165,11 @@ const AUTHORITY_CHOICES: Record<InvoiceNumberAuthority, string> = { hub: "Hub", 
 const CASH_SUMMARY_CHOICES = { shown: "Shown", hidden: "Hidden" } as const;
 /** F18: the Overview cash summary is shown unless Management chose to hide it. */
 export const overviewCashSummaryShown = (s: Pick<FinanceSettings, "overviewCashSummaryVisible"> | null): boolean => s?.overviewCashSummaryVisible !== false;
+/** F20: a calendar month YYYY-MM in 2000-2100 (the same range the Month Report accepts). */
+export const REPORTING_START_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+/** YYYY-MM strings compare correctly as text. */
+export const REPORTING_START_MONTH_MIN = "2000-01";
+export const REPORTING_START_MONTH_MAX = "2100-12";
 
 // ---------------------------------------------------------------------
 // Per-field validation (shared by request input AND stored values)
@@ -194,6 +211,15 @@ function int(v: unknown, min: number, max: number): FieldCheck {
   return { ok: true, value: v };
 }
 
+function reportingMonth(v: unknown): FieldCheck {
+  if (v === null) return { ok: true, value: null };
+  if (typeof v !== "string") return { ok: false, error: "must be a calendar month YYYY-MM or null" };
+  const s = v.trim();
+  if (!s) return { ok: true, value: null };
+  if (!REPORTING_START_MONTH_RE.test(s) || s < REPORTING_START_MONTH_MIN || s > REPORTING_START_MONTH_MAX) return { ok: false, error: "must be a calendar month YYYY-MM (2000-2100) or null" };
+  return { ok: true, value: s };
+}
+
 export const FIELD_VALIDATORS: Record<SettingsKey, (v: unknown) => FieldCheck> = {
   invoiceLegalName: (v) => text(v, 200),
   invoiceAddress: (v) => text(v, 500, { multiline: true }),
@@ -211,6 +237,7 @@ export const FIELD_VALIDATORS: Record<SettingsKey, (v: unknown) => FieldCheck> =
   estimateReminderDays: (v) => int(v, 0, ESTIMATE_REMINDER_DAYS_MAX),
   cashSafetyThresholdMinor: (v) => int(v, 0, MAX_MINOR),
   overviewCashSummaryVisible: (v) => (v === null || typeof v === "boolean" ? { ok: true, value: v } : { ok: false, error: "must be true, false or null" }),
+  reportingStartMonth: (v) => reportingMonth(v),
 };
 
 /** Rules across fields, checked on the MERGED result of an update. Empty object = consistent. */

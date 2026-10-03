@@ -20,6 +20,12 @@
  * financial figures. The optional cash summary is F17's own engine over the
  * same loaded ledgers (never recalculated here). Stripe is read through F10's
  * own route function only to show the EXCLUDED parent revenue amount.
+ *
+ * F20 reporting boundary: Finance Settings are read FIRST. A month before the
+ * organisation's Finance Reporting Start Month loads no Finance source at all
+ * and returns a "history unavailable" state (never a 0.00 report); for the
+ * start month itself the previous-month comparison is unavailable. From the
+ * start month on, every figure is F18's, unchanged (finance-reporting-boundary.ts).
  */
 import type { FinanceCaller, OrganisationContext } from "./finance-access.ts";
 import { authorizeFinance } from "./orchestrator.ts";
@@ -27,6 +33,7 @@ import { type CommercialDeps, loadWorld } from "./finance-commercial-orchestrato
 import { todayIn } from "./finance-commercial.ts";
 import type { Row, World } from "./finance-commercial-mapping.ts";
 import { type FinanceSettings, fromStoredRow, overviewCashSummaryShown } from "./finance-settings.ts";
+import { HISTORY_UNAVAILABLE_CODE, REPORTING_STATE_CANONICAL, boundaryOf, comparisonUnavailable, historyUnavailable, previousMonthBeforeStart, startMessage } from "./finance-reporting-boundary.ts";
 import { loadSettingsRows } from "./finance-settings-repository.ts";
 import { resolveOccurrenceBilling } from "./finance-billing.ts";
 import { FB, buildOverrides, occurrenceFacts } from "./finance-billing-mapping.ts";
@@ -103,13 +110,29 @@ interface Loaded {
   overrideRows: Row[];
 }
 
-/** Every source for [first day of the previous month .. last day of `month`], each family once. */
-async function loadSources(deps: MonthReportDeps, org: OrganisationContext, month: string, today: string): Promise<Loaded | MRFail> {
+/** F20: Finance Settings first (the reporting boundary decides whether any Finance source is read at all). */
+async function boundarySettings(deps: MonthReportDeps, org: OrganisationContext): Promise<FinanceSettings | null | MRFail> {
+  try {
+    return await settingsOf(deps, org);
+  } catch (e) {
+    console.error(e);
+    return unavailable();
+  }
+}
+
+/** F20: the reporting boundary for one month of an already-authorised organisation (used by F19 before it records a run). */
+export async function reportingBoundaryFor(deps: MonthReportDeps, org: OrganisationContext, month: string) {
+  const settings = await boundarySettings(deps, org);
+  if (isFail(settings)) return settings;
+  return boundaryOf(settings?.reportingStartMonth ?? null, month);
+}
+
+/** Every source for [first day of the previous month .. last day of `month`], each family once (settings already read by the caller). */
+async function loadSources(deps: MonthReportDeps, org: OrganisationContext, month: string, today: string, settings: FinanceSettings | null): Promise<Loaded | MRFail> {
   const from = `${previousMonth(month)}-01`;
   const to = monthEnd(month);
   try {
-    const [settings, rec, w, suppliers, overheads, months, costWorld, windowLines, draftLineRows] = await Promise.all([
-      settingsOf(deps, org),
+    const [rec, w, suppliers, overheads, months, costWorld, windowLines, draftLineRows] = await Promise.all([
       loadOrganisationReceivableRows(deps.airtable, org.recordId),
       loadWorld(deps, org, today),
       loadSupplierLedger(deps.grants, org.organisationId),
@@ -119,7 +142,6 @@ async function loadSources(deps: MonthReportDeps, org: OrganisationContext, mont
       listInvoiceLineRowsInWindow(deps.airtable, org.recordId, from, to),
       listIncludedDraftLineRowsInWindow(deps.airtable, org.recordId, from, to),
     ]);
-    if (isFail(settings)) return settings;
     if ("status" in w) return fail(w.httpStatus === 503 ? 503 : 409, w.code, w.error);
     const invoiceIds = [...new Set(windowLines.map((r) => String(r.fields["Invoice ID"] ?? "")).filter((x) => x))];
     const serviceIds = w.world.services.map((s) => s.value.serviceId);
@@ -344,12 +366,19 @@ export async function readMonthReport(deps: MonthReportDeps, caller: FinanceCall
   const at = now(deps);
   const today = todayIn(org.timezone, at);
   const month = q.month ?? today.slice(0, 7);
-  const [L, parent] = await Promise.all([loadSources(deps, org, month, today), parentRevenueOf(deps, caller, month)]);
+  const settings = await boundarySettings(deps, org);
+  if (isFail(settings)) return settings;
+  const startMonth = settings?.reportingStartMonth ?? null;
+  const head = { contract: MONTH_REPORT_CONTRACT, organisation: { organisationId: org.organisationId, name: org.name, timezone: org.timezone }, access: auth.access, currency: "GBP", today };
+  const boundary = boundaryOf(startMonth, month);
+  if (boundary.state !== REPORTING_STATE_CANONICAL) return { status: "ok", httpStatus: 200, body: { ...head, mode: q.mode, ...historyUnavailable(month, boundary.financeReportingStartMonth) } };
+  const [L, parent] = await Promise.all([loadSources(deps, org, month, today, settings), parentRevenueOf(deps, caller, month)]);
   if (isFail(L)) return L;
   try {
     const report = buildMonthReport(inputsOf(L, org, month, today, at, parent), q.mode, { generatedAt: at.toISOString(), organisationName: org.name });
     const { _figures, ...body } = report;
-    return { status: "ok", httpStatus: 200, body: { contract: MONTH_REPORT_CONTRACT, organisation: { organisationId: org.organisationId, name: org.name, timezone: org.timezone }, access: auth.access, currency: "GBP", today, ...body } };
+    const comparison = startMonth !== null && previousMonthBeforeStart(startMonth, month) ? comparisonUnavailable(month, q.mode, startMonth) : body.comparison;
+    return { status: "ok", httpStatus: 200, body: { ...head, reportingState: REPORTING_STATE_CANONICAL, financeReportingStartMonth: startMonth, ...body, comparison } };
   } catch (e) {
     const df = dataFail(e);
     if (df) return df;
@@ -368,7 +397,11 @@ export async function readMonthReport(deps: MonthReportDeps, caller: FinanceCall
 export async function loadCanonicalMonth(deps: MonthReportDeps, caller: FinanceCaller, org: OrganisationContext, month: string) {
   const at = now(deps);
   const today = todayIn(org.timezone, at);
-  const [L, parent] = await Promise.all([loadSources(deps, org, month, today), parentRevenueOf(deps, caller, month)]);
+  const settings = await boundarySettings(deps, org);
+  if (isFail(settings)) return settings;
+  const boundary = boundaryOf(settings?.reportingStartMonth ?? null, month);
+  if (boundary.state !== REPORTING_STATE_CANONICAL) return fail(409, HISTORY_UNAVAILABLE_CODE, `${startMessage(boundary.financeReportingStartMonth)} ${month} is before it, so there is no Hub Finance report to export`, historyUnavailable(month, boundary.financeReportingStartMonth));
+  const [L, parent] = await Promise.all([loadSources(deps, org, month, today, settings), parentRevenueOf(deps, caller, month)]);
   if (isFail(L)) return L;
   try {
     const inputs = inputsOf(L, org, month, today, at, parent);
@@ -391,6 +424,25 @@ export async function readFinanceOverview(deps: MonthReportDeps, caller: Finance
   const at = now(deps);
   const today = todayIn(org.timezone, at);
   const month = q.month ?? today.slice(0, 7);
+  const settings = await boundarySettings(deps, org);
+  if (isFail(settings)) return settings;
+  const boundary = boundaryOf(settings?.reportingStartMonth ?? null, month);
+  if (boundary.state !== REPORTING_STATE_CANONICAL) {
+    return {
+      status: "ok",
+      httpStatus: 200,
+      body: {
+        contract: OVERVIEW_CONTRACT,
+        organisation: { organisationId: org.organisationId, name: org.name, timezone: org.timezone },
+        access: auth.access,
+        currency: "GBP",
+        today,
+        ...historyUnavailable(month, boundary.financeReportingStartMonth),
+        metrics: null,
+        routes: { cashFlow: "GET /finance/cash-flow?range=3m&view=position", needsAttention: "GET /needs-attention/cases" },
+      },
+    };
+  }
   const naPromise = (async () => {
     if (!needsAttention) return { status: "unavailable" as const, reason: "not_requested" };
     try {
@@ -400,7 +452,7 @@ export async function readFinanceOverview(deps: MonthReportDeps, caller: Finance
       return { status: "unavailable" as const, reason: "needs_attention_call_failed" };
     }
   })();
-  const [L, parent] = await Promise.all([loadSources(deps, org, month, today), parentRevenueOf(deps, caller, month)]);
+  const [L, parent] = await Promise.all([loadSources(deps, org, month, today, settings), parentRevenueOf(deps, caller, month)]);
   if (isFail(L)) return L;
   const showCash = overviewCashSummaryShown(L.settings);
   // F17's cash summary: its own engine over the same ledgers; only the coach work window (today .. 3 months) is an extra read.
@@ -473,6 +525,8 @@ export async function readFinanceOverview(deps: MonthReportDeps, caller: Finance
         currency: "GBP",
         today,
         month,
+        reportingState: REPORTING_STATE_CANONICAL,
+        financeReportingStartMonth: boundary.financeReportingStartMonth,
         basis: "Actual only - Expected / forecast figures live in Month Report (Expected + Actual) and Cash Flow",
         metrics: {
           netRevenue: report.overall.netRevenue,

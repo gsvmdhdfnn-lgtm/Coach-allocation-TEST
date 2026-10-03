@@ -24116,10 +24116,32 @@ See FIN19.11 / FIN19.15. Neither real Josh workbook was read or written.
 Production (Airtable `apprptFotQuVL1mhs`, Supabase `bkkukymqaxawnudoxdjs`)
 is untouched. F20 / F21 were not started.
 
-## Finance Foundation — F20 (Legacy Finance History) — AUDIT ONLY — STOPPED BEFORE CODE (mandatory stop conditions hit) — TEST only — 2026-10-03
+## Finance Foundation — F20 (Legacy Finance History → Finance Reporting Start Month) — CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN (finance v29 + needs-attention v19 await operator) — NO LEGACY IMPORT — TEST only — 2026-10-03
 
-> **Status.**
-> - Audit complete; **no code, schema, data or deployment changes**.
+> **Status (latest first).**
+> - **Build (FIN20.5–FIN20.12), on the locked decisions D1–D9.**
+>   - No legacy history exists to import, so **nothing was imported** and
+>     no import infrastructure was built.
+>   - F20 adds one optional F2 setting, **Finance Reporting Start Month**
+>     (`reportingStartMonth`, YYYY-MM), and enforces it as the
+>     management-reporting boundary in:
+>     - the Month Report;
+>     - the Overview;
+>     - the F19 Sheets export.
+>   - **Tests:** focused suite 47/47; 13/13 mutations killed; all 57
+>     `tests/support` suites and `npm test` 89/89 pass.
+>   - **TEST Airtable:** field `Finance Reporting Start Month`
+>     (`fldaLDaNcne3J7LUt`) was added and left blank.
+>   - **Awaiting operator:** `finance` (749,213 bytes) is too large for this
+>     session's deploy tool, so **`finance` v29 and `needs-attention` v19
+>     await operator deployment**. needs-attention is rebuilt only because
+>     it bundles the shared `finance-settings.ts`; its behaviour is
+>     unchanged.
+>   - Live TEST stays `finance` v28 / `needs-attention` v18; the new field
+>     is ignored there.
+>   - **Not live-proven.**
+> - **Audit (FIN20.1–FIN20.4).**
+>   - The audit made no code, schema, data or deployment changes.
 > - TEST stays at `finance` v28 / `needs-attention` v18 /
 >   `sheets-sandbox` v1, with the F19 resting state (FIN19.16) unchanged.
 > - The legacy workbooks were read **read-only** through the Drive
@@ -24312,3 +24334,243 @@ import" plus a cutover setting**, which is the smallest safe outcome.
 
 Unchanged from FIN19.16. No legacy fixtures, tables, routes or audit
 events were created, and no workbook was modified.
+
+### FIN20.5 Decisions as built (locked 2026-10-03)
+
+- **D1 — no authoritative pre-Hub history.**
+  - Nothing is imported: not the run-rate model, not its P&L archive, not
+    the backup copy, not the Hub `EXAMPLE` rows, and not the
+    `management.js` totals.
+  - Genuine closed accounting data (Xero / accountant exports) would be a
+    future, deliberate migration.
+- **D2 — Finance Reporting Start Month.** One per-organisation F2
+  setting.
+  - Internal key `reportingStartMonth`; Airtable field
+    `Finance Reporting Start Month`.
+  - YYYY-MM, 2000-01..2100-12.
+  - Finance View reads it; Finance Manage sets it (`POST /settings`,
+    existing settings lock + revision).
+  - Audited as `finance_settings.updated`, with before / after values and
+    `changedFields`.
+  - Optional; never part of completeness.
+  - Not an integration.
+- **D3 — before the start month: no Hub report, no fabricated £0.**
+- **D4 / D5 — from the start month on, F18 is authoritative and
+  unchanged.**
+  - Nothing overrides, merges with, supplements or backfills it.
+  - Any future legacy month ≥ start must be rejected.
+- **D6 — estimates are not history.** No forecast-history system.
+- **D7 — future migrations keep their own definitions.**
+  - No recalculation with F18 rules.
+  - Cross-boundary comparison is unavailable when definitions differ.
+- **D8 — future legacy imports are monthly.** No week→month splitting.
+- **D9 — `management.js`'s dashboard is a run-rate / legacy planning
+  model.**
+  - It is never a source for the Overview, Month Report, Cash Flow or
+    historical Actuals.
+  - Relabel / retire is frontend migration debt (FIN20.12).
+
+### FIN20.6 Reporting boundary behaviour (`finance-reporting-boundary.ts`, pure)
+
+**Month order.** YYYY-MM strings compare as text.
+- `null` start = no boundary: every month behaves exactly as before F20.
+
+**`GET /month-report?month < start`** (either mode).
+- Returns 200 with:
+  `{ contract, organisation, access, currency, today, mode, month,
+  reportingState: "history_unavailable", source: "pre_hub",
+  financeReportingStartMonth, reason:
+  "hub_finance_not_authoritative_for_period", message, figures: null }`.
+- Message example: "Hub Finance records start from October 2026. There
+  is no Hub Finance report for September 2026."
+- **No `overall` / programmes / overheads / comparison / reconciliation
+  / completeness, and no money value at all.**
+- Settings are read first, and **no Finance source is loaded** for a
+  pre-start month.
+
+**`GET /month-report?month ≥ start`.**
+- F18's body, unchanged.
+- Adds `reportingState: "canonical"` and `financeReportingStartMonth`.
+
+**Start month itself.** `comparison` becomes:
+`{ available: false, previousMonth, mode, reason:
+"previous_month_before_reporting_start", financeReportingStartMonth,
+message }`.
+- No figures are compared across the boundary.
+- Later months keep F18's comparison byte-for-byte.
+
+**`GET /overview`.**
+- **Selected month < start:** the same history-unavailable state, with
+  `metrics: null` and routes to Cash Flow / Needs Attention.
+  - No Needs Attention call is made.
+  - No upcoming payments or cash summary are presented as that month.
+- **Current / default month ≥ start:** unchanged, apart from the two
+  added fields.
+- **A start month after today:** the boundary applies to the current
+  month too. This is documented; Management chooses the month.
+
+**F19 `POST /reporting/google-sheets/sync`.**
+- **Month < start:** 409 `reporting_history_unavailable` with the plain
+  message. It is refused before any run row, Google call, audit event or
+  workbook change.
+  - `loadCanonicalMonth` refuses too (defence in depth), so no fake zero
+    month can ever be written.
+  - Months exported before the boundary was set stay in the workbook
+    (nothing is deleted).
+- **Month ≥ start:** exports exactly as before.
+
+**What the setting does NOT affect.**
+- F17 Cash Flow.
+- Money In / Money Out, receivables, Coach Costs, suppliers, employment.
+- Needs Attention.
+- It is never an operational filter and deletes nothing.
+
+**Changing the setting.**
+- Moving it later just hides earlier reporting.
+- Moving it earlier exposes F18's canonical calculation for those months.
+  No backfill is invented.
+- Clearing it restores the pre-F20 behaviour exactly.
+
+### FIN20.7 Code, tests, artifacts
+
+- **Code.**
+  - `finance-settings.ts`: the key, validator (`REPORTING_START_MONTH_*`)
+    and field name.
+  - New pure `finance-reporting-boundary.ts`.
+  - `finance-month-report-orchestrator.ts`: settings first;
+    `reportingBoundaryFor`; history-unavailable Month Report / Overview;
+    first-month comparison.
+  - `finance-reporting-sheets-orchestrator.ts`: pre-run refusal.
+  - `index.ts`: doc only; **no new route**.
+  - Mirrors updated in `tests/support` (byte-identical, import paths
+    only).
+- **Tests.**
+  - **Focused:** `tests/support/finance-reporting-boundary.test.ts`,
+    **47/47**. It runs over the F19 harness and the F18 / F19 October 2026
+    fixtures. Sections:
+    - SE setting (absent baseline, valid / invalid, View / Manage / no
+      grant / Coach / Parent / module off / tenant keys / org scope, audit
+      old → new, no operational mutation);
+    - MR Month Report (pre-start unavailable without any source load,
+      start / later months byte-identical to the no-boundary baseline in
+      both modes, first-month comparison unavailable, later comparison
+      unchanged, moving earlier, clearing);
+    - OV Overview;
+    - SH F19 (refused with no run / Google call / audit; start month
+      exports byte-identical; no 2026-09 rows);
+    - BD (F17 byte-identical incl. a future start month; operational
+      stores byte-identical; no Needs Attention reference; no legacy
+      tables / import routes; pure module; production ids absent);
+    - P pure;
+    - Z drift.
+  - **Settings suite:** 103/103. The fixture gained the new key; Z5's
+    no-hard-coded-VAT-rate rule still holds, because the year bounds are
+    month strings.
+  - **Mutation: 13/13 killed.** The mutations covered:
+    - start month treated as pre-start;
+    - boundary ignored;
+    - first-month comparison kept;
+    - comparison removed everywhere;
+    - F19 pre-run check removed;
+    - `loadCanonicalMonth` check removed;
+    - Overview / Month Report boundary removed;
+    - validator open;
+    - year range unchecked;
+    - zero figures in the unavailable body;
+    - Overview leaking cash data pre-start;
+    - wrong Airtable field.
+  - **Full regression:** all 57 `tests/support` suites pass (F20 47, F19
+    99, F18 124, F17 97, F16 NA 64, F15 74, F14 78, F13 98, F12 83, F11 67,
+    F10 64, F9 75, F8b 99, F7 80, Settings 103, …); `npm test` 89/89.
+- **Artifacts** (`--check` MATCH):
+
+  | Artifact | Bytes | sha256 | Note |
+  |---|---|---|---|
+  | `supabase/deploy-artifacts/finance/index.js` | 749,213 | `43657c6d97a85a324c20bd08a79cb0b952b50006997e8e0322c5251718ae1249` | v29; was 746,061 on v28 |
+  | `supabase/deploy-artifacts/needs-attention/index.js` | 215,265 | `9c6989680003dcc2cf2f9d80d056b68a490c8d8349fd6d2bbeb16944a565dc7e` | v19; rebuilt only for the shared `finance-settings.ts`; was 214,784 on v18 |
+
+### FIN20.8 Deployment checkpoint (operator)
+
+1. Deploy `finance` v29 from the committed artifact (verify_jwt true, as
+   v28). Check the deployed `index.js` sha256 against the manifest.
+2. Deploy `needs-attention` v19 from its committed artifact (verify_jwt as
+   v18) and check its sha256.
+3. The TEST Airtable field `Finance Reporting Start Month` already
+   exists, blank. No Supabase schema change.
+
+Until then, live TEST is `finance` v28 / `needs-attention` v18 and the
+setting has no effect.
+
+### FIN20.9 Live proof plan (after the operator deploy; TEST only, no fake legacy data)
+
+1. Verify both hashes.
+2. A — `GET /settings` shows `reportingStartMonth` null.
+3. B — set TEST start month `2026-10` (Manage), then C — check the
+   `finance_settings.updated` audit (null → 2026-10).
+4. D — `GET /month-report?month=2026-09` (both modes) returns
+   `history_unavailable` with no figures.
+5. E / F — 2026-10 / 2026-11 reports equal the pre-change figures (Oct
+   Actual −6855.50 / Expected −8020.25), and G — 2026-10's comparison is
+   unavailable.
+6. H — `GET /overview?month=2026-09` is unavailable; the current month is
+   unchanged.
+7. I — F19 sync 2026-09 → 409, with no run; J — F19 sync 2026-10 succeeds,
+   WB01 byte-identical.
+8. K — Cash Flow is unchanged.
+9. L — the Finance data hash is unchanged apart from the settings row /
+   audit.
+10. M — access matrix: View reads / cannot set; no grant; Coach / Parent;
+    module off; tenant key.
+11. N — restore the TEST baseline and document the deliberate TEST start
+    month (`2026-09`, the first month of TEST Finance data, chosen only to
+    prove the boundary — **not** a production value).
+
+### FIN20.10 Resting TEST state (build)
+
+- **Functions:** `finance` v28 / `needs-attention` v18 / `sheets-sandbox`
+  v1 (v29 / v19 await the operator).
+- **Airtable TEST:**
+  - one new blank field on Finance Settings;
+  - the Finance module ON;
+  - Europe/London.
+- **Supabase TEST:** unchanged. Grants, WB01 connection, F19 history,
+  locks 0 and faults 0 are all as FIN19.16. No legacy tables.
+- **Google:** no real Google workbook was read or written by the build.
+  The audit only read the legacy workbooks, read-only.
+- **Production** (Airtable `apprptFotQuVL1mhs`, Supabase
+  `bkkukymqaxawnudoxdjs`): untouched.
+
+### FIN20.11 Future policy if genuine accounting history appears
+
+- A deliberate, separately approved migration, built only once a real
+  closed source exists (Xero / accountant export, CSV / xlsx supplied as
+  input).
+- **Shape:**
+  - monthly baseline only;
+  - immutable snapshots with import batch, source hash, dry-run then
+    commit, and void / replace versions;
+  - organisation-scoped and audited.
+- **Must be rejected:** any legacy month ≥ Finance Reporting Start Month.
+- **Definitions:** keep the source's own definitions, never recalculated
+  with F18 rules. Cross-boundary comparison is unavailable when they
+  differ.
+- **Must never happen:**
+  - creating invoices, payments, Coach Months, supplier / employment
+    records, Cash Flow events or Needs Attention cases;
+  - continuous Sheets → Hub sync.
+
+### FIN20.12 Debt
+
+- **Operator deploy** of `finance` v29 / `needs-attention` v19, then the
+  FIN20.9 live proof.
+- **Frontend:**
+  - `management.js`'s legacy dashboard must be relabelled "run-rate model"
+    or retired; it decrypts the run-rate `Financials` CSV and labels it
+    Revenue / Profit;
+  - a future Month Report UI should show the `message` text ("Hub Finance
+    records start from …").
+- **Production start month:** not chosen (Josh's real value is a
+  production decision).
+- **Comparison wording:** the Month Report's top-level `previousMonth`
+  field still names the previous calendar month. The `comparison` object
+  is what says it is unavailable.

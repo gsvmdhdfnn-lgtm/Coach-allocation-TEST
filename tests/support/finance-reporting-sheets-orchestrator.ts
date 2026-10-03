@@ -35,7 +35,8 @@
 import type { FinanceCaller, OrganisationContext } from "./finance-access.ts";
 import { authorizeFinance } from "./finance-orchestrator.ts";
 import { acquireWriteLock, releaseWriteLock } from "./finance-commercial-repository.ts";
-import { type MonthReportDeps, loadCanonicalMonth } from "./finance-month-report-orchestrator.ts";
+import { type MonthReportDeps, loadCanonicalMonth, reportingBoundaryFor } from "./finance-month-report-orchestrator.ts";
+import { HISTORY_UNAVAILABLE_CODE, REPORTING_STATE_CANONICAL, historyUnavailable, startMessage } from "./finance-reporting-boundary.ts";
 import {
   type CanonicalMonth,
   type Cell,
@@ -277,6 +278,10 @@ export function syncReporting(deps: ReportingDeps, caller: FinanceCaller, req: {
     const conn = await loadConnection(deps.grants, org.organisationId);
     if (!conn || conn.state !== "connected") return fail(409, "reporting_not_configured", "No Google Sheets reporting workbook is configured for this organisation - Finance works fully without one");
     if (conn.endpoint !== "sandbox") return GOOGLE_NOT_AVAILABLE();
+    // F20: a month before the Finance Reporting Start Month has no Hub Finance report - refuse before any run, Google call or row
+    const boundary = await reportingBoundaryFor(deps, org, req.month);
+    if (isFail(boundary)) return fail(boundary.httpStatus === 409 ? 409 : 503, boundary.code, boundary.error);
+    if (boundary.state !== REPORTING_STATE_CANONICAL) return fail(409, HISTORY_UNAVAILABLE_CODE, `${startMessage(boundary.financeReportingStartMonth)} ${req.month} is before it, so there is no Hub Finance report to export - nothing was written to the workbook`, historyUnavailable(req.month, boundary.financeReportingStartMonth));
     const runId = `FRS-${(deps.reporting?.random ?? randomHex)()}`;
     const startedAt = now(deps).toISOString();
     const started = await startRun(deps.grants, { run_id: runId, organisation_id: org.organisationId, provider: PROVIDER, endpoint: conn.endpoint, spreadsheet_id: conn.spreadsheetId, requested_month: req.month, modes: ["actual", "expected"], schema_version: SCHEMA_VERSION, writer_version: WRITER_VERSION, actor_user_id: caller.userId, started_at: startedAt });
