@@ -411,9 +411,11 @@ const LEGACY_ADMIN_PERMS = { can_edit_feedback: true, can_edit_idp: true, can_ed
  * exactly as it did in Slice 2 - Occurrence Staff never touches a date
  * it isn't linked to.
  */
-async function handlePlayers(authHeader: string | null) {
-  const caller = await resolveCaller(authHeader);
-  if (!caller) return [];
+async function handlePlayers(caller: Awaited<ReturnType<typeof resolveCaller>>) {
+  // No session -> nothing, as before. An inactive profile never reaches
+  // here (the router answers 403 first, whole-backend audit P1-1); the
+  // repeat check keeps this function fail-closed on its own.
+  if (!caller || !caller.active) return [];
 
   const [playerRows, coachRows, sessionRows, linkRows, featureRows, coachRoleRows, sessionStaffRows, occurrenceRows, occurrenceStaffRows] = await Promise.all([
     getAirtableRecords("Players"),
@@ -729,7 +731,15 @@ Deno.serve(async (req) => {
       }
       return jsonResponse(await handleSessionParticipants());
     }
-    if (route === "players") return jsonResponse(await handlePlayers(req.headers.get("Authorization")));
+    if (route === "players") {
+      // Whole-backend audit P1-1: a signed-in but inactive profile
+      // (Management, Coach or anyone else) gets no player data - the same
+      // 403 session-participants above gives. No session at all keeps its
+      // existing empty-list answer.
+      const caller = await resolveCaller(req.headers.get("Authorization"));
+      if (caller && !caller.active) return jsonResponse({ error: "Forbidden" }, 403);
+      return jsonResponse(await handlePlayers(caller));
+    }
     if (route === "" || route === "settings") return jsonResponse(await handleSettings());
 
     return jsonResponse({ error: `Unknown route: ${route}` }, 404);

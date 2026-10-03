@@ -1,4 +1,12 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import {
+  type ParentRecord,
+  ParentIdentityError,
+  createParentIdentityLock,
+  createProfileLinkStore,
+  parentErrorBody,
+  resolveParentIdentity,
+} from "./parent-identity.ts";
 
 const AIRTABLE_TOKEN = Deno.env.get("AIRTABLE_TOKEN")!;
 const AIRTABLE_BASE_ID = Deno.env.get("AIRTABLE_BASE_ID")!;
@@ -226,20 +234,12 @@ function parentFacingCoachName(displayName: any, coachName: any): string {
   return presentableName(displayName) || presentableName(coachName) || "Your coach";
 }
 
-function makeParentId(userId: string): string {
-  return "PARENT-" + userId.replace(/-/g, "").toUpperCase().slice(0, 12);
-}
-async function ensureUniqueParentId(userId: string): Promise<string> {
-  const base = makeParentId(userId);
-  let candidate = base;
-  for (let attempt = 0; attempt < 6; attempt++) {
-    const matches = await airtableFindByField(TBL_PARENTS, "Parent ID", candidate);
-    if (!matches.length) return candidate;
-    candidate = `${base}-${attempt + 1}`;
-  }
-  throw new Error("Could not generate a unique Parent ID");
-}
-
+/**
+ * The caller's own profile. `active` and `organisation_id` are read here,
+ * once, so the router can refuse an inactive profile before any route
+ * runs (whole-backend audit P1-1) and Parent identity can be serialised
+ * per organisation + user (P1-2).
+ */
 async function resolveCaller(authHeader: string | null) {
   if (!authHeader) return null;
   const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -249,7 +249,7 @@ async function resolveCaller(authHeader: string | null) {
   if (userError || !userData?.user) return null;
   const { data: profile, error: profileError } = await userClient
     .from("profiles")
-    .select("role, airtable_person_id")
+    .select("role, airtable_person_id, active, organisation_id")
     .eq("user_id", userData.user.id)
     .single();
   if (profileError || !profile) return null;
@@ -258,38 +258,56 @@ async function resolveCaller(authHeader: string | null) {
     email: userData.user.email || "",
     role: profile.role,
     airtablePersonId: profile.airtable_person_id || null,
+    active: profile.active === true,
+    organisationId: profile.organisation_id || "",
   };
 }
 
+/** One Parents & Guardians record by id: null only for a genuine 404, any other failure throws. */
+async function getParentRecordStrict(id: string): Promise<ParentRecord | null> {
+  if (!/^rec[A-Za-z0-9]{14}$/.test(id)) return null;
+  const res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${TBL_PARENTS}/${id}`, {
+    headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}` },
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Airtable read error: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
 /**
- * Finds or creates the Parents & Guardians record for this Supabase user -
+ * The single Parents & Guardians record for this Supabase user -
  * auto-provisioned on first use, same pattern as a Coach record being
  * auto-provisioned on approval. This ONLY ever creates/links the parent's
  * OWN identity record - it never touches a Player. That stays entirely
  * behind the claim+approval flow below, per the rule that parent signup
  * never directly creates or links a Player record.
+ *
+ * Serialised and fail-closed: see parent-identity.ts. Ambiguity is a 409
+ * `parent_id_ambiguous` (the router turns ParentIdentityError into a
+ * response), never a silent pick of one duplicate.
+ * profiles.airtable_person_id is filled (never overwritten) as part of
+ * resolution.
  */
-async function resolveParentRecord(userId: string, email: string) {
-  const byUserId = await airtableFindByField(TBL_PARENTS, "Supabase User ID", userId);
-  if (byUserId.length) return byUserId[0];
-
-  if (email) {
-    const byEmail = await airtableFindByField(TBL_PARENTS, "Email", email);
-    if (byEmail.length === 1) {
-      await updateAirtableRecord(TBL_PARENTS, byEmail[0].id, { "Supabase User ID": userId });
-      byEmail[0].fields["Supabase User ID"] = userId;
-      return byEmail[0];
-    }
-  }
-
-  const parentId = await ensureUniqueParentId(userId);
-  return await createAirtableRecord(TBL_PARENTS, {
-    "Parent / Guardian Name": email ? email.split("@")[0] : "New Parent",
-    "Parent ID": parentId,
-    ...(email ? { Email: email } : {}),
-    "Supabase User ID": userId,
-    Active: true,
-  });
+async function resolveParentRecord(caller: { userId: string; email: string; organisationId: string }) {
+  const service = { supabaseUrl: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY };
+  return await resolveParentIdentity(
+    {
+      parents: {
+        findByUserId: (userId) => airtableFindByField(TBL_PARENTS, "Supabase User ID", userId),
+        findByEmail: (email) => airtableFindByField(TBL_PARENTS, "Email", email),
+        findByParentId: (parentId) => airtableFindByField(TBL_PARENTS, "Parent ID", parentId),
+        get: getParentRecordStrict,
+        create: (fields) => createAirtableRecord(TBL_PARENTS, fields),
+        setUserId: async (recordId, userId) => {
+          await updateAirtableRecord(TBL_PARENTS, recordId, { "Supabase User ID": userId });
+        },
+      },
+      profiles: createProfileLinkStore(service),
+      lock: createParentIdentityLock(service),
+      log: (m) => console.error(m),
+    },
+    caller,
+  );
 }
 
 /**
@@ -849,18 +867,12 @@ async function fetchSessionRequests(): Promise<{ rows: any[]; available: boolean
   }
 }
 
-async function handleParentMe(caller: { userId: string; email: string }) {
-  const parentRecord = await resolveParentRecord(caller.userId, caller.email);
+async function handleParentMe(caller: { userId: string; email: string; organisationId: string }) {
+  const parentRecord = await resolveParentRecord(caller);
 
-  // Best-effort: keep profiles.airtable_person_id in sync so the generic
-  // /me endpoint also reflects it, same field Coach approval writes -
-  // only fills it if still empty, never overwrites an existing link.
-  try {
-    const service = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-    await service.from("profiles").update({ airtable_person_id: parentRecord.id }).eq("user_id", caller.userId).is("airtable_person_id", null);
-  } catch (e) {
-    console.error("Could not sync profiles.airtable_person_id", e);
-  }
+  // profiles.airtable_person_id (the same field Coach approval writes) is
+  // filled - never overwritten - inside resolveParentRecord() itself now,
+  // on every parent route rather than best-effort on this one only.
 
   const [linkRows, playerRows, sessionRows, sessionLinkRows, sessionRequests, venueRows, occurrenceRows, sessionStaffRows, coachRows, coachRoleRows, occurrenceStaffRows] = await Promise.all([
     getAirtableRecords(TBL_PARENT_PLAYER_LINKS),
@@ -1086,10 +1098,10 @@ async function handleParentMe(caller: { userId: string; email: string }) {
  *     a coach's unpublished draft is invisible to parents even for their
  *     own child.
  */
-async function handleParentFeedback(caller: { userId: string; email: string }, playerRecordId: string) {
+async function handleParentFeedback(caller: { userId: string; email: string; organisationId: string }, playerRecordId: string) {
   if (!playerRecordId) return jsonResponse({ error: "player_record_id is required" }, 400);
 
-  const parentRecord = await resolveParentRecord(caller.userId, caller.email);
+  const parentRecord = await resolveParentRecord(caller);
   const linkRows = await getAirtableRecords(TBL_PARENT_PLAYER_LINKS);
   if (!verifiedPlayerIds(linkRows, parentRecord.id).has(playerRecordId)) {
     return jsonResponse({ error: "You can only view feedback for your own verified children." }, 403);
@@ -1236,13 +1248,13 @@ async function handleParentFeedback(caller: { userId: string; email: string }, p
  * pending for. A Rejected claim doesn't block resubmission (e.g. a typo
  * that was rejected for that reason should be fixable by trying again).
  */
-async function handleCreateClaim(caller: { userId: string; email: string }, body: any) {
+async function handleCreateClaim(caller: { userId: string; email: string; organisationId: string }, body: any) {
   const playerName = String(body?.player_name || "").trim();
   const dob = String(body?.date_of_birth || "").trim();
   const relationship = String(body?.relationship || "Parent").trim();
   if (!playerName || !dob) return jsonResponse({ error: "Child's name and date of birth are required." }, 400);
 
-  const parentRecord = await resolveParentRecord(caller.userId, caller.email);
+  const parentRecord = await resolveParentRecord(caller);
   const [allPlayers, existingLinks] = await Promise.all([
     getAirtableRecords("Players"),
     getAirtableRecords(TBL_PARENT_PLAYER_LINKS),
@@ -1417,8 +1429,8 @@ async function handleRejectClaim(linkId: string, body: any) {
  * checked against the real Player Session Requests / Player Session
  * Links tables, not a separate duplicate-tracking model.
  */
-async function handleParentSessionRequest(caller: { userId: string; email: string }, body: any) {
-  const parentRecord = await resolveParentRecord(caller.userId, caller.email);
+async function handleParentSessionRequest(caller: { userId: string; email: string; organisationId: string }, body: any) {
+  const parentRecord = await resolveParentRecord(caller);
   const playerRecordId = String(body?.player_record_id || "");
   const sessionRecordId = String(body?.session_record_id || "");
   if (!playerRecordId || !sessionRecordId) return jsonResponse({ error: "Player and session are required." }, 400);
@@ -1475,6 +1487,11 @@ Deno.serve(async (req) => {
   const authHeader = req.headers.get("Authorization");
   const caller = await resolveCaller(authHeader);
   if (!caller) return jsonResponse({ error: "Invalid or expired session" }, 401);
+  // Whole-backend audit P1-1: an inactive profile keeps no Parent Hub
+  // access, whatever its role. Checked once, here, before any route - so
+  // every parent route and every Management claim action inherits it.
+  // Same 403 + code Finance uses for an inactive profile.
+  if (!caller.active) return jsonResponse({ error: "This account is not active.", code: "inactive_profile" }, 403);
 
   const url = new URL(req.url);
   const route = url.pathname.replace(/^.*\/parent-hub\/?/, "").replace(/\/$/, "");
@@ -1520,6 +1537,12 @@ Deno.serve(async (req) => {
 
     return jsonResponse({ error: "Unknown route" }, 404);
   } catch (error) {
+    // Parent identity could not be resolved to exactly one record (P1-2):
+    // an authored, parent-safe 409, never a silent pick of a duplicate.
+    if (error instanceof ParentIdentityError) {
+      console.error(error.message);
+      return jsonResponse(parentErrorBody(error), error.status);
+    }
     // Deliberately generic. Every authored 4xx above carries its own
     // parent-safe wording; this is the unexpected case, and its real
     // message can name Airtable tables, field names and status codes -
