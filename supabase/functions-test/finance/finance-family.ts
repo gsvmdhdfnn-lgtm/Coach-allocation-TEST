@@ -66,7 +66,7 @@ export type DecisionType = (typeof DECISION_TYPES)[number];
 export const POLICY_KINDS = ["manual_management_decision", "occurrence_financial_outcome", "membership_cancellation", "parent_request", "booking_policy"] as const;
 export type PolicyKind = (typeof POLICY_KINDS)[number];
 export type ExecutionState = "decided_no_return" | "credit_created" | "refund_due" | "split_refund_due";
-/** F11 writes none / awaiting_refund_action only; refund_processing / refunded / refund_failed belong to F21. */
+/** F11 writes none / awaiting_refund_action only; refund_processing / refunded / refund_failed are written by F21's execution functions. */
 export type RefundState = "none" | "awaiting_refund_action" | "refund_processing" | "refunded" | "refund_failed";
 
 export const FAMILY_EVENTS = {
@@ -318,7 +318,8 @@ export function paymentFunding(p: FamilyPayment, apps: CreditApplication[]) {
 // Returnable balance of one source
 // ---------------------------------------------------------------------
 
-export type StripeRefundFact = { refundId: string; amountMinor: number; status: string };
+/** hubDecisionId: the F11 decision an F21 refund was made for (its Stripe metadata, same organisation only), else null. */
+export type StripeRefundFact = { refundId: string; amountMinor: number; status: string; hubDecisionId?: string | null };
 export interface SourceFunding {
   sourceType: "stripe_charge" | "family_payment";
   sourceRef: string;
@@ -343,7 +344,9 @@ export function returnableOf(src: SourceFunding, decisions: RefundDecision[], st
     retainedMinor: sum(live.map((d) => d.retainedMinor)),
   };
   const matched = new Set(decisions.map((d) => d.stripeRefundId).filter(Boolean));
-  const counted = stripeRefunds.filter((r) => (r.status === "succeeded" || r.status === "pending" || r.status === "requires_action") && !matched.has(r.refundId));
+  // F21's own refunds (pending or succeeded) are already counted as their decision's card refund: never twice.
+  const hubDecisions = new Set(decisions.map((d) => d.decisionId));
+  const counted = stripeRefunds.filter((r) => (r.status === "succeeded" || r.status === "pending" || r.status === "requires_action") && !matched.has(r.refundId) && !(r.hubDecisionId && hubDecisions.has(r.hubDecisionId)));
   const externalMinor = sum(counted.map((r) => r.amountMinor));
   const creditFundedRemainingMinor = Math.max(0, src.creditFundedMinor - prior.creditRestoredMinor);
   const cardRaw = src.cardFundedMinor - prior.cardRefundMinor - prior.cardToCreditMinor - externalMinor;
@@ -501,19 +504,27 @@ export function decisionView(d: RefundDecision, credit: FamilyCredit | null, fam
     decidedAt: d.decidedAt,
     reversed: d.reversedAt ? { at: d.reversedAt, reason: d.reverseReason } : null,
     familyCreditId: credit?.creditId ?? null,
-    cash: { movedNow: m(0), expectedOutLater: d.reversedAt ? m(0) : m(d.cardRefundMinor), note: "Nothing has left the business: a card refund is only an obligation until F21 executes it in Stripe" },
+    cash: decisionCash(d),
     revenueCorrections: revenueCorrectionsOf(d, credit, tz),
     /** Technical Stripe ids, one level deeper. */
     technical: { stripeChargeId: d.stripeChargeId, stripeCustomerId: d.stripeCustomerId, stripeRefundId: d.stripeRefundId },
   };
 }
 
+/** A decision's card-refund cash position (F21 executes it; a confirmed Stripe refund settles through Stripe payouts, never a bank Cash Flow line here). */
+function decisionCash(d: RefundDecision) {
+  if (d.reversedAt || d.cardRefundMinor === 0) return { movedNow: m(0), expectedOutLater: m(0), note: "No card refund" };
+  if (d.refundState === "refunded") return { movedNow: m(0), refundedViaStripe: m(d.cardRefundMinor), expectedOutLater: m(0), note: "Refunded via Stripe (F21) - settles through Stripe payouts; not a bank Cash Flow movement here" };
+  if (d.refundState === "refund_processing") return { movedNow: m(0), expectedOutLater: m(d.cardRefundMinor), note: "Being refunded in Stripe (F21) - not refunded until Stripe confirms" };
+  return { movedNow: m(0), expectedOutLater: m(d.cardRefundMinor), note: "Nothing has left the business: a card refund is only an obligation until F21 executes it in Stripe" };
+}
+
 /** The simple parent-facing summary ("Credit available: 25.00 / Refund: 40.00 awaiting processing"). */
 export function parentSummary(owner: CreditOwner, l: Ledger) {
-  const awaiting = l.decisions.filter((d) => sameOwner(d, owner) && !d.reversedAt && d.refundState === "awaiting_refund_action");
+  const open = l.decisions.filter((d) => sameOwner(d, owner) && !d.reversedAt && (d.refundState === "awaiting_refund_action" || d.refundState === "refund_failed" || d.refundState === "refund_processing"));
   return {
     creditAvailable: m(familyBalanceMinor(owner, l)),
-    refunds: awaiting.map((d) => ({ amount: m(d.cardRefundMinor), status: "awaiting processing" })),
+    refunds: open.map((d) => ({ amount: m(d.cardRefundMinor), status: d.refundState === "refund_processing" ? "being processed" : "awaiting processing" })),
   };
 }
 
@@ -563,7 +574,7 @@ export type Invalid = { ok: false; httpStatus: 400; code: string; error: string;
 const invalid = (code: string, error: string, fields?: Record<string, string>): Invalid => ({ ok: false, httpStatus: 400, code, error, ...(fields ? { fields } : {}) });
 
 export type FamilyQuery = { ok: true; parentId?: string; state?: string; from?: string; to?: string };
-const STATES = ["decided_no_return", "credit_created", "refund_due", "split_refund_due", "awaiting_refund_action", "reversed"];
+const STATES = ["decided_no_return", "credit_created", "refund_due", "split_refund_due", "awaiting_refund_action", "refund_processing", "refunded", "refund_failed", "reversed"];
 
 export function parseFamilyQuery(route: FamilyRoute["name"], q: URLSearchParams, isTenantKey: (k: string) => boolean): FamilyQuery | Invalid {
   const keys = [...q.keys()];

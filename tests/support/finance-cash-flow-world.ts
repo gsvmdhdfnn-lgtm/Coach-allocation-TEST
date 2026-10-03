@@ -203,6 +203,9 @@ export function reset() {
   world.at["Coach Work Summaries"] = [];
   setF7({ invoices: [] });
   world.at["Finance Settings"] = [];
+  // F21 (information only in Cash Flow): F11 decisions with a card part + their Stripe refund executions.
+  world.sb.finance_refund_decisions = [];
+  world.sb.finance_stripe_refund_executions = [];
 }
 
 // ----- fake finance_bank_balance_record (same rules as finance_f17_cash_flow) -----
@@ -256,6 +259,15 @@ globalThis.fetch = (async (input: any, init: any = {}) => {
       if (e instanceof Refused17) return json({ code: "P0001", message: (e as Error).message }, 400);
       return json({ message: String(e) }, 409);
     }
+  }
+  if (/\/rest\/v1\/(finance_refund_decisions|finance_stripe_refund_executions)\?/.test(url)) {
+    // F21 reads (eq. and gt. filters); Cash Flow never writes them.
+    if (method !== "GET") return json({ message: "Cash Flow never writes F11 / F21 rows" }, 403);
+    await tick();
+    const u = new URL(url);
+    const rows = world.sb[u.pathname.split("/").pop() as string] ?? [];
+    const fs = [...u.searchParams].filter(([k]) => k !== "select" && k !== "order");
+    return json(rows.filter((r: any) => fs.every(([k, v]) => (v.startsWith("gt.") ? Number(r[k]) > Number(v.slice(3)) : String(r[k] ?? "") === v.replace(/^eq\./, "")))).map((r: any) => ({ ...r })));
   }
   if (/\/rest\/v1\/finance_bank_balances\?/.test(url) && method !== "GET") return json({ message: "f17:history_is_append_only" }, 400);
   if (/\/rest\/v1\/finance_bank_balances\?/.test(url)) {

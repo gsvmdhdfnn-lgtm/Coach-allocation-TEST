@@ -17,7 +17,8 @@
  *
  * Stripe is READ only (F10's provider, GET): the source charge, its refunds.
  * A card refund decision is an obligation ("Refund Due / awaiting refund
- * action"); no Stripe call, no cash movement, no refund receipt - F21 executes.
+ * action"); no Stripe call, no cash movement, no refund receipt - F21 executes
+ * it (finance-stripe-refunds-orchestrator.ts); F11 only reads its outcome.
  */
 import type { FinanceCaller, OrganisationContext } from "./finance-access.ts";
 import { authorizeFinance } from "./orchestrator.ts";
@@ -188,7 +189,13 @@ async function readCharge(deps: FamilyDeps, caller: FinanceCaller, chargeId: str
     status: typeof ch.status === "string" ? ch.status : "unknown",
     succeeded: ch.status === "succeeded" && ch.paid === true && amt > 0,
     disputed: ch.disputed === true,
-    refunds: r.value.map((re) => ({ refundId: String(re.id), amountMinor: Number.isSafeInteger(re.amount) ? re.amount : 0, status: typeof re.status === "string" ? re.status : "unknown" })),
+    refunds: r.value.map((re) => ({
+      refundId: String(re.id),
+      amountMinor: Number.isSafeInteger(re.amount) ? re.amount : 0,
+      status: typeof re.status === "string" ? re.status : "unknown",
+      // An F21 refund names its decision in Stripe metadata (trusted only for this organisation).
+      hubDecisionId: re.metadata?.hub_organisation_id === (s as StripeSession).org.organisationId && typeof re.metadata?.hub_refund_decision_id === "string" ? re.metadata.hub_refund_decision_id : null,
+    })),
   };
 }
 

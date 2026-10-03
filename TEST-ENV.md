@@ -24923,14 +24923,46 @@ WRITE remains NOT PROVEN.
 
 **F20 = COMPLETE IN TEST.** F21 / F22 not started.
 
-## Finance Foundation — F21 (Stripe refund execution) — AUDIT ONLY — STOPPED BEFORE CODE (decisions needed) — TEST only — 2026-10-03
+## Finance Foundation — F21 (Stripe refund execution) — CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN (finance v30 + needs-attention v20 await operator) — REAL STRIPE REFUND: NOT PROVEN — TEST only — 2026-10-03
 
-> **Status.** The brief's audit (items 1–11) was run against the repo and
-> TEST Supabase `dkqubldmfyeuudecxmvh`, read-only.
-> - **No code, schema, data, emulator or deployment change was made.**
-> - TEST stays `finance` v29 / `needs-attention` v19 /
->   `sheets-sandbox` v1 / `stripe-sandbox` v1.
-> - **Stopped:** the brief's own STOP rules triggered.
+> **Status (latest first).**
+> - **Build (FIN21.5–FIN21.13), on the locked decisions D1–D4 (2026-10-03).**
+>   - F21 executes the card part of an F11 decision in Stripe:
+>     - it copies the amount, charge and currency from the decision
+>       verbatim;
+>     - it uses two layers of idempotency;
+>     - it reconciles through a Manage-only route, with no webhooks;
+>     - only Stripe's `succeeded` counts as refunded.
+>   - A confirmed refund is **information only** in Cash Flow (it settles
+>     through Stripe payouts). The Month Report is unchanged.
+>   - **TEST schema applied:** `finance_f21_stripe_refund_execution`.
+>     - It adds the execution ledger, two atomic database functions and the
+>       refund capability on the ONE connection.
+>     - It adds the emulator's refund permission, idempotency store and
+>       refund faults.
+>     - A self-rolling-back smoke check proved every database rule
+>       (FIN21.7).
+>   - **`stripe-sandbox` v2 deployed** (TEST emulator; POST /v1/refunds
+>     added).
+>   - **Tests:**
+>     - F21 suite 91/91;
+>     - mutations 15/16 killed (the 16th is equivalent: the database
+>       function re-refuses with the same code);
+>     - F17 98/98, F11 67/67, F10 64/64;
+>     - all 58 `tests/support` suites and `npm test` 89/89 pass.
+>   - **Awaiting the operator:** the `finance` artifact (786,077 bytes) is
+>     too large for this session's deploy tool.
+>     - `finance` v30 and `needs-attention` v20 await operator deployment.
+>     - needs-attention v20 differs only in its provenance header: the
+>       shared `finance-cash-flow.ts` wording changed, but its code body is
+>       identical.
+>   - **Not live-proven.** REAL STRIPE REFUND = NOT PROVEN (emulator only).
+
+> - **Audit (FIN21.1–FIN21.4, superseded by the build).** The brief's audit
+>   (items 1–11) was run against the repo and TEST Supabase
+>   `dkqubldmfyeuudecxmvh`, read-only.
+> - The audit made no code, schema, data, emulator or deployment change.
+> - **Stopped (then resolved by D1–D4):** the brief's own STOP rules triggered.
 >   - The refund cash event's timing contradicts F17's Stripe exclusion
 >     (FIN21.3, D1).
 >   - Two further points need a decision before any execution code exists:
@@ -25127,3 +25159,357 @@ failed states, plus faults:
 
 **Needs Attention.** No new rule; record the debt for a stuck
 `refund_processing` case.
+
+### FIN21.5 Decisions as built (locked 2026-10-03)
+
+- **D1 — Cash Flow (option A).**
+  - A confirmed Stripe refund is NOT a bank Cash Flow OUT.
+  - Refund Due, pending and succeeded refunds are shown for **information
+    only** on `notIncluded.refundDue`: "Refunded via Stripe on [date] —
+    settles through Stripe payouts".
+  - The projected bank balance never moves, and no bank or payout date is
+    guessed.
+  - The old "no cash date until F21" reason is replaced. Stripe payout /
+    balance integration is debt.
+- **D2 — One connection (option A).**
+  - The organisation's ONE Stripe connection key is used. Refund permission
+    is never assumed: it is learnt from Stripe's answer and stored as
+    `refund_capability` (`unknown` / `available` / `unavailable`).
+  - A new key resets it.
+  - A 403 → `provider_permission_denied`. The decision is unchanged (back to
+    Refund Due), and the execution is never succeeded.
+  - A safe retry is possible after the permission is fixed.
+- **D3 — No webhooks (option A + refinement).**
+  - A Manage-only reconcile route reads Stripe.
+  - `pending` / `requires_action` stay processing (not success, no cash).
+  - `failed` / `canceled` → failure is recorded and audited (decision
+    `refund_failed`); a retry is allowed as a new version, because Stripe
+    released the amount.
+  - `succeeded` is terminal. `succeeded → failed` is NOT modelled: a
+    correction after a confirmed success is explicit debt.
+- **D4 — Month Report unchanged.**
+  - Parent / Stripe revenue stays out of F18 totals.
+  - F11 correction facts stay decision-date facts. F21 adds nothing to the
+    report: no refund-month revenue and no overhead.
+
+### FIN21.6 Design
+
+**Ownership.**
+- F11 decides WHAT happens: the total return, the credit part, the card
+  part and the penny.
+- F21 answers only "did Stripe refund the card money?".
+- The execution copies the decision's `card_refund_minor`,
+  `stripe_charge_id` and `currency` verbatim, and the database re-checks
+  them (`decision_mismatch`).
+- F21 never creates, restores or changes family credit: F11 created the
+  credit part at decision time, and no `finance_family_*` function is
+  called.
+
+**Execution state (one row per attempt "version"; append-only).**
+
+| status | meaning | decision `refund_state` |
+|---|---|---|
+| `processing` | reserved / in flight / Stripe `pending` or `requires_action` | `refund_processing` |
+| `outcome_unknown` | answer lost (timeout, 5xx, unreadable, mismatching response) — reconcile first | `refund_processing` |
+| `succeeded` | Stripe `succeeded` (terminal) | `refunded` + `stripe_refund_id` (set once) |
+| `failed` (no Stripe refund exists) | 401 / 403 / 429 / 400 / pre-flight refusal | back to `awaiting_refund_action` (Refund Due) |
+| `failed` (a Stripe refund exists) | Stripe `failed` / `canceled` | `refund_failed` |
+
+**Execute flow.** The whole flow holds the Finance write lock
+`commercial:{org}`:
+1. **Eligibility:** not reversed, card part > 0, not refunded, nothing in
+   flight.
+2. **Stripe connected:** otherwise 409 `stripe_not_connected`, with the
+   decision untouched.
+3. **RESERVE:** one database transaction (row + `refund_processing` +
+   audit) **before** Stripe.
+4. **Pre-flight:**
+   - read the charge (same customer, succeeded, GBP, not disputed, enough
+     left);
+   - read the charge's refunds. A live refund already carrying this
+     decision's metadata is **adopted**, never duplicated.
+5. **POST /v1/refunds** with charge, the decided amount (integer pence),
+   `reason=requested_by_customer`, and metadata `hub_organisation_id` /
+   `hub_refund_decision_id` / `hub_execution_id`.
+6. **Ambiguous answer:** look the refund up at once through the charge's
+   refund list.
+7. **RECORD:** one database transaction.
+
+Responses: 200 succeeded / 202 processing or unknown / 4xx–503 failure,
+with the execution in `details`.
+
+**Idempotency (two layers).**
+1. The stable `Idempotency-Key` `f21:{org}:{decision}:v{n}` is reused on
+   every resend of that version.
+2. The Hub metadata on every refund. Before any uncertain or late retry,
+   Stripe's refund list for the charge is searched for `hub_execution_id`.
+   A new POST is sent ONLY when that list proves no refund exists — and
+   then with the SAME key.
+
+An expired Stripe key is never taken as permission to refund again (live:
+"late retry" test).
+
+**Concurrency.**
+- The Finance write lock covers the whole call.
+- The database adds a decision row lock, a one-live-execution unique index
+  and an optimistic status check on record.
+
+Two managers at once → one refund; the other gets 409
+(`finance_commercial_busy` / `refund_execution_in_progress`).
+
+**Partial / multiple returns.**
+- Each F11 decision is executed once.
+- Stripe's `amount - amount_refunded` caps every execution (pre-flight
+  409 `insufficient_refundable`, and Stripe's own 400 `amount_too_large`).
+- F11's returnable balance counts an F21 refund once: a Stripe refund
+  whose metadata names a Hub decision is never counted again as an
+  "outside" refund.
+
+**Multi-organisation.**
+- The decision is read with `organisation_id = the caller's`; another
+  organisation's decision is a 404.
+- Stripe is called only with the caller organisation's own connection
+  key.
+- Audit rows must carry the same organisation (`audit_org_mismatch`).
+
+**Access.**
+
+| Caller | Access |
+|---|---|
+| View | GET execution |
+| Manage | execute, reconcile |
+| No grant | 403 `finance_access_denied` |
+| Coach / Parent | 403 `management_required` |
+| Module off | 403 `finance_module_disabled` |
+| Tenant key | 400 `tenant_param_rejected` |
+
+- An `amount` / `currency` / `stripeChargeId` / split field in the body →
+  400 `unexpected_field`.
+
+**Audit** (`finance_refund_execution.*`, written inside the database
+functions):
+- `started`, `pending`, `outcome_unknown`, `succeeded`, `failed`,
+  `reconciled`.
+- They carry ids, amounts, statuses and codes only — never the key or any
+  card data.
+- Status reads and refusals audit nothing.
+
+### FIN21.7 Schema (TEST migration `finance_f21_stripe_refund_execution`, applied 2026-10-03)
+
+**Tables and columns.**
+- `finance_stripe_refund_executions`:
+  - columns as in FIN21.6;
+  - RLS on, no client grants;
+  - CHECK rules: amount > 0; GBP; key = `f21:{org}:{decision}:v{version}`;
+    succeeded ⇒ refund id + provider `succeeded`; failed ⇔ failure kind +
+    failed_at; provider `failed` / `canceled` ⇒ failed;
+  - FK to the decision;
+  - unique (org, decision, version); unique key; one live
+    (processing / unknown / succeeded) per decision; a refund id once per
+    organisation;
+  - guard trigger: no DELETE; closed rows frozen; identity / amount
+    immutable; refund id set once.
+- `finance_stripe_connections` + `refund_capability` / `_at` / `_code`,
+  with a trigger that resets them when the key (secret) or status
+  changes.
+
+**Database functions** (`security definer`, execute for service_role only):
+- `finance_stripe_refund_reserve(org, decision, execution, events)`;
+- `finance_stripe_refund_record(org, execution, expected_status, result, events)`;
+- the audit helper `finance_stripe_refund_insert_audit`.
+
+**Emulator.**
+- `stripe_sandbox_accounts.refund_write` (default false).
+- `stripe_sandbox_idempotency`.
+- The fault op / mode sets are widened (`refund_create`, `idempotency`).
+
+**Live smoke** (a self-rolling-back `DO` block; everything was refused or
+behaved as designed):
+- a wrong amount → `decision_mismatch`;
+- a credit-only decision → `no_card_refund`;
+- no audit → `audit_missing`;
+- a second reserve → `execution_in_progress`;
+- an F11 reverse while processing → `f11:refund_in_progress`;
+- success without a refund id → CHECK violation;
+- a refund-id conflict → refused;
+- succeeded → decision `refunded` + refund id;
+- re-recording a closed row / UPDATE / DELETE → `execution_closed` /
+  `history_is_append_only`;
+- execute again → `already_refunded`;
+- permission denied → decision back to `awaiting_refund_action`.
+
+### FIN21.8 Emulator `stripe-sandbox` v2 (deployed 2026-10-03, verify_jwt false)
+
+- Adds POST `/v1/refunds`, form-encoded (charge, amount, reason,
+  metadata[...]):
+  - the account `refund_write` flag → 403 permission;
+  - an Idempotency-Key replays the stored creation for the same params;
+    other params → 400 `idempotency_error`;
+  - 400s: `resource_missing`, `charge_already_refunded`,
+    `amount_too_large`;
+  - `amount_refunded` counts pending + succeeded refunds.
+- **Refund faults (op `refund_create`):**
+  - `fail_500`, `rate_limit`, `permission_denied`;
+  - `timeout` (before accept), `timeout_after_accept`, `malformed` (after
+    accept);
+  - `refund_pending`, `refund_requires_action`, `refund_failed`,
+    `refund_canceled`;
+  - `refund_pending_then_succeeded` / `_failed`: settles on a read 2 s
+    later, which is Stripe's asynchronous outcome without a webhook.
+- **op `idempotency`, mode `expired`:** a stored key is ignored once,
+  which simulates Stripe's ~24 h pruning.
+- GET behaviour is unchanged (v1 reads are still served).
+- Deployed source: `supabase/functions-test/stripe-sandbox/index.ts`,
+  sha256 `13acb6f7…f5b9fb`, 23,641 bytes. An independent byte comparison
+  of the deployed file is part of the FIN21.10 verification.
+
+### FIN21.9 Code, tests, artifacts
+
+**New files:**
+- `finance-stripe-refunds.ts` (pure);
+- `finance-stripe-refund-provider.ts` (POST /refunds + GET
+  /refunds/{id} only; F10's read provider untouched and still GET-only);
+- `finance-stripe-refunds-repository.ts`;
+- `finance-stripe-refunds-orchestrator.ts`;
+- routes in `index.ts`, dispatched **before** F11.
+
+**Changed files:**
+- **F11 (read side only):**
+  - `StripeRefundFact.hubDecisionId` (from same-organisation metadata);
+  - `returnableOf` never double-counts an F21 refund;
+  - the decision `cash` note follows the refund state;
+  - the parent summary includes "being processed";
+  - the decision list accepts the F21 states.
+- **F17:**
+  - the `refundDue` wording;
+  - `notIncluded.refundDue` carries the information, through F21's pure
+    rule + database reader only (no Stripe provider is reachable from Cash
+    Flow).
+- **Month Report:** none.
+
+**Tests:**
+- `tests/support/finance-stripe-refunds.test.ts` **91/91**. It covers
+  brief items 1–58, the reconciliation / permission additions and drift
+  checks Z1–Z10. It runs the real orchestrator, repository and both HTTP
+  adapters against fake database functions (the SQL's rules) and a fake
+  Stripe with idempotency, permission and faults.
+- **Mutations 15/16 killed:**
+  - amount not verbatim;
+  - pending = success;
+  - timeout = failure;
+  - no adoption;
+  - no metadata lookup;
+  - a fresh key per retry;
+  - no refundable cap;
+  - no currency check;
+  - zero card allowed;
+  - 403 ambiguous;
+  - reconcile re-sending after success;
+  - amount mismatch accepted;
+  - View executes;
+  - F11 double count;
+  - no customer check.
+
+  The surviving mutant (removing the eligibility pre-check) is equivalent:
+  the database function refuses with the same codes.
+- **Updated suites:**
+  - F17 MI24 (Stripe calls = Stripe hosts only);
+  - F17 MI26 (new wording);
+  - F17 MI26b (refunds never change the projection, byte-identical
+    timeline);
+  - F17 Z2 (no Stripe provider import);
+  - bundle test B13 (execute is no longer 404), plus B26 (F21 routes) and
+    B27 (F21 RPCs + Idempotency-Key in the artifact).
+- **Full regression:** all 58 `tests/support` suites pass, including F20,
+  F19, F18 124/124, F17 98/98, F16, F15, F14, F13, F12, F11 67/67,
+  F10 64/64, F9, F8 and Settings. `npm test` 89/89.
+
+**Artifacts** (deterministic `--check` MATCH):
+- `finance` `index.js` 786,077 bytes, sha256
+  `144fe334f7932474109c36875349b751dbcd4c64e0d99f98218d79299ceb9973`.
+- `needs-attention` `index.js` 215,265 bytes, sha256
+  `2dd53468c0c21d0e335132227dc10704f3f7e04e178577424c56fba9d184850d`. Only
+  the provenance header changed: the shared `finance-cash-flow.ts` wording
+  is tree-shaken out of the needs-attention code.
+
+### FIN21.10 Deployment checkpoint (operator)
+
+1. Deploy `finance` **v30** from the committed artifact (verify_jwt
+   true), and check its sha256 against the manifest.
+2. Deploy `needs-attention` **v20** from its committed artifact
+   (verify_jwt true), and check its sha256.
+3. `stripe-sandbox` v2 is already deployed. Please also confirm its
+   deployed `index.ts` sha256 = `13acb6f7…f5b9fb`.
+4. Schema: already applied (FIN21.7). No Airtable change.
+
+Until then, live TEST is `finance` v29 / `needs-attention` v19. The F21
+routes are absent there; the new tables and functions are unused.
+
+### FIN21.11 Live proof plan (after the operator deploy; emulator only)
+
+**Setup.**
+- Reconnect the emulator with the operator connect procedure (FIN10.3:
+  key generated in the database, only its sha256 on the emulator
+  account).
+- Start with `refund_write = false` for the permission proof, then set it
+  to true.
+
+**Fixtures.** The existing ZZTEST F11 Refund Due decisions (FIN11.14):
+- `FRD-1DA6EDEA084D` / `FRD-9B917033B203`: the £40 / £60 → £20 credit +
+  £30 card example, twice on `ch_ZZTESTf11m60` (second partial +
+  remaining cap);
+- `FRD-CBCEF63635E7` (100.00);
+- `FRD-3A041016358A` (20.00 left after an outside 10.00);
+- `FRD-1653C1DF9EA7` (the 3.34 odd penny);
+- `FRD-1C301CD93925` / `FRD-D27DC9419193` for faults.
+
+**Proof A–AK.**
+- Eligibility, execution, audit and status.
+- Retries / concurrency.
+- Timeout after accept + reconcile + late retry (op `idempotency`).
+- Mixed example + no credit duplication; partials / cap.
+- Disconnected; 429 / 500; pending → succeeded / failed.
+- F17 before / after (projection unchanged, information line); Month
+  Report unchanged; never an overhead.
+- The access matrix; organisation isolation.
+- The Finance hash check; production untouched; F22 not started.
+
+**REAL STRIPE REFUND = NOT PROVEN.**
+
+### FIN21.12 Resting TEST state (build)
+
+- **Functions:** `finance` v29 / `needs-attention` v19 /
+  `sheets-sandbox` v1 / **`stripe-sandbox` v2**.
+- **Supabase TEST:**
+  - F21 tables / functions applied, 0 executions;
+  - `finance_stripe_connections` `ORG-TEST-001` still **disconnected**
+    (`refund_capability` unknown);
+  - emulator `refund_write` false, 0 idempotency rows, no refund faults;
+  - the 7 F11 Refund Due fixtures unchanged (`awaiting_refund_action`).
+- **Grants / module / settings / WB01 / locks:** as the F20 resting state
+  (FIN20.20).
+- **Production** (Airtable `apprptFotQuVL1mhs`, Supabase
+  `bkkukymqaxawnudoxdjs`): untouched. No real Stripe was called.
+
+### FIN21.13 Future debt
+
+- **Operator deploy** of `finance` v30 / `needs-attention` v20, then the
+  FIN21.11 live proof.
+- **Stripe payout / balance integration:** the real bank impact of
+  refunds (and of Stripe income).
+- **Correcting a confirmed success.** A refund that Stripe reports failed
+  after `succeeded` is not modelled. It needs an explicit, audited
+  correction flow.
+- **Scheduled / webhook reconciliation:** today Management triggers
+  reconcile.
+- **Needs Attention:** no rule exists for a refund stuck in
+  `refund_processing` / `outcome_unknown`, or for `refund_failed`.
+  ATT-025 stays Planned.
+- **Production key:** the operator must configure a restricted key with
+  Refunds write + the existing reads. The capability is learnt on the
+  first refund.
+- **Out-of-band refunds:** refunds made directly in Stripe are still only
+  surfaced by F11 (`external` / `mismatch`), never adopted as Hub
+  executions.
+- **UI:** "Refund to card" / "Reconcile" actions and a capability badge.
+- **REAL STRIPE REFUND: NOT PROVEN.**

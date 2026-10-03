@@ -81,7 +81,7 @@ export const NOT_INCLUDED = {
   preInvoiceRevenue: { label: "Expected revenue before invoicing: Not included", reason: "No billing schedule gives an invoice or cash date before an invoice is issued, so no truthful cash date exists." },
   awaitingIssue: { label: "Invoices awaiting issue in Xero: Not included", reason: "They have no due date until they are genuinely issued." },
   noDueDate: { label: "Invoices without a due date: Not included", reason: "No due date is recorded, so no cash date can be used." },
-  refundDue: { label: "Refunds due (F11): Not included", reason: "A Refund Due has no cash date until refund execution (F21) exists." },
+  refundDue: { label: "Parent card refunds (F11 / F21): Not in the bank projection", reason: "A card refund is paid from the Stripe balance and reaches the bank through Stripe payouts, whose timing is not integrated yet. Refund Due, pending and succeeded Stripe refunds are shown for information only and never change the projected bank balance." },
   taxLiabilities: { label: "VAT / PAYE liabilities: Not included", reason: "No structured liability with an amount and payment date exists. Employer NI / PAYE estimates entered on an employment cost are inside that month's employment cost on its pay date - not the real HMRC payment date." },
   clientCredit: { label: "Client credit", reason: "Client credit is not cash: it only reduces what an invoice still owes." },
   supplierCredit: { label: "Supplier credit", reason: "Supplier credit is not cash: it only reduces what is still owed on an instalment; it never creates money in." },

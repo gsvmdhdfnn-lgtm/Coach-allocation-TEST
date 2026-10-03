@@ -108,7 +108,16 @@
  *   POST /refund-decisions/{FRD-..}/reverse          { reason }  only while its credit is unused and its refund unexecuted
  *   GET  /refund-sources/{ch_..|FFP-..}              funding split + returnable balance (live Stripe read of the charge + its refunds)
  *   GET  /revenue-corrections[?from&to]              revenue-correction facts (no cash, no business cost)
- *   No route executes a refund, calls a Stripe write, or creates a discount.
+ *   F11 itself executes no refund, calls no Stripe write and creates no discount (refund execution is F21, below).
+ *
+ * F21 Stripe refund EXECUTION of an F11 decision's card part (Finance read = GET, Finance manage = POST); the amount,
+ * currency and Stripe payment come ONLY from the F11 decision (never the request); family credit is never touched:
+ *   POST /refund-decisions/{FRD-..}/execute            {} or { reason }  send the decision's card refund to Stripe (stable
+ *                                                     Idempotency-Key + Hub metadata; 200 succeeded / 202 processing or unknown)
+ *   POST /refund-decisions/{FRD-..}/execution/reconcile {} or { reason } ask Stripe what happened (no webhook); a final
+ *                                                     outcome is never re-sent; a new refund only when Stripe proves none exists
+ *   GET  /refund-decisions/{FRD-..}/execution          the Hub's execution record + history + refund capability (no Stripe call)
+ *   A confirmed Stripe refund is NOT a bank Cash Flow OUT (it settles through Stripe payouts) and never a business cost.
  *
  * F12 coach cost READ + Finance Coach Month finalisation (Finance read = GET, Finance manage = POST); historical cost
  * comes only from each Coach Allocation's own frozen values, never the current rate; Airtable is read only:
@@ -255,6 +264,8 @@ import { checkReportingQuery, matchReportingRoute, parseConfigureBody, parseDisc
 import { type ReportingDeps, configureReporting, disconnectReporting, readReportingStatus, syncReporting } from "./finance-reporting-sheets-orchestrator.ts";
 import { type SupplierDeps, changeInstalmentAction, createAgreement, createSupplier, listAgreements, listCostFacts as listSupplierCostFacts, listInstalments, listSuppliers, readAgreement, readInstalment, readSupplier, updateSupplier, versionAgreement } from "./finance-suppliers-orchestrator.ts";
 import { matchFamilyRoute, parseApply, parseDecision, parseFamilyPayment, parseFamilyQuery, parseReason } from "./finance-family.ts";
+import { checkRefundQuery, matchRefundExecutionRoute, parseExecuteBody } from "./finance-stripe-refunds.ts";
+import { executeRefund, readRefundExecution, reconcileRefund } from "./finance-stripe-refunds-orchestrator.ts";
 import { applyFamilyCredit, listFamilyCredits, listRefundDecisions, listRevenueCorrections, readFamily, readRefundDecision, readRefundSource, recordFamilyPayment, recordRefundDecision, reverseRefundDecision, voidFamilyCredit } from "./finance-family-orchestrator.ts";
 import { type StripeDeps, linkStripeCustomer, listStripePayments, listStripeRefunds, listStripeSubscriptions, readStripeStatus, readStripeSubscription, updateStripeSettings } from "./finance-stripe-orchestrator.ts";
 import {
@@ -879,6 +890,22 @@ async function handleFamily(req: Request, url: URL, match: NonNullable<ReturnTyp
   return commercialResponse(await reverseRefundDecision(deps, caller, (r.params as { decisionId: string }).decisionId, p.reason));
 }
 
+/** F21 routes: same order as F3-F11 - 405, 401, 403 management_required, 400 query/body, then authorisation inside the orchestrator. */
+async function handleRefundExecution(req: Request, url: URL, match: NonNullable<ReturnType<typeof matchRefundExecutionRoute>>): Promise<Response> {
+  if (match.status === "method") return jsonResponse({ error: `Method not allowed - use ${match.allowed.join(" or ")}` }, 405);
+  const caller = await resolveCaller(req.headers.get("Authorization"));
+  if (!caller) return jsonResponse({ error: "Missing or invalid Authorization header" }, 401);
+  if (!isFinanceEligible(caller).ok) return jsonResponse({ error: "Management access required", code: "management_required" }, 403);
+  const q = checkRefundQuery(url.searchParams, isTenantKey);
+  if (!q.ok) return commercialResponse({ status: "error", ...q });
+  const r = match.route;
+  if (r.name === "refund.execution") return commercialResponse(await readRefundExecution(deps, caller, r.params.decisionId));
+  const p = parseExecuteBody(await req.text(), isTenantKey);
+  if (!p.ok) return commercialResponse({ status: "error", ...p });
+  if (r.name === "refund.execute") return commercialResponse(await executeRefund(deps, caller, r.params.decisionId, p.reason));
+  return commercialResponse(await reconcileRefund(deps, caller, r.params.decisionId, p.reason));
+}
+
 /** Path segments URL-decoded (an Occurrence ID contains ":"); null when a segment is not valid percent-encoding. */
 function decodedPath(route: string): string | null {
   try {
@@ -926,6 +953,10 @@ Deno.serve(async (req: Request) => {
     // F12 next: it owns only coach-costs/..., coach-summaries/... and coach-cost-facts.
     const coachCosts = matchCoachCostRoute(route, req.method);
     if (coachCosts) return await handleCoachCosts(req, url, coachCosts);
+
+    // F21 next: it owns only refund-decisions/{FRD}/execute, .../execution and .../execution/reconcile (before F11).
+    const refundExec = matchRefundExecutionRoute(route, req.method);
+    if (refundExec) return await handleRefundExecution(req, url, refundExec);
 
     // F11 next: it owns only family-credits/..., family-payments, refund-decisions/..., refund-sources/... and revenue-corrections.
     const family = matchFamilyRoute(route, req.method);

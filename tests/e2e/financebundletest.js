@@ -83,8 +83,18 @@ const ck = (name, ok, extra = '') => results.push([ok ? 'PASS' : 'FAIL', name, e
   const rr405 = await call('GET', 'refund-decisions/FRD-0123456789AB/reverse');
   const rs401 = await call('GET', 'refund-sources/ch_ZZ123');
   const rc401 = await call('GET', 'revenue-corrections');
-  const rexec404 = await call('POST', 'refund-decisions/FRD-0123456789AB/execute');
-  ck('B13. F11 family credit / refund decision routes are live in the artifact: reads GET-only (401 without a token), writes POST-only (405), no refund execution route (404)', fc401.status === 401 && ff401.status === 401 && fa405.status === 405 && fv405.status === 405 && fp405.status === 405 && rd401.status === 401 && rr405.status === 405 && rs401.status === 401 && rc401.status === 401 && rexec404.status === 404, `${fc401.status}/${ff401.status}/${fa405.status}/${fv405.status}/${fp405.status}/${rd401.status}/${rr405.status}/${rs401.status}/${rc401.status}/${rexec404.status}`);
+  ck('B13. F11 family credit / refund decision routes are live in the artifact: reads GET-only (401 without a token), writes POST-only (405)', fc401.status === 401 && ff401.status === 401 && fa405.status === 405 && fv405.status === 405 && fp405.status === 405 && rd401.status === 401 && rr405.status === 405 && rs401.status === 401 && rc401.status === 401, `${fc401.status}/${ff401.status}/${fa405.status}/${fv405.status}/${fp405.status}/${rd401.status}/${rr405.status}/${rs401.status}/${rc401.status}`);
+  // F21: refund execution of an F11 decision's card part (routed before F11).
+  const rx401 = await call('POST', 'refund-decisions/FRD-0123456789AB/execute');
+  const rx405 = await call('GET', 'refund-decisions/FRD-0123456789AB/execute');
+  const rs21 = await call('GET', 'refund-decisions/FRD-0123456789AB/execution');
+  const rsp405 = await call('POST', 'refund-decisions/FRD-0123456789AB/execution');
+  const rrc401 = await call('POST', 'refund-decisions/FRD-0123456789AB/execution/reconcile');
+  const rrc405 = await call('GET', 'refund-decisions/FRD-0123456789AB/execution/reconcile');
+  const rdel404 = await call('POST', 'refund-decisions/FRD-0123456789AB/execution/cancel');
+  const sref405 = await call('POST', 'stripe/refunds');
+  ck('B26. F21 refund execution routes are live in the artifact: execute / reconcile POST-only, execution GET-only (401 without a token, 405 otherwise); no cancel route (404); F10 still has no Stripe write route (405)', [rx401, rs21, rrc401].every((r) => r.status === 401) && [rx405, rsp405, rrc405, sref405].every((r) => r.status === 405) && rdel404.status === 404, [rx401, rx405, rs21, rsp405, rrc401, rrc405, rdel404, sref405].map((r) => r.status).join('/'));
+  ck('B27. F21 writes go through its atomic database functions only (finance_stripe_refund_reserve / _record RPCs in the artifact); every refund POST carries an Idempotency-Key', ['finance_stripe_refund_reserve', 'finance_stripe_refund_record'].every((f) => flat.includes(f)) && flat.includes('Idempotency-Key') && flat.includes('hub_execution_id'));
   ck('B14. F11 writes go through its atomic database functions only (finance_family_* RPCs in the artifact)', ['finance_family_payment_record', 'finance_family_credit_apply', 'finance_family_decision_record', 'finance_family_credit_void', 'finance_family_decision_reverse'].every((f) => flat.includes(f)));
 
   const cc401 = await call('GET', 'coach-costs');

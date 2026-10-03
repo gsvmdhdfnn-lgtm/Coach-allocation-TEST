@@ -2,7 +2,7 @@
   "function": "needs-attention",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/needs-attention/index.js",
-  "artifactSha256": "9c6989680003dcc2cf2f9d80d056b68a490c8d8349fd6d2bbeb16944a565dc7e",
+  "artifactSha256": "2dd53468c0c21d0e335132227dc10704f3f7e04e178577424c56fba9d184850d",
   "artifactBytes": 215265,
   "entrypoint": "index.js",
   "externalImports": [
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "410c377a695fc1753e4cfac0ea1fe742ea97ce2e81333316775e56dde0793e2a",
+  "sourceSha256": "6f119ef7e91555ce425d489e1062387f9e4be350ba21c9e9eb7f90ff0d346ba3",
   "sources": [
     {
       "path": "supabase/functions-test/needs-attention/cash-flow.ts",
@@ -151,7 +151,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-cash-flow.ts",
-      "sha256": "a326a5f7b5ad968dae22e08c758063c5b4690b28011dc91dad004f0061a491ba"
+      "sha256": "c1de5dffe61b85dbd4ff2c3106812c7ba74cc1c7d392e44bd2b78622b8f3adf4"
     },
     {
       "path": "supabase/functions-test/finance/finance-coach-costs.ts",

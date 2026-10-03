@@ -22,6 +22,9 @@
  * cashSafetyThresholdMinor) - audited there. Each source is loaded once per
  * request through its owning slice's repository; nothing here writes a
  * source, creates a stored forecast event, reconciles a bank or calls Stripe.
+ * F21 parent card refunds (Refund Due / processing / refunded via Stripe) are
+ * attached to notIncluded.refundDue for INFORMATION only (locked decision D1):
+ * they settle through Stripe payouts and never change the bank projection.
  */
 import type { FinanceCaller, OrganisationContext } from "./finance-access.ts";
 import { authorizeFinance } from "./finance-orchestrator.ts";
@@ -59,6 +62,9 @@ import {
   rangeEnd,
 } from "./finance-cash-flow.ts";
 import { BalanceRefusal, loadBalances, recordBalance } from "./finance-cash-flow-repository.ts";
+// F21 (database read + pure rule only - no Stripe provider is reachable from Cash Flow).
+import { refundCashInfo } from "./finance-stripe-refunds.ts";
+import { loadRefundCashFacts } from "./finance-stripe-refunds-repository.ts";
 
 export interface CashFlowDeps extends CommercialDeps {
   cashFlow?: { random?: () => string };
@@ -149,6 +155,17 @@ export function receivablesOf(r: Awaited<ReturnType<typeof loadOrganisationRecei
   return { receivables, receipts: cashReceipts(ps.payments, ps.reversals, credits), awaitingIssue: { count: awaitingCount, grossMinor: awaitingGross } };
 }
 
+/** F21 parent card refunds for INFORMATION only (never a CashEvent, never the balance); fails soft. */
+async function refundFacts(deps: CashFlowDeps, org: OrganisationContext, today: string): Promise<Record<string, unknown>> {
+  try {
+    const f = await loadRefundCashFacts(deps.grants, org.organisationId);
+    return refundCashInfo(f.decisions, f.executions, org.timezone, today);
+  } catch (e) {
+    console.error(e);
+    return { included: false, unavailable: true, note: "Refund facts could not be loaded just now - they never affect the bank projection" };
+  }
+}
+
 // ---------------------------------------------------------------------
 // Reads (View)
 // ---------------------------------------------------------------------
@@ -161,7 +178,7 @@ export async function readCashFlow(deps: CashFlowDeps, caller: FinanceCaller, q:
   const workMonths = coachWorkMonths(today, end);
   let loaded;
   try {
-    const [settings, rec, suppliers, overheads, months, world, balances] = await Promise.all([
+    const [settings, rec, suppliers, overheads, months, world, balances, refunds] = await Promise.all([
       settingsOf(deps, org),
       loadOrganisationReceivableRows(deps.airtable, org.recordId),
       loadSupplierLedger(deps.grants, org.organisationId),
@@ -169,8 +186,9 @@ export async function readCashFlow(deps: CashFlowDeps, caller: FinanceCaller, q:
       loadMonthLedger(deps.grants, org.organisationId),
       loadCostWorld(deps.airtable, monthBounds(workMonths[0]).from, monthBounds(workMonths[workMonths.length - 1]).to),
       loadBalances(deps.grants, org.organisationId),
+      refundFacts(deps, org, today),
     ]);
-    loaded = { settings, rec, suppliers, overheads, months, world, balances };
+    loaded = { settings, rec, suppliers, overheads, months, world, balances, refunds };
   } catch (e) {
     console.error(e);
     return unavailable();
@@ -195,7 +213,10 @@ export async function readCashFlow(deps: CashFlowDeps, caller: FinanceCaller, q:
       coachMonths: coachMonthInputs(loaded.world, loaded.months, workMonths, today, loaded.settings.paymentDay),
       coachPaymentDayConfigured: loaded.settings.paymentDay !== null,
     });
-    return { status: "ok", httpStatus: 200, body: { ...head(org, auth.access), ...cashFlowView(cf, q.view) } };
+    const view = cashFlowView(cf, q.view) as Record<string, any>;
+    // Information only: merged into the not-included refund line, never a CashEvent, never the balance.
+    if (view.notIncluded?.refundDue) view.notIncluded.refundDue = { ...view.notIncluded.refundDue, ...loaded.refunds, included: false };
+    return { status: "ok", httpStatus: 200, body: { ...head(org, auth.access), ...view } };
   } catch (e) {
     if (e instanceof CashFlowDataError) return fail(409, "cash_flow_data_invalid", `Cash Flow cannot be built from the stored Finance data: ${e.message}`);
     throw e;

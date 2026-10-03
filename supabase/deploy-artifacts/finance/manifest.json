@@ -2,8 +2,8 @@
   "function": "finance",
   "project": "TEST only",
   "artifact": "supabase/deploy-artifacts/finance/index.js",
-  "artifactSha256": "43657c6d97a85a324c20bd08a79cb0b952b50006997e8e0322c5251718ae1249",
-  "artifactBytes": 749213,
+  "artifactSha256": "144fe334f7932474109c36875349b751dbcd4c64e0d99f98218d79299ceb9973",
+  "artifactBytes": 786077,
   "entrypoint": "index.js",
   "externalImports": [
     "jsr:@supabase/supabase-js@2"
@@ -27,7 +27,7 @@
     "sourcemap": false,
     "logLevel": "warning"
   },
-  "sourceSha256": "5d72646b8897707f2b7b9ce5a06205f8043f6997f6939f08924b3390f67e72e4",
+  "sourceSha256": "540a2ac1235f8f22d1504a939fc9f0df8ce66be972552807c0755838ad4b958d",
   "sources": [
     {
       "path": "supabase/functions-test/finance/finance-access.ts",
@@ -51,7 +51,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-cash-flow-orchestrator.ts",
-      "sha256": "fc0dbf2b08dac0d777636120dcb62050c98906fb2caae1fc3073cb174401709b"
+      "sha256": "23f05fea0fc724d0d38fc84934ccf770a6e7da9088c5ebd5759b699b1b919d0d"
     },
     {
       "path": "supabase/functions-test/finance/finance-cash-flow-repository.ts",
@@ -59,7 +59,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-cash-flow.ts",
-      "sha256": "a326a5f7b5ad968dae22e08c758063c5b4690b28011dc91dad004f0061a491ba"
+      "sha256": "c1de5dffe61b85dbd4ff2c3106812c7ba74cc1c7d392e44bd2b78622b8f3adf4"
     },
     {
       "path": "supabase/functions-test/finance/finance-coach-costs-orchestrator.ts",
@@ -95,7 +95,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-family-orchestrator.ts",
-      "sha256": "2e45d1a07e8f532abb053e1c9cc5edc9326d7e439ed98f96dae2f01dc085f508"
+      "sha256": "bf4461e02a5bb3237eefaa8d25a2c959e2260129b10df19e787ceb95764943e1"
     },
     {
       "path": "supabase/functions-test/finance/finance-family-repository.ts",
@@ -103,7 +103,7 @@
     },
     {
       "path": "supabase/functions-test/finance/finance-family.ts",
-      "sha256": "2a098a8a7df4d9df3a1acfbd7943a53ebea2324a4355ba46f904508c9755a372"
+      "sha256": "d29b89cb39017ebfbadc4e7f29793675bbbb8c3ec4aa56ea33b7a370962ade47"
     },
     {
       "path": "supabase/functions-test/finance/finance-invoicing-mapping.ts",
@@ -226,6 +226,22 @@
       "sha256": "31de10dd2d5c58a6179670a07812d2b420d7c85f6616b280fde2dc18a7451a8d"
     },
     {
+      "path": "supabase/functions-test/finance/finance-stripe-refund-provider.ts",
+      "sha256": "a0b420387b0b216d7431bab52dc5a2617f1514dad3af72186cfca4f249906702"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-stripe-refunds-orchestrator.ts",
+      "sha256": "389953acdc1f8c41b69c4345b26fe9da5cd01e7fe3f7f1013f476b80185e5816"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-stripe-refunds-repository.ts",
+      "sha256": "0553bf50bda4a5a33ac15c938d01843fe51b07ecc581bbd1257a1a1ab7542bf6"
+    },
+    {
+      "path": "supabase/functions-test/finance/finance-stripe-refunds.ts",
+      "sha256": "e3052d5c61c556b4d4a1a8a9f9f126c49a47bae8d151c8caa2e73287c5d15906"
+    },
+    {
       "path": "supabase/functions-test/finance/finance-stripe-repository.ts",
       "sha256": "17a466dd4c2dffb5143b2322c679b209328d874402b3a7e240d87b431eca08f1"
     },
@@ -271,7 +287,7 @@
     },
     {
       "path": "supabase/functions-test/finance/index.ts",
-      "sha256": "258732837f81e7391408fa2ecf9d805c9d72199ff93334134f9d849fe2e5d9af"
+      "sha256": "49ac7681bdddfa0624b039df1afa42f32e45e871f9c023c102db2ded853f2a20"
     },
     {
       "path": "supabase/functions-test/finance/orchestrator.ts",
