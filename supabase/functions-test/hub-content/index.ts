@@ -1,4 +1,5 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { resolveOrganisationContext } from "../_shared/organisation-context.ts";
 import {
   buildOccurrenceStaffByOccurrenceId,
   buildSessionStaffByCoachAndSession,
@@ -326,7 +327,7 @@ async function fetchCsvObjects(url: string): Promise<Record<string, string>[]> {
  */
 async function resolveCaller(
   authHeader: string | null
-): Promise<{ role: string; airtablePersonId: string | null; active: boolean; userId: string; displayName: string | null } | null> {
+): Promise<{ role: string; airtablePersonId: string | null; active: boolean; userId: string; displayName: string | null; organisationId: string } | null> {
   if (!authHeader) return null;
   const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: authHeader } },
@@ -335,7 +336,7 @@ async function resolveCaller(
   if (userError || !userData?.user) return null;
   const { data: profile, error: profileError } = await userClient
     .from("profiles")
-    .select("role, airtable_person_id, active, display_name")
+    .select("role, airtable_person_id, active, display_name, organisation_id")
     .eq("user_id", userData.user.id)
     .single();
   if (profileError || !profile) return null;
@@ -345,6 +346,7 @@ async function resolveCaller(
     active: profile.active === true,
     userId: userData.user.id,
     displayName: profile.display_name || null,
+    organisationId: profile.organisation_id || "",
   };
 }
 
@@ -651,16 +653,37 @@ async function handleSessionParticipants() {
   }));
 }
 
-async function handleSettings() {
+/**
+ * Hub settings bootstrap (organisation branding, Hub Settings labels,
+ * Feature Controls map) - the same payload shape for both callers below.
+ *
+ * - No signed-in user (the pre-login bootstrap the frontend fetches with no
+ *   Authorization header): PUBLIC and unchanged - the first Active
+ *   Organisation & Branding row, as before. A public, caller-less request
+ *   has no organisation to match against; routing it per organisation
+ *   (domain / subdomain) is future Platform work.
+ * - A signed-in user (Settings / Config S1-a): the organisation comes from
+ *   the caller's own profile via resolveOrganisationContext() - exact
+ *   Organisation ID match on exactly one Active row, never "first Active
+ *   row"; inactive profile / no match / ambiguous fail closed.
+ */
+async function handleSettings(caller: Awaited<ReturnType<typeof resolveCaller>>) {
   const [organisationRows, settingRows, featureRows] = await Promise.all([
     getAirtableRecords("Organisation & Branding"),
     getAirtableRecords("Hub Settings"),
     getAirtableRecords("Feature Controls"),
   ]);
 
-  const organisationRecord = organisationRows.find(
-    (record) => record.fields.Active === true
-  );
+  let organisationRecord: any;
+  if (caller) {
+    const resolved = resolveOrganisationContext({ active: caller.active, organisationId: caller.organisationId }, organisationRows);
+    if (!resolved.ok) return jsonResponse({ error: resolved.error, code: resolved.code }, resolved.status);
+    organisationRecord = organisationRows.find((record) => record.id === resolved.context.organisationRecordId);
+  } else {
+    organisationRecord = organisationRows.find(
+      (record) => record.fields.Active === true
+    );
+  }
 
   // The auto Sessions-from-Sheet sync that used to fire here on every
   // load has been retired, not fixed - see the comment above the (now
@@ -701,7 +724,7 @@ async function handleSettings() {
     features[fields["Feature Key"]] = fields.Enabled === true;
   }
 
-  return { organisation, settings, features };
+  return jsonResponse({ organisation, settings, features });
 }
 
 Deno.serve(async (req) => {
@@ -740,7 +763,11 @@ Deno.serve(async (req) => {
       if (caller && !caller.active) return jsonResponse({ error: "Forbidden" }, 403);
       return jsonResponse(await handlePlayers(caller));
     }
-    if (route === "" || route === "settings") return jsonResponse(await handleSettings());
+    if (route === "" || route === "settings") {
+      // A signed-in user's own organisation, or the unchanged public
+      // bootstrap when no user session is presented (see handleSettings).
+      return await handleSettings(await resolveCaller(req.headers.get("Authorization")));
+    }
 
     return jsonResponse({ error: `Unknown route: ${route}` }, 404);
   } catch (error) {

@@ -204,6 +204,12 @@ async function boot(fn: string, files: string[], fromBaseline: boolean): Promise
       : readFileSync(join(FUNCS, fn, f), "utf8");
     writeFileSync(join(dir, f), src);
   }
+  // Settings S1-a: current functions may import ../_shared/*; materialise
+  // the shared source beside the temp function directory.
+  if (!fromBaseline) {
+    mkdirSync(join(TMP, "_shared"), { recursive: true });
+    writeFileSync(join(TMP, "_shared", "organisation-context.ts"), readFileSync(join(FUNCS, "_shared", "organisation-context.ts"), "utf8"));
+  }
   const out = await esbuild.build({ entryPoints: [join(dir, "index.ts")], bundle: true, format: "esm", platform: "neutral", write: false, external: ["jsr:*"], logLevel: "silent" });
   const code = out.outputFiles[0].text.replace(/"jsr:@supabase\/supabase-js@2"/g, JSON.stringify("data:text/javascript," + encodeURIComponent(SUPABASE_STUB)));
   const file = join(dir, `bundle-${++bootSeq}.mjs`);
