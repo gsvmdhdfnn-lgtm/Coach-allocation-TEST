@@ -26682,3 +26682,209 @@ neither function present.
 - Production untouched: Airtable `apprptFotQuVL1mhs` / Supabase
   `bkkukymqaxawnudoxdjs` were never connected. No real Xero, Stripe or
   Google call.
+
+## Whole-backend audit — P1 correction slice (active-profile enforcement + serialised Parent identity) — COMPLETE IN TEST: LIVE-PROVEN on `parent-hub` v14 / `hub-content` v12 — TEST only — 2026-10-03
+
+Scope was exactly the two P1 findings of the read-only whole-backend audit
+(after `b24dc60`). No Settings/Config, migration (beyond this one lock
+table), UI, legacy cleanup, Needs Attention or Finance work. Finance
+F1–F22 stays frozen and was not redeployed.
+
+### P1.1 P1-1 — cause and fix (`profiles.active`)
+
+- **Cause.** parent-hub's `resolveCaller` selected only `role,
+  airtable_person_id`, so no parent-hub route (including Management claim
+  approve/reject) ever saw `active`. hub-content `/players` read `active`
+  but `handlePlayers` never checked it, so an inactive Management profile
+  still got every non-Ended player with admin permissions. Every other
+  function already enforced `active`.
+- **Fix (parent-hub).** `resolveCaller` now also reads `active` and
+  `organisation_id`. One check right after the existing 401, before the
+  route table: `403 {"error":"This account is not active.","code":"inactive_profile"}`
+  (the code Finance already uses). Every route inherits it. Missing
+  profile / no token: unchanged 401.
+- **Fix (hub-content).** `/players` with a signed-in inactive profile →
+  `403 {"error":"Forbidden"}` (the answer `session-participants` already
+  gives in the same function). No session → unchanged `200 []`.
+  `handlePlayers` also refuses an inactive caller on its own.
+  `player-access.ts` is byte-identical to `b24dc60`.
+
+### P1.2 P1-2 — cause and fix (Parent find-or-create)
+
+- **Cause.** `resolveParentRecord` was find-by-user-id → find-by-email →
+  `ensureUniqueParentId` → create, with no serialisation. Two first-ever
+  requests both found nothing and both created a Parent (documented as a
+  harness-triggered race on 2026-09-26). Afterwards every operational read
+  took `byUserId[0]`.
+- **Architecture (`parent-hub/parent-identity.ts`, portable, plain fetch).**
+  1. Read-only first: rows with this `Supabase User ID` ∪ the row
+     `profiles.airtable_person_id` points at. Exactly one → use it.
+  2. More than one, or a profile link to a row this user does not own →
+     `409 parent_id_ambiguous` (never `array[0]`).
+  3. None → take the lock (below), repeat step 1 inside it, then the
+     existing email compatibility path (one row with this email and **no**
+     Supabase User ID is adopted; a row owned by another user is never
+     taken over → `parent_id_ambiguous`), else create exactly one.
+  4. `profiles.airtable_person_id` is filled (never overwritten) before the
+     lock is released, so a later caller finds the record through the
+     profile even if Airtable search lags. A create that lands but reports
+     failure is re-read inside the lock and adopted. The lock is always
+     released (a failed release only leaves a row the 2-minute TTL clears).
+  5. A caller still waiting after ~6 s gets a retryable
+     `409 parent_identity_busy`.
+- **Supabase (TEST only).** `supabase/sql-test/p1_parent_identity_locks.sql`,
+  applied by the operator (the MCP migration stalled twice at the
+  confirmation gate and was not routed around):
+  - `public.parent_identity_locks (organisation_id, user_id, lock_token,
+    locked_at)`, PK `(organisation_id, user_id)`, RLS on, no policies,
+    anon/authenticated revoked;
+  - `acquire_parent_identity_lock(text, uuid)` / `release_parent_identity_lock(text, uuid, uuid)`,
+    SECURITY DEFINER, `search_path=public`, execute = service_role only;
+    stale locks older than 2 minutes are cleared on acquire; release only
+    deletes the caller's own token.
+- **Profile linkage.** Parents already used `profiles.airtable_person_id`
+  (the old `/me` filled it best-effort). It is now written on every parent
+  route as part of resolution. If that write fails the request now fails
+  (500) rather than silently continuing.
+
+### P1.3 Deployment (operator, from `67f9cfd`), independently byte-verified
+
+| Function | Version | verify_jwt | Files (all MATCH the commit) |
+|---|---|---|---|
+| `parent-hub` | v14 | true | `index.ts` (sha256 `31d6641423fe…`), `parent-identity.ts` (`f95608325bda…`) |
+| `hub-content` | v12 | true | `index.ts` (`469b8a4b2501…`), `player-access.ts` (`21193840e9ff…`, unchanged) |
+
+### P1.4 Live proof (2026-10-03, real logins via the TEST-only `pg_net` harness)
+
+Harness: password sign-ins through `/auth/v1/token`; tokens read straight
+from the `net._http_response` sign-in bodies (no tokens written to
+`f2probe.tokens`, which stays empty). Helper objects added to the existing
+TEST-only `f2probe` schema: view `p1_tok`, view `p1_res`, function
+`p1_call`, table `p1_marks` (inert; part of the existing `f2probe`
+operator-cleanup item).
+
+**P1-1 — active enforcement.** Management (`manager@`), Parent A
+(`parent.a@`) and Coach A (`coach.a@`) set `active=false`, then restored.
+
+| # | Call | Active (A) | Inactive (B) | Restored (C) |
+|---|---|---|---|---|
+| 1 | mgr `GET parent-hub/claims/pending` | 200 | **403 inactive_profile** | 200, body md5 identical to A |
+| 2 | mgr `GET hub-content/players` | 200 (5 admin rows) | **403 Forbidden** | 200, md5 identical |
+| 3 | mgr approve / reject real pending claim `recCoCYqcvaFYL1qD` | (not run active) | **403 / 403 inactive_profile** | — |
+| 3c | mgr approve unknown link | 404 Claim not found (route reached) | **403** (route never reached) | — |
+| 4 | parent `GET me` / `GET feedback` | 200 (2 children) | **403 / 403** | 200, md5 identical |
+| 5 | parent `POST claims` / `POST session-requests` | 400 validation | **403 / 403** | — |
+| 6 | coach `GET hub-content/players` | 200 (2 permanent rows) | **403 Forbidden** | 200, md5 `685b11e7…` identical (also the long-standing Slice 1 baseline) |
+| 7 | coach `GET parent-hub/me` | 403 Parent access required | **403 inactive_profile** | — |
+| 8 | mgr `GET hub-content/session-participants` | — | 403 Forbidden (pre-existing check) | — |
+
+- No write while inactive: Parent–Player Links still 8 rows; Bella's
+  `PPLINK-TEST-002` still Pending with its original notes.
+- Every inactive call was an explicit 403 — never 200 and never 401, so no
+  inactive caller was treated as anonymous.
+
+**P1-2 — concurrency.** Three new labelled TEST parent users created by
+the established SQL pattern (`auth.users` + `auth.identities`, token
+columns `''`; public signup refuses `@test.invalid` and was
+rate-limited): `zztest.p1.pair@`, `zztest.p1.burst@`, `zztest.p1.lock@`
+(profiles by `handle_new_user`: parent, ORG-TEST-001). Before: no Parent
+row, null profile link, 0 locks.
+
+- **Pair burst** — 3× `GET me` + 2× `POST claims` queued together:
+  - exactly one Parent `rec0BvsHUqgfik8Vp` / `PARENT-22A593EACD49`
+    (one Parent ID, one Supabase User ID mapping);
+  - both claims (`PPLINK-fik8Vp-MUSR3ZQU`, `…ZHP`, Needs Review) attached
+    to it; `/me` answers named the same Parent ID;
+  - profile link = `rec0BvsHUqgfik8Vp`; 0 locks afterwards;
+  - function logs show several `acquire_parent_identity_lock` retries
+    while one caller held the lock, then two releases (creator +
+    re-checker) — serialisation observed live;
+  - a later `GET me` reused it (200, same Parent ID, no create).
+  - One of the five calls returned **401**: the gateway had accepted the
+    JWT, but PostgREST answered 401 to the function's *user-scoped*
+    `profiles` read in `resolveCaller` (pre-existing code path, unchanged
+    apart from the selected columns). It did not recur in the 9-call burst
+    or any later call; recorded as an observation, not a P1 defect.
+- **High-concurrency burst** — 8× `GET me` + 1× `POST claims` for the
+  burst user: 9/9 200, all `PARENT-A629E2742FF2`, exactly one Parent
+  `recd8gznJHhwrtAT6`, claim `PPLINK-wrtAT6-MUSR4R4M` attached, profile
+  linked, 0 locks.
+- **Lock busy / stale / retry** — lock user:
+  - lock taken from SQL via `acquire_parent_identity_lock`; `GET me` →
+    **409 `parent_identity_busy`** after the wait; no Parent created,
+    profile link still null;
+  - lock aged to 3 minutes (simulated crashed holder); `GET me` → 200,
+    exactly one Parent `recmK91OZgMqSRtTj` / `PARENT-61E0AB21127A`,
+    profile linked, 0 locks;
+  - the old holder's token then releases nothing (`false`).
+
+**Ambiguity (existing duplicate user, read-only).** `parent.claimtest@`:
+`GET me`, `GET feedback`, `POST claims`, `POST session-requests` → all
+**409 `parent_id_ambiguous`** (b24dc60 answered from `byUserId[0]`).
+Profile link still null; both Parent rows' "Last Updated" unchanged
+(17:00:16 / 17:00:00 on 2026-09-26); their three claim links unchanged; no
+new link.
+
+### P1.5 Existing duplicate Parent — preserved deliberately (TEST debt)
+
+| | `rec73xvcjMDl4Cckc` | `recqw4DrXB87B5Tcr` |
+|---|---|---|
+| Parent ID / Supabase User ID | `PARENT-ED3BDF220DC2` / `ed3bdf22-…` | same |
+| Email / created | `parent.claimtest@test.invalid` / 2026-09-26 16:59:59 | same |
+| Links | Freya Foster (Pending), Dylan Davies (Pending, 17:00:16) | Dylan Davies (Pending, 17:00:00) |
+| Requests, Player Session Links, Finance refs, profile link | none | none |
+
+History is split across both rows (forensic class **B**), so no cleanup was
+attempted, per the operator decision: neither Dylan claim rejected, nothing
+relinked, deleted, renamed or merged, and no profile link written. Resting
+behaviour: operations fail closed (`409 parent_id_ambiguous`), Finance
+fails closed (`409 parent_id_ambiguous`, FIN10), no row is picked
+arbitrarily. A future explicit reconciliation / data-repair task decides
+how to resolve it.
+
+### P1.6 Tests and regression
+
+- New `tests/support/p1-corrections.test.ts` (e2e shim
+  `tests/e2e/p1correctionstest.js`): **45/45**. It bundles the *real*
+  `parent-hub` and `hub-content` (current and `b24dc60`) with esbuild and
+  boots them against an in-memory Airtable / PostgREST; active-caller
+  responses and resulting data are compared byte for byte with `b24dc60`.
+  It covers items 1–33 of the slice brief plus a 12-way concurrent
+  resolution and a busy-lock case. Mutation check: removing either active
+  gate, the ambiguity check, the lock / in-lock re-check, the email
+  ownership check or the create-recovery each fails the suite.
+- `npm test` **90/90** (includes Session Staff / cover / absent / former
+  access suites, claims, Finance parent-ambiguity, every support suite and
+  both bundle `--check` runs).
+
+### P1.7 Resting state
+
+- Profiles: all 9 active (6 original + 3 ZZTEST P1 parents); no temporary
+  `active=false` left. Management access intact; one live Manage grant.
+- `parent_identity_locks`: 0 rows. `f2probe.tokens`: 0 stored. `pg_net`
+  queue empty. Finance audit count unchanged by this slice (667; newest
+  event is the F22 settings restore at 17:23 UTC).
+- Kept as legitimate TEST history: the 3 ZZTEST P1 auth users / profiles,
+  their Parents (`rec0BvsHUqgfik8Vp`, `recd8gznJHhwrtAT6`,
+  `recmK91OZgMqSRtTj`) and three "Needs Review" ZZTEST claims.
+- Existing duplicate Parent rows and their claims: unchanged.
+- Note: sign-in response bodies (short-lived access tokens) remain in
+  `net._http_response` until pg_net's own retention purge, as in earlier
+  harness runs.
+- Production untouched (Airtable `apprptFotQuVL1mhs` / Supabase
+  `bkkukymqaxawnudoxdjs` never connected).
+
+### P1.8 Remaining Players/Parents debt (unchanged roadmap items)
+
+- Duplicate Parent `PARENT-ED3BDF220DC2` reconciliation (above).
+- Membership lifecycle transitions have no TEST backend; `player-sessions`
+  / `player-feedback` / `approve-coach` / `register-interest` are still
+  production-only copies on the old model; former-player snapshot still
+  Sheet-name based.
+- Parent records carry no Organisation link (lock is org-scoped; Airtable
+  rows are per base); signup org is still hard-coded in `handle_new_user`.
+- Caller resolution is still copied per function (no shared module).
+- The one-off PostgREST 401 on the user-scoped profile read (P1.4) — watch
+  item if it recurs.
+
+**STATUS: P1 CORRECTION SLICE = COMPLETE IN TEST.**
