@@ -27114,3 +27114,167 @@ proof L: 9 profiles active and on ORG-TEST-001; 0 locks / tokens / pg_net
 queue; Finance audit 667; connection rows unchanged; Timezone
 Europe/London; Feature Controls unchanged; Hub Settings empty. Suites:
 Settings 39/39, P1 45/45, `npm test` 91/91.
+
+## Intermittent profile-read 401 — investigation (audit + diagnostic proof only) — CONCLUDED: PLATFORM TRANSIENT, NO CODE CHANGE — TEST only — 2026-10-03
+
+Trigger: a 401 "Invalid or expired session" seen once in P1 (P1.4) and once
+in S1-a (S1-a.7 C). No code was changed, nothing was deployed, and
+production was untouched.
+
+### I-1 What failed (from gateway `edge_logs`)
+
+`resolveCaller` returns null whether `auth.getUser()` fails or the profile
+read fails, so the function's 401 body alone cannot say which call failed.
+The gateway logs can:
+
+| Incident | Function call | Failing upstream request | Token age at failure | Response |
+|---|---|---|---|---|
+| P1 18:54:25 | parent-hub `GET /me` (`zztest.p1.pair`) | `GET /rest/v1/profiles?…user_id=eq.22a593ea…` | 12 s (iat 18:54:13, exp +1 h) | 401, `proxy_status: PostgREST; error=PGRST303`, 79-byte body |
+| S1-a 19:33:57 | settings `GET /system` (`parent.a`) | `GET /rest/v1/profiles?…user_id=eq.4f2111e4…` | 5 s (iat 19:33:52) | 401, PGRST303, 79 bytes |
+
+- `GET /auth/v1/user` with the same token returned **200** in both cases
+  (and 543/543 over 24 h). Neither the Edge gateway (Layer 1, `verify_jwt`)
+  nor GoTrue (`getUser`) rejected the token.
+- Only PostgREST did (Layer 2).
+- Exactly 79 bytes is the length of
+  `{"code":"PGRST303","details":null,"hint":null,"message":"JWT issued at future"}`.
+  No other PGRST301/303 message has that length.
+
+### I-2 Reproduced directly against PostgREST (no Edge Function)
+
+The TEST `pg_net` harness was used: fresh password sign-ins (`/auth/v1/token`),
+then direct `GET /rest/v1/profiles` with the untouched token. pg_net keeps
+the full response body.
+
+| Run | Condition | Fresh-token reads | Failures |
+|---|---|---|---|
+| R1 | PostgREST idle ~13 min; token ~3 s old | 90 concurrent (3 users × 30) | 0 |
+| C2 | idle ~2 min; token ~5 s old | 15 concurrent + 5 via functions | **1**: Management, body exactly `{"code":"PGRST303",…,"message":"JWT issued at future"}` |
+| W1, W2 | PostgREST kept warm; fresh sign-in | 80 | 0 |
+| W1/W2/I3 control | token minutes old | 70 | 0 |
+| I3 | idle ~2 min | 40 | 0 |
+| I4 | idle ~2 min | 5 | 0 |
+
+In C2, all 15 direct reads used tokens with the **same `iat`** and reached
+PostgREST within 15 ms. Management's token was accepted on 4 of its 5
+requests and rejected on 1. The rejected request returned faster (226 ms
+upstream against ~530 ms for its siblings), consistent with being refused
+at JWT validation before any SQL ran.
+
+Function-level matrix (all after a fresh sign-in following idle). An
+auth-only route was used where possible: Coach / Parent → `settings/system`
+answers 403, and Management with an org parameter answers 400, both
+**after** `getUser` + profile read and **before** Airtable.
+
+| Matrix | Calls | Auth-layer failures |
+|---|---|---|
+| A single | many | 0 |
+| B 10 sequential | 10 | 0 |
+| C 20 sequential | 20 | 0 |
+| D 10 concurrent same user | 10 (+10 Airtable-backed) | 0 |
+| E 20 concurrent same user | 20 (+20 Airtable-backed) | 0 |
+| F concurrent mixed users | 30 (+20 Airtable-backed) | 0 |
+
+The Airtable-backed bursts hit Airtable's own 429 rate limit (500s after a
+successful auth). That is a separate, pre-existing behaviour under
+artificial bursts, not part of this issue.
+
+24-hour totals for user-JWT `/rest/v1/profiles`: **832 × 200, 3 × 401
+PGRST303 (0.36%)**. All three had tokens 5–12 s old and came in the first
+request burst after PostgREST had been idle.
+
+### I-3 Layers ruled out
+
+- **Product code / client construction.** Every user-scoped client is
+  request-local (`createClient` inside `resolveCaller`, in all 13 functions
+  and `me`). There is no module-scope client or session, no
+  persist/refresh state, and the Authorization header is forwarded
+  unchanged. The failing requests carried the same token signature, user
+  and `user_id` filter as their successful siblings. The failure also
+  reproduces with no Edge Function at all.
+- **Concurrency / header bleed.** Not possible with request-local clients.
+  Identical concurrent requests differ only in PostgREST's verdict.
+- **Token lifetime / refresh / staleness.** The tokens were 5–12 s old
+  with 1 h expiry. There was no refresh or rotation, and the retried and
+  sibling requests used the identical token.
+- **Harness.** The harness copies the access token verbatim from the
+  sign-in response. The real frontend has the same shape: `auth.js
+  onSignedIn` calls `/me` immediately after sign-in.
+- **RLS.** `profiles` has RLS on with one SELECT policy, `auth.uid() =
+  user_id` for `authenticated`, which does not depend on `active`. An RLS
+  miss gives 0 rows (406 PGRST116 from `.single()`), not 401.
+- **Rate limits / auth outage.** GoTrue was 100% OK. The only 429s are
+  Airtable's under deliberate bursts.
+
+### I-4 Classification
+
+**PLATFORM TRANSIENT** in Supabase-hosted PostgREST JWT validation.
+
+- **Proven:** the `iat` time-claim check intermittently judges a valid,
+  seconds-old token as "issued at future", inconsistently between
+  concurrent identical requests, in the first burst after PostgREST has
+  been idle.
+- **Suspected, not proven:** the exact internal mechanism. The likeliest
+  explanation is PostgREST's cached "now" lagging briefly after
+  inactivity. Its internals cannot be inspected from here, and external
+  references were blocked by the session's egress policy. An unverified
+  search result mentions a Supabase status incident ("401 errors due to
+  JWT rejections" for newly issued JWTs); it is noted only as a lead.
+
+The harness and product code are not the cause.
+
+### I-5 Safety (fail-closed confirmed)
+
+A failed profile read never grants access and never yields another user's
+or organisation's data.
+
+| Route | Behaviour when the profile read fails |
+|---|---|
+| settings, parent-hub, finance, needs-attention, session-occurrences, coach-allocations / availability / compliance / cover / work-summaries, occurrence-financial-outcomes, hub-content `/session-participants` | **401** |
+| hub-content `/players` | **200 `[]`** (no data, silently) |
+| hub-content `/settings` and root | the **public bootstrap** payload (public data only) |
+| `me` | **404 "Profile not found"** (misleading label, no data) |
+
+### I-6 Decision
+
+- **No code change now.**
+- **401 is not retried automatically.**
+
+If the transient matters for users later, the options are (owner's
+decision, a separate slice):
+
+- **(a)** A narrowly scoped single retry, used **only** when `getUser`
+  succeeded with the same token **and** PostgREST answered 401 with
+  `PGRST303` / "JWT issued at future":
+  - 1 retry after ~1 s;
+  - never retry PGRST301 or expired/invalid JWTs;
+  - log it.
+- **(b)** Read the profile with the service role, filtered by the user id
+  that GoTrue verified. This takes PostgREST's time check out of the path,
+  but it is a security-relevant change (it bypasses RLS for this read).
+  It belongs to a shared-auth-helper slice.
+
+### I-7 Debt / watch items
+
+- Frontend: `onSignedIn` → `/me` straight after sign-in is the most exposed
+  path. A transient shows "Could not load your profile (404)" with a
+  retry-by-refresh. `me` maps any profile error to 404.
+- hub-content `/players` and `/settings` cannot tell "no session" from
+  "session present but resolution failed". Both fail safe, but silently.
+- `resolveCaller` is still copied in 13 functions and returns null for
+  both `getUser` and profile failures, so logs cannot tell them apart.
+- Airtable 429 under bursts of ~50 concurrent Airtable-backed calls (TEST
+  harness only).
+- Watch item **kept** with a known signature: `proxy_status` PGRST303 on
+  `/rest/v1/profiles` with a fresh token after idle.
+
+### I-8 Resting state
+
+- 9 profiles, all active, all ORG-TEST-001 (no profile was mutated in this
+  investigation).
+- 0 locks; `f2probe.tokens` holds no token; pg_net queue 0; Finance audit
+  667.
+- New inert TEST-only harness objects: `f2probe.r401_users`,
+  `f2probe.r401_rest()` (part of the existing `f2probe` cleanup item).
+- Sign-in bodies remain in `net._http_response` until pg_net's purge.
+- Suites unchanged: Settings 39/39, P1 45/45, `npm test` 91/91.
