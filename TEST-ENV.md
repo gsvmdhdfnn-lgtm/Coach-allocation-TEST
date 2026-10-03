@@ -26888,3 +26888,211 @@ how to resolve it.
   item if it recurs.
 
 **STATUS: P1 CORRECTION SLICE = COMPLETE IN TEST.**
+
+## Settings / Config Foundation — S1-a (shared organisation context + module contract, read-only Settings & System overview) — LIVE-PROVEN on `settings` v1; `hub-content` deploy + proof L WAITING ON OPERATOR — TEST only — 2026-10-03
+
+Scope: **Organisation Management configuration only.** Not Platform Admin
+/ Super Admin. Nothing here creates organisations, sets an organisation
+live, manages domains, onboarding, plans, platform support access,
+cross-organisation diagnostics or platform defaults. Those belong to a
+future, separate Platform layer and are not exposed to organisation
+Management. No writes, no UI, no migration, no new permission role.
+
+Code at `cf5111e`. F1–F22, Needs Attention, Session Staff, Parent / Coach
+access, invoices and connections were not changed or redeployed.
+
+### S1-a.1 Organisation-context contract (`_shared/organisation-context.ts`)
+
+`resolveOrganisationContext(caller, orgRows)` is the one resolver.
+
+- The caller's profile must be active. Otherwise it fails with
+  `inactive_profile` (403).
+- The organisation comes **only** from `profiles.organisation_id`. A
+  request can never choose it.
+- It needs exactly one **Active** "Organisation & Branding" row whose
+  Organisation ID equals that value (exact string match). It never falls
+  back to "the first Active row".
+- Failures (all fail closed):
+
+  | Case | Code | Status |
+  |---|---|---|
+  | Blank org, or no Active org at all | `organisation_not_found` | 409 |
+  | Two or more matching Active rows | `organisation_ambiguous` | 409 |
+  | No match while another org is Active | `organisation_mismatch` | 403 |
+  | Timezone present but not a valid IANA zone | `organisation_timezone_invalid` | 409 |
+
+- Context returned:
+  - `organisationId` (Organisation ID text, the cross-domain identity);
+  - `organisationRecordId` (Airtable id, internal only, never returned to
+    a client);
+  - `displayName`;
+  - `timezone`, read from the record, with Europe/London only when the
+    record leaves it blank (`timezoneSource` = `organisation` / `default`);
+  - `currency` GBP.
+- `todayIn(ctx)` gives the organisation's calendar date, the shared
+  "today" foundation.
+- Same match rule as the existing copies in Finance, Needs Attention and
+  session-occurrences. Those callers were **not** switched over. Equivalence
+  is drift-tested (E1–E2 in `tests/support/settings-system.test.ts`).
+
+### S1-a.2 Module-state contract (`getModuleState(featureRows, key)`)
+
+| Kind | Keys | Behaviour |
+|---|---|---|
+| Core (not switches) | `module_schedule`, `module_coaches`, `module_players_parents`, `module_system` | always `enabled`, reason `core`; no Feature Controls row can turn them off |
+| Optional, user-facing | `module_finance` | on only when every matching row is Enabled |
+| Optional, future, hidden | `module_development` | same rule; not shown in the overview |
+| Not built (hidden) | `module_communications`, `module_safeguarding` | always off, reason `unavailable`, whatever a row says |
+
+- **Missing optional row → off (`missing`). Conflicting rows → off
+  (`conflicting`).** Optional modules fail closed.
+- A module never grants or removes a permission. Role and grant checks
+  stay with each domain (Finance View / Manage, NA, Session Staff, …).
+- **Legacy separation:** `legacy_assigned_coaches` is not answered by this
+  contract (reason `legacy`, never on). Its own "missing row = on" rule
+  stays in `hub-content` `/players`, untouched. That is recorded as DEBT
+  (S1-a.9), so it cannot leak into the new resolver.
+
+### S1-a.3 Settings & System overview — `GET /settings/system` (new `settings` function)
+
+- Access:
+  - active Management only;
+  - Coach → 403; Parent → 403; inactive → 403 `inactive_profile`;
+  - no session → 401;
+  - org / tenant query parameter → 400 `organisation_parameter_not_accepted`;
+  - non-GET → 405.
+- Finance View / Manage is not required. No new Settings role.
+- Read model (small and calm, nothing editable):
+  - `organisation {id, displayName, timezone}`;
+  - `modules[]`: the 4 core modules plus Finance, each with
+    `{key, label, kind, enabled, editable:false, reason}`;
+  - `connections[]`;
+  - `system {status: healthy|attention, today}`.
+- Never returned:
+  - Airtable record ids;
+  - raw Feature Controls rows;
+  - secret / Vault ids, client / tenant / account / spreadsheet ids;
+  - Finance configuration;
+  - NA thresholds.
+
+### S1-a.4 Connection-health boundary
+
+- Read-only. It uses the service role and selects **health columns only**,
+  filtered by the resolved `organisation_id`:
+  - `finance_external_connections` (xero);
+  - `finance_stripe_connections`;
+  - `finance_reporting_connections` (google_sheets).
+- Each provider returns `{provider, label, status, lastSuccessAt,
+  lastErrorCode, needsAttention, managedIn:"finance"}`.
+  - `status` is one of `connected` / `disconnected` / `not_connected` /
+    `unknown`. More than one row means `unknown` plus attention.
+  - `lastErrorCode` is shown only while the latest outcome is a failure.
+- Finance still owns connecting, disconnecting and credentials. Nothing
+  here writes.
+
+### S1-a.5 `hub-content` `/settings` (code at `cf5111e`; deploy pending)
+
+- The route is purely public today. The frontend (`content-provider.js`)
+  fetches it without a user session, so public and authenticated reads were
+  **not** overloaded. No STOP was needed and public behaviour was not
+  changed.
+- **No user session** (public bootstrap): unchanged. It still returns the
+  first Active row, same payload. The test suite proves this byte for byte
+  against `10e9c98`. Per-organisation routing of public traffic
+  (domain / subdomain) is future Platform work.
+- **Signed-in user:** uses `resolveOrganisationContext`. The match is exact
+  on the caller's `profiles.organisation_id`; inactive / not found /
+  mismatch / ambiguous fail closed with `{error, code}`. The payload shape
+  is unchanged.
+- `/players`, `legacy_assigned_coaches` and every other route: untouched.
+
+### S1-a.6 Deployment
+
+| Function | Version | verify_jwt | Files vs `cf5111e` |
+|---|---|---|---|
+| `settings` (new) | v1 (MCP deploy) | true | `settings/index.ts` `66f1cd3a90f3…`, `settings/settings-system.ts` `b8d99e08aa68…`, `_shared/organisation-context.ts` `82bdc4de0171…`. **All MATCH byte for byte**, compared from the `get_edge_function` payload. ezbr `7412756de1d9…` |
+| `hub-content` | **still v12 — operator deploy required** | true (keep) | to deploy: `hub-content/index.ts` `2e015c69e25a…`, `hub-content/player-access.ts` `21193840e9ff…` (unchanged), `_shared/organisation-context.ts` `82bdc4de0171…` |
+
+`hub-content` now imports `../_shared/organisation-context.ts`, so the
+deploy must include `_shared/`. Deploy from `supabase/functions-test` at
+`cf5111e` with the entrypoint `hub-content/index.ts` (`--project-ref
+dkqubldmfyeuudecxmvh`; TEST only). After the deploy: byte-verify, then
+run proof L (S1-a.7).
+
+### S1-a.7 Live proof (2026-10-03, TEST `pg_net` harness, real logins)
+
+| # | Proof | Result |
+|---|---|---|
+| A | Management `GET settings/system` | **200**: ORG-TEST-001 / "Josh Evans Soccer School (TEST)" / Europe/London; 4 core modules enabled + `core` + `editable:false`; Finance `optional` enabled (`enabled`); Xero disconnected, Stripe disconnected, Google Sheets reporting connected; `system.status` healthy |
+| B | Coach | **403** Management access required |
+| C | Parent | **403** on retry. The first call was 401: the same transient PostgREST rejection of the user-scoped profile read already recorded in P1.4. It still fails closed (deny) |
+| D | Management set `active=false` | **403 `inactive_profile`**; restored to `active=true` immediately |
+| E | Organisation | `ORG-TEST-001`, correct display name |
+| F | Timezone from the record | TEST Org & Branding Timezone temporarily set to `Pacific/Auckland` → the overview returned `Pacific/Auckland` and `today` = **2026-10-04** while the UK date was 2026-10-03. Restored to `Europe/London` (verified) |
+| G | Finance reflects Feature Controls | one `module_finance` row, Enabled → `enabled:true, reason:"enabled"`. Development (row Enabled) is not surfaced; Communications / Safeguarding are not surfaced |
+| H | Core modules | enabled / `core` / `editable:false`, no toggles |
+| I | Connections | values equal the three Finance connection rows (status, last success). Keys only `provider,label,status,lastSuccessAt,lastErrorCode,needsAttention,managedIn`. No secret-like content (regex scan) |
+| J | Org override | `?organisation_id=ORG-OTHER-999` and `?tenant=ORG-OTHER-999` → **400 `organisation_parameter_not_accepted`** |
+| K | Record ids | no `rec…` id anywhere in the responses |
+| L | `hub-content` `/settings` exact org match | **pending the operator deploy.** Baseline captured on v12: no-auth / Management / Coach `GET hub-content/settings` are all 200 with an identical body (md5 `d945c911…`). After the deploy: the public body must still be md5 `d945c911…`; Management and Coach must resolve ORG-TEST-001 by exact match; inactive must give 403 `inactive_profile` |
+| M | Production | never connected (Airtable `apprptFotQuVL1mhs` / Supabase `bkkukymqaxawnudoxdjs`); every function boot-guards the base |
+
+### S1-a.8 Tests and regression
+
+- New `tests/support/settings-system.test.ts` (e2e shim
+  `tests/e2e/settingssystemtest.js`): **39/39**. It covers brief items
+  1–36:
+  - organisation context O1–O7b;
+  - modules M8–M18;
+  - overview V19–V27b, by bundling the real `settings` function;
+  - hub-content H28–H31, including a public bootstrap byte-identical to
+    `10e9c98`;
+  - regression R32–R36, with Finance / NA / session-occurrences /
+    parent-hub / branding files byte-identical to `10e9c98`;
+  - equivalence E1–E4.
+- Mutations M1–M7 (first-row fallback, missing-row-on, core switchable,
+  org parameter honoured, record-id leak, …) are each caught.
+- `tests/support/p1-corrections.test.ts` now materialises `_shared/` when
+  bundling. P1 is still 45/45.
+- `npm test` **91/91**.
+
+### S1-a.9 Resting state and debt
+
+- Profiles: 9, all active; one active Management.
+- `parent_identity_locks` 0; `pg_net` queue 0; `f2probe.tokens` holds no
+  token (3 login rows with `tok` null, pre-existing).
+- Finance audit count 667 (unchanged).
+- Connection rows: 1 / 1 / 1 (unchanged).
+- Org & Branding Timezone is Europe/London; Feature Controls unchanged;
+  Hub Settings still empty.
+- Sign-in bodies (short-lived tokens) stay in `net._http_response` until
+  pg_net's own purge, as in earlier runs.
+- DEBT:
+  - `legacy_assigned_coaches` still defaults to on when its row is missing
+    (`hub-content` `/players`, deliberately untouched);
+  - organisation matching is still copied in Finance / NA /
+    session-occurrences (drift-tested, not switched);
+  - public `/settings` still uses the first Active row (no caller org to
+    match; future Platform domain routing);
+  - the frontend `feature()` treats missing as on;
+  - the transient PostgREST 401 watch item recurred once (C).
+
+### S1-a.10 Remaining
+
+- **S1-a close-out:** operator deploy of `hub-content` from `cf5111e`, then
+  byte-verify and run proof L.
+- **S1-b:** switch Finance / NA / session-occurrences onto the shared
+  resolver (behaviour-preserving, drift tests become identity tests); use
+  `todayIn(ctx)` where "today" is still Europe/London-hard-coded;
+  frontend `feature()` fail-closed for optional modules;
+  `legacy_assigned_coaches` retirement decision.
+- **S2:**
+  - the first Management-editable settings, A-class only, with
+    audit / revisions;
+  - the Settings & System UI;
+  - NA core-rule gating moved off module rows;
+  - Hub Settings / Content & Brand ownership kept separate.
+
+**STATUS: S1-a = LIVE-PROVEN IN TEST for the `settings` overview; the
+`hub-content` `/settings` exact-match path is tested in code and waits on
+the operator deploy (proof L).**
