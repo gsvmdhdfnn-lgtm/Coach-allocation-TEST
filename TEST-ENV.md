@@ -24922,3 +24922,208 @@ WRITE remains NOT PROVEN.
 - No code changed in the live-proof phase.
 
 **F20 = COMPLETE IN TEST.** F21 / F22 not started.
+
+## Finance Foundation — F21 (Stripe refund execution) — AUDIT ONLY — STOPPED BEFORE CODE (decisions needed) — TEST only — 2026-10-03
+
+> **Status.** The brief's audit (items 1–11) was run against the repo and
+> TEST Supabase `dkqubldmfyeuudecxmvh`, read-only.
+> - **No code, schema, data, emulator or deployment change was made.**
+> - TEST stays `finance` v29 / `needs-attention` v19 /
+>   `sheets-sandbox` v1 / `stripe-sandbox` v1.
+> - **Stopped:** the brief's own STOP rules triggered.
+>   - The refund cash event's timing contradicts F17's Stripe exclusion
+>     (FIN21.3, D1).
+>   - Two further points need a decision before any execution code exists:
+>     - the refund-write credential (D2);
+>     - provider finality without webhooks (D3).
+> - Production untouched. F22 not started.
+
+### FIN21.1 Audit findings (facts)
+
+1. **F11 tables / states.**
+   - `finance_refund_decisions` holds:
+     - `stripe_charge_id`, `stripe_customer_id`;
+     - `currency` (CHECK = GBP);
+     - `card_refund_minor` (integer pence), the funding snapshot,
+       `execution_state` (`refund_due` / `split_refund_due` / …);
+     - `refund_state`, with a CHECK allowing `none` /
+       `awaiting_refund_action` / `refund_processing` / `refunded` /
+       `refund_failed`;
+     - `stripe_refund_id` (`re_…`).
+   - The guard trigger lets only F21 change `refund_state` (free) and set
+     `stripe_refund_id` once. DELETE is refused.
+   - CHECKs: `card_refund_minor > 0 ⇔ refund_state <> 'none'`, and
+     `card_refund_minor > 0 ⇒ stripe_charge_id` is not null.
+   - F11's reverse refuses (409 `refund_in_progress`) once `refund_state`
+     leaves `none` / `awaiting_refund_action` or `stripe_refund_id` is
+     set. So moving to `refund_processing` blocks a concurrent reversal.
+2. **F10 connector / emulator.**
+   - `StripeReadProvider` is GET only (account, customers,
+     subscriptions, invoices, charges, `charge(id)`,
+     `chargeRefunds(charge)`).
+   - `stripe-sandbox` v1 is READ-ONLY: every non-GET → 405 and is logged.
+     0 non-GET requests have ever been logged.
+   - No create-refund, Idempotency-Key, pending / failed refund or
+     post-accept timeout emulation exists. All of it would be new, but
+     it can be built in TEST (no ambiguity).
+3. **Connection.** One row, `ORG-TEST-001`: mode test, endpoint sandbox,
+   key_kind restricted, **status disconnected**, Vault secret removed
+   after F11. F21 live proof must reconnect the emulator through the
+   operator SQL (FIN10.3).
+4. **Stored Stripe ids.**
+   - Stored: charge id + customer id on the decision; the family
+     payment's single charge.
+   - Not stored: PaymentIntent, Checkout Session, subscription or
+     metadata linkage.
+   - Stripe's `POST /v1/refunds` accepts `charge`, so the charge id is
+     sufficient.
+5. **Exact mapping.** Every card-refund decision points at exactly one
+   charge: either the source charge, or the family payment's recorded
+   charge (`ch_ZZTESTf11m60` for `FFP-793CCB2A2EC6`).
+6. **Multiple charges per logical payment:** no. A family payment has at
+   most one Stripe charge (unique per organisation), and a payment's own
+   charge cannot be decided separately (409
+   `charge_belongs_to_family_payment`).
+7. **Currency:** GBP only. The CHECK and F11 refuse non-GBP charges.
+8. **Family credit:** F11 creates the credit portion **immediately** at
+   decision time. Nothing waits for execution, so F21 has no reason to
+   create credit.
+9. **Month Report / F17.**
+   - **Month Report:** F18 D2 keeps parent / Stripe revenue out of report
+     totals entirely. F11 corrections (dated by decision date) never
+     enter the Month Report; its `revenueCorrections` are F6 credit notes
+     only. The Overview's parent-revenue figure is informational: gross
+     of succeeded charges.
+   - **F17:** excludes **all Stripe money** ("no bank payout timing") and
+     lists F11 Refund Due as "no cash date until F21".
+10. **Patterns available.**
+    - The shared Finance write lock `commercial:{org}`.
+    - One database function per write, with audit in the same
+      transaction.
+    - The F9 Xero journal pattern: stable Idempotency-Key per
+      generation; the provider id journaled the moment it is known;
+      attempts counted.
+    - The F19 run-row pattern.
+11. **TEST fixtures available.** 7 `awaiting_refund_action` decisions
+    (238.34 total, ZZTEST emulator charges). They include the locked
+    example twice on `FFP-793CCB2A2EC6` (£40 credit / £60 card): two £50
+    returns, each £20 credit + £30 card (`FRD-1DA6EDEA084D`,
+    `FRD-9B917033B203`). That is a ready second-partial / remaining-cap
+    case. The odd-penny case `FRD-1653C1DF9EA7` is 3.34 card.
+
+**Webhooks:** none exist anywhere (FIN10.1).
+
+**Stripe idempotency keys:** Stripe prunes them after about 24 h, so they
+cannot be the only reconciliation mechanism. Matching the charge's refund
+list on a stored metadata id (`hub_execution_id`) is needed for a late
+retry.
+
+### FIN21.2 Verdict on the F11 / F21 boundary
+
+There is no conflict with the locked F11 rules.
+- F21 can take `card_refund_minor`, `stripe_charge_id` and the currency
+  verbatim from the decision. It needs no allocation logic.
+- It never touches family credit.
+- The reserved `refund_state` values and the once-only `stripe_refund_id`
+  are exactly the hooks F11 left for it.
+
+### FIN21.3 Decisions needed before code
+
+- **D1 — Cash Flow timing of a confirmed Stripe refund (STOP condition).**
+  - The conflict:
+    - The locked Finance rule says Cash Flow records an OUT on the refund
+      date.
+    - F17 excludes every Stripe movement because Stripe money reaches the
+      bank only through payouts. Original charges are never IN events.
+  - A Stripe refund debits the Stripe balance; the bank feels it at the
+    next payout netting. A refund date is therefore not a bank date.
+  - Options:
+    - **(a, recommended)** Keep F17's bank projection unchanged.
+      - A confirmed refund appears in Cash Flow as an informational
+        "Refunded via Stripe on <date> — settles through Stripe payouts
+        (not in the bank projection)" line.
+      - Refund Due leaves `notIncluded`.
+      - The bank Actual OUT waits for Stripe payout integration.
+    - **(b)** Actual OUT in the bank projection on the Stripe refund date,
+      labelled "via Stripe balance". It is directionally right (the
+      original charge already reached the bank before the recorded
+      balance), but it is dated by refund, not by bank.
+    - **(c)** As (b), but only for refunds created before the latest
+      recorded bank balance's as-at date is excluded.
+- **D2 — Refund-write credential.**
+  - F10 recommended a read-only restricted key. Executing refunds needs
+    Refunds (and Charges read) **write** permission.
+  - **(a, recommended)** The same organisation connection, rotated by the
+    operator to a restricted key with Refunds write + the existing reads.
+    A provider 401 / 403 maps to 409 `stripe_permission_denied`, with no
+    state change.
+  - (b) A separate write credential row.
+  - TEST uses the emulator either way. This decides production setup.
+- **D3 — Provider finality without webhooks.**
+  - Stripe refund status is `pending` / `requires_action` / `succeeded` /
+    `failed` / `canceled`. A card refund can become `failed` after
+    first reporting `succeeded`.
+  - **(a, recommended)**
+    - No webhook infrastructure in F21.
+    - `pending` / `requires_action` stay `refund_processing`: not
+      Actual cash.
+    - A Manage `POST …/execution/reconcile` re-reads the refund
+      (GET `/v1/refunds/{id}`, or the charge's refund list by
+      `hub_execution_id`) and records Stripe's status.
+    - `succeeded → failed` is recorded as provider truth: `refund_failed`
+      with an audited reversal of any cash line. The card value stays
+      owed; a new execution version is allowed only after Management
+      confirms.
+  - (b) Treat `succeeded` as terminal in the Hub and only surface later
+    provider changes.
+- **D4 — Premise correction (no decision needed unless you disagree).**
+  - The brief says F11 / F18 put the refund correction in the original
+    revenue month. As built:
+    - F18 excludes parent / Stripe revenue from totals;
+    - F11 correction facts are dated by decision date and never enter the
+      Month Report.
+  - F21 will not change either. "Original revenue-month correction
+    unchanged" is trivially true; refunds never become overheads or
+    business costs.
+
+### FIN21.4 Plan once D1–D3 are answered (unchanged from the brief otherwise)
+
+**New table: `finance_stripe_refund_executions`.**
+- Columns:
+  - org, decision, version, charge;
+  - amount / currency **copied from the decision**;
+  - idempotency key `f21:{org}:{decision}:v{n}`, `hub_execution_id`
+    metadata;
+  - status `processing` / `succeeded` / `failed_retryable` /
+    `failed_final` / `unknown`, plus the provider status;
+  - `re_…` id;
+  - attempts / timestamps, safe failure code, actor.
+- Constraints: unique (org, decision) WHERE status <> `failed_final`,
+  and unique (org, decision, version).
+
+**Flow.**
+1. Reserve under the `commercial:{org}` lock in ONE database function:
+   the execution row + decision `refund_state = refund_processing` +
+   audit.
+2. Pre-flight GET of the charge: remaining refundable =
+   amount − amount_refunded ≥ card portion, and the currency.
+3. `POST /v1/refunds` with the same Idempotency-Key and metadata.
+4. Journal the `re_…` id and status.
+5. On a timeout / 5xx / 429: reconcile through the charge's refund list
+   by `hub_execution_id` before any retry.
+6. Only Stripe `succeeded` sets `refunded`.
+
+**Routes.**
+- `POST /refund-decisions/{FRD}/execute` (Manage, empty body).
+- `POST …/execution/reconcile` (Manage).
+- `GET …/execution` (View).
+
+**Emulator.** `stripe-sandbox` v2 adds POST `/v1/refunds` with
+Idempotency-Key replay, metadata, amount_refunded caps and pending /
+failed states, plus faults:
+- timeout before / after accept;
+- 429, 500, 401 / 403;
+- insufficient amount, wrong currency.
+
+**Needs Attention.** No new rule; record the debt for a stuck
+`refund_processing` case.
