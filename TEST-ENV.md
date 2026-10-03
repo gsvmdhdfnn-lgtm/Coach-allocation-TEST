@@ -24880,6 +24880,8 @@ v1, all ACTIVE.
   - Manage **`0595bf70-c600-4550-b777-da583da40b80`**;
   - granted_by `f20-live-proof`;
   - note "F20 proof: Manage restored (deliberate resting grant)".
+  - *(Superseded on 2026-10-03 by the F21 live proof: revoked; current
+    resting grant `6757aefd-ff68-45b9-af1d-7dddf20ea16e`, FIN21.21.)*
 
   The proof's earlier grants are revoked:
   - Manage `37afc9ba-8135-4958-b5d6-5472e91658f8` (F19 resting grant),
@@ -24923,9 +24925,28 @@ WRITE remains NOT PROVEN.
 
 **F20 = COMPLETE IN TEST.** F21 / F22 not started.
 
-## Finance Foundation — F21 (Stripe refund execution) — CODE COMPLETE / TESTS PASS — NOT DEPLOYED / NOT LIVE-PROVEN (finance v30 + needs-attention v20 await operator) — REAL STRIPE REFUND: NOT PROVEN — TEST only — 2026-10-03
+## Finance Foundation — F21 (Stripe refund execution) — COMPLETE IN TEST (live-proven on finance v30 / needs-attention v20 against the stripe-sandbox v2 emulator) — REAL STRIPE REFUND: NOT PROVEN — TEST only — 2026-10-03
 
 > **Status (latest first).**
+> - **Live proof (FIN21.14–FIN21.22), 2026-10-03, on the operator-deployed
+>   `finance` v30 / `needs-attention` v20 (commit `ad9feaf`) against
+>   `stripe-sandbox` v2 only.**
+>   - All proofs 1–23 of the live-proof request passed (one exception: a
+>     live 400 is not injectable in emulator v2 and is covered by unit test
+>     PF28).
+>   - Seven F11 Refund Due fixtures were refunded once each, with exact
+>     amounts (incl. £3.34 and the £40 / £60 → £30 mixed example), across
+>     12 executions.
+>   - Proven: concurrency, unknown-outcome reconciliation, pending / failed
+>     / canceled / requires_action, permission denied → retry,
+>     multi-organisation isolation and the full access matrix.
+>   - Cash Flow, Month Report, Overview, Needs Attention and the F19
+>     workbook are unchanged (byte-identical where compared).
+>   - Two findings are recorded as debt and history: the `actions.canExecute`
+>     debt and the mistyped actor audit row (FIN21.22).
+>   - Resting state: FIN21.21. New Manage grant
+>     `6757aefd-ff68-45b9-af1d-7dddf20ea16e`.
+>   - **REAL STRIPE REFUND: NOT PROVEN.**
 > - **Build (FIN21.5–FIN21.13), on the locked decisions D1–D4 (2026-10-03).**
 >   - F21 executes the card part of an F11 decision in Stripe:
 >     - it copies the amount, charge and currency from the decision
@@ -25432,7 +25453,7 @@ behaved as designed):
   the provenance header changed: the shared `finance-cash-flow.ts` wording
   is tree-shaken out of the needs-attention code.
 
-### FIN21.10 Deployment checkpoint (operator)
+### FIN21.10 Deployment checkpoint (operator) — DONE 2026-10-03 (see FIN21.14)
 
 1. Deploy `finance` **v30** from the committed artifact (verify_jwt
    true), and check its sha256 against the manifest.
@@ -25476,7 +25497,7 @@ routes are absent there; the new tables and functions are unused.
 
 **REAL STRIPE REFUND = NOT PROVEN.**
 
-### FIN21.12 Resting TEST state (build)
+### FIN21.12 Resting TEST state (build) — superseded by FIN21.21
 
 - **Functions:** `finance` v29 / `needs-attention` v19 /
   `sheets-sandbox` v1 / **`stripe-sandbox` v2**.
@@ -25493,8 +25514,7 @@ routes are absent there; the new tables and functions are unused.
 
 ### FIN21.13 Future debt
 
-- **Operator deploy** of `finance` v30 / `needs-attention` v20, then the
-  FIN21.11 live proof.
+- ~~Operator deploy + FIN21.11 live proof~~ — done (FIN21.14–FIN21.21).
 - **Stripe payout / balance integration:** the real bank impact of
   refunds (and of Stripe income).
 - **Correcting a confirmed success.** A refund that Stripe reports failed
@@ -25513,3 +25533,286 @@ routes are absent there; the new tables and functions are unused.
   executions.
 - **UI:** "Refund to card" / "Reconcile" actions and a capability badge.
 - **REAL STRIPE REFUND: NOT PROVEN.**
+
+### FIN21.14 Deployment verified + live-proof setup (2026-10-03)
+
+**Deployed (operator, from commit `ad9feaf`):**
+- `finance` **v30**, ACTIVE, verify_jwt true. The deployed source exactly
+  matches the committed artifact (sha256 `144fe334…9973`).
+- `needs-attention` **v20**, ACTIVE, verify_jwt true. It exactly matches
+  its artifact (`2dd53468…850d`).
+- `stripe-sandbox` **v2**, ACTIVE. It exactly matches
+  `supabase/functions-test/stripe-sandbox/index.ts`. **Emulator only.**
+
+After the proof, both bundle `--check` runs still MATCH, so deployed =
+committed.
+
+**Harness.** The `f2probe` pg_net logins were mgr / coach / parent. New
+helpers were added in the `f2probe` schema:
+- `f21_marks` (baseline store);
+- `strip` / `cfn` (body comparison without `generatedAt`; for Cash Flow
+  also without `notIncluded.refundDue`);
+- `fam_hash` (all four `finance_family_*` tables);
+- `dec_split`, `xrows`, `emsince`;
+- `try_reserve` / `try_double` / `ev` (self-rolling-back database probes).
+
+`f2probe` cleanup remains an operator item. Tokens were cleared at the end.
+
+**Baselines.**
+- **Pre-F21** (Stripe disconnected), `pre0:*`: Cash Flow 3m position +
+  30d money-out, Month Report Sep/Oct Actual + Expected, Overview Oct,
+  Needs Attention cases. Audit 541, 0 executions, 0 non-GET emulator
+  requests (last request id 122).
+- **Post-connect**, `b:*`, taken before any execute. Connecting changes
+  only F10's Stripe exclusion block in the Month Report
+  (`not_connected` → `excluded`, 17 charges / £641.01, informational).
+  Totals, Cash Flow, Overview and Needs Attention are identical.
+
+**Emulator connect (operator procedure, FIN10.3).**
+- A `DO` block generated an `rk_test_…` key in the database. It stored
+  only the key's sha256 on `acct_ZZTESTf10sandbox` and called
+  `finance_stripe_connect`.
+- The key went to Vault only; it never appeared in output, Git or
+  Airtable.
+- `refund_write` started **false**.
+- **Proof history — mistyped actor:**
+  - The first connect (11:21:27Z) was called with a mistyped actor UUID,
+    `285f819e-8e0d-4fc4-a9a6-5f16781e97ba`. The manager is
+    `285f819e-e0d4-4257-8121-5f16781e97ba`.
+  - Its `finance_stripe.connected` audit row is append-only and is kept
+    as-is. It was not deleted or rewritten.
+  - A second connect (11:21:48Z) used the correct manager actor and
+    replaced the key. Every F21 call ran on the second connection.
+
+### FIN21.15 Live proof — execution, amounts, F11 boundary (proofs 1–7, 13, 16)
+
+| # | Fixture | Result |
+|---|---|---|
+| 16 Disconnected | CBCEF (100.00) | 409 `stripe_not_connected`; 0 emulator requests, 0 executions, 0 audit; decision stays `awaiting_refund_action` |
+| 14 Permission | CBCEF v1 | `refund_write` false → POST 403. 409 `provider_permission_denied`; execution `failed / permission_denied`; decision back to Refund Due; connection `refund_capability = unavailable / permission_denied` (status read shows it). After permission was restored, v4 succeeded exactly once (below) |
+| 15 401 | CBCEF v2 | The emulator key hash was swapped (plain WHERE-scoped UPDATE, restored straight after). The pre-flight GET charge returned 401, so **no POST was sent**. 409 `stripe_connection_rejected`; `failed / key_rejected`; Refund Due |
+| 15 429 | CBCEF v3 | Fault `rate_limit` → POST 429, nothing created. 503 `stripe_rate_limited`; `failed / rate_limit`; Refund Due |
+| 2 Concurrency | CBCEF v4 | Two executes in the same instant: one 409 `finance_commercial_busy` (Finance write lock), one 200 `succeeded`. **One** POST, **one** refund `re_ZZTEST21UZ6kF3jQeEXW4k` (10000, metadata `hub_organisation_id` / `hub_refund_decision_id` / `hub_execution_id`) |
+| 2 Database rules | cc30 / CBCEF (rolled back) | `finance_stripe_refund_reserve` directly: a refunded decision → `f21:already_refunded`; a wrong amount or charge → `f21:decision_mismatch`; a second reserve while one is live → `f21:execution_in_progress`; a raw second live insert → unique `finance_stripe_refund_executions_one_live`; events without an organisation → `f21:audit_org_mismatch`. All rolled back (executions / audit unchanged) |
+| 1 + 3 Eligible / success | CBCEF | Executed with F11's `card_refund_minor` 10000, `ch_ZZTESTf11r100`, GBP. Decision: Refund Due → `refund_processing` (reserved before Stripe) → `refunded` + `stripe_refund_id`. The status read returns the decision, the execution (refund id, provider status, `Refunded via Stripe on 2026-10-03 - settles through Stripe payouts`), history v4→v1 and capability `available` |
+| 1 No override | ext30 | Body `amount` / `amountMinor` / `currency` / `stripeChargeId` → 400 `unexpected_field`; `organisationId` (body or query) → 400 `tenant_param_rejected` |
+| 13 Terminal | CBCEF | Execute again → 409 `already_refunded`. Reconcile → 200 `reconciled:false` ("already final - nothing was sent"). 0 Stripe calls, 0 audit |
+| 4 Mixed funding | MIX1 `FRD-1DA6EDEA084D` | £40 credit / £60 card source `FFP-793CCB2A2EC6`; F11's return 5000 = 2000 credit + 3000 card. F21 sent **exactly 3000**. `finance_family_*` hashes (credits / applications / payments / sources) byte-identical; 0 new `finance_family*` audit events (42 before and after). Split unchanged |
+| 5 Second partial | MIX2 `FRD-9B917033B203` | 3000 again (via proof 8). `ch_ZZTESTf11m60` `amount_refunded` = 6000 = £60, never more. F11 `GET refund-sources/FFP-793CCB2A2EC6`: returnable 0.00; `stripeRefunds` 0.00 (the two F21 refunds carry Hub metadata and are not counted again as outside refunds). F11 `POST refund-decisions` for a third £10 → 409 `nothing_returnable` |
+| 6 Odd penny | `FRD-1653C1DF9EA7` | F11's stored split 500 = 166 credit + 334 card; F21 sent **334** (no new proportional calculation). Fault `malformed` after accept → the in-call lookup found the refund by metadata → `succeeded`, 1 refund |
+| 7 Idempotency | all | The same execute twice → the second is refused (`already_refunded` / `refund_execution_in_progress`). Every resend used the **same** key `f21:{org}:{decision}:v{n}` (cc30 and ext30: one idempotency row each, attempts 2). After a lost answer, a retry never created a second refund |
+
+### FIN21.16 Live proof — unknown outcome, timeouts, pending, failed (proofs 8–12, 15)
+
+| # | Fixture | Result |
+|---|---|---|
+| 8 Answer lost after accept | MIX2 | Fault `timeout_after_accept`: the refund was created, then the answer hung for 20 s. While it hung, a `list` `fail_500` fault was injected, so the in-call lookup also failed. Result: **202 `outcome_unknown`**, decision `refund_processing`, no success. An execute during that state → 409 `refund_execution_in_progress`, **0 Stripe calls**. Cash Flow read in that state: byte-identical to the baseline (`processingInStripe` 1 / 30.00). Reconcile → `GET /refunds?charge` matched `hub_execution_id` → `succeeded`, **no POST**. Total refunds for MIX2: **1** |
+| 9 Timeout before accept | cc30 `FRD-1C301CD93925` | Fault `timeout`: no refund created. 202 `outcome_unknown`. A blind execute → 409 `refund_execution_in_progress`, 0 calls. Reconcile → the list proved no refund exists → resent with the **same key v1** → `succeeded`, exactly 1 refund (`re_ZZTEST21wxSFzi9qq2YqFJ`), 1 idempotency row |
+| 10 Pending → succeeded | ext30 `FRD-3A041016358A` | Fault `fail_500`: no refund → 202 `outcome_unknown` (code `server`). Reconcile → the list proved none → resend (same key) landed `pending` → 202 processing, decision `refund_processing`. A second reconcile → `GET /refunds/{id}` → `succeeded`, no POST. The outside refunds on that charge (`re_ZZTESTf11ext10` succeeded 1000, `re_ZZTESTf11extfail` failed) were neither adopted nor touched. The charge is refunded exactly 3000 |
+| 11 Pending → failed | s60 `FRD-D27DC9419193` v1 | `refund_pending_then_failed` → 202 processing / `pending`; Cash Flow while pending byte-identical. Reconcile → GET by id → `failed` (`expired_or_canceled_card`). 409 `stripe_refund_failed`; decision `refund_failed`; audit `failed`; no success |
+| 12 Canceled | s60 v2 | `refund_canceled` → 409 `stripe_refund_canceled`; `failed / canceled`; decision `refund_failed`. Never success |
+| 12 requires_action | s60 v3 | `refund_requires_action` → 202 processing / `requires_action`. Reconcile → GET by id, still `requires_action`, stays processing, `resent:false`, no POST. The emulated Stripe then completed it (plain WHERE-scoped UPDATE of that one emulator refund object) → reconcile → `succeeded`. The charge has one live refund (2500) |
+| 15 400 | — | Not reachable live with emulator v2: the pre-flight refuses `insufficient_refundable` / `currency_mismatch` / `stripe_payment_mismatch` / `stripe_charge_not_found` before any POST. Covered by unit test PF28 |
+| 15 401 / 403 / 429 / 500 / malformed | CBCEF / ext30 / penny | See above. Each produced the correct local state, no false success, no family-credit change, and the documented retry / reconcile rule |
+
+### FIN21.17 Live proof — access, multi-organisation, audit (proofs 17–19)
+
+**Access (decision ext30 while it was still Refund Due).**
+
+| Caller | Status read | Execute | Reconcile |
+|---|---|---|---|
+| Manage | 200 | 200 / 202 / 4xx by state | 200 / 202 |
+| View (temporary grant `72dc324e…`) | 200 | 403 `finance_manage_required` | 403 `finance_manage_required` |
+| No grant | 403 `finance_access_denied` | 403 `finance_access_denied` | 403 `finance_access_denied` |
+| Coach / Parent | 403 `management_required` | 403 | 403 |
+| Module off (Airtable Feature Control) | 403 `finance_module_disabled` | 403 | 403 |
+| Tenant override | 400 `tenant_param_rejected` | 400 | — |
+
+Every refused probe left the audit count, the executions and the emulator
+log unchanged.
+
+**Grant changes.**
+- The deliberate Manage grant `0595bf70…` was revoked for the View probe.
+- The View grant `72dc324e-9167-46b1-9257-f4b2c274b4dc` was ended by the
+  **operator**: my gated UPDATE stalled at the MCP confirmation gate, and
+  it was not bypassed. The probes fired during the stall ran with View
+  still active, were discarded, and the no-grant probes were re-run after
+  the operator's revoke.
+- New deliberate grant: **`6757aefd-ff68-45b9-af1d-7dddf20ea16e`** (manage,
+  `granted_by` `f21-live-proof`, note "F21 proof: Manage restored
+  (deliberate resting grant)").
+
+**Organisation isolation.**
+- An append-only ZZTEST fixture `ORG-ZZTEST-F21B` / `FRD-F21B00000001` is
+  Refund Due on the **same** charge as ext30.
+- As the ORG-TEST-001 manager: status read, execute and reconcile → 404
+  `refund_decision_not_found`; F11 read → 404.
+- `finance_stripe_refund_reserve('ORG-TEST-001', 'FRD-F21B00000001', …)`
+  → `f21:decision_not_found`.
+- 0 emulator calls, 0 audit; the other organisation's decision is
+  unchanged.
+- The other organisation has no Stripe connection, so ORG-TEST-001's
+  connection or key is never used for it.
+- The fixture stays as proof history (it changes `fin_hash_ng`).
+
+**Audit (`finance_refund_execution.*`).**
+
+| Event | Count | Executions |
+|---|---|---|
+| started | 12 | CBCEF 4, MIX1, MIX2, penny, cc30, s60 3, ext30 |
+| succeeded | 7 | |
+| failed | 5 | CBCEF 3, s60 2 |
+| outcome_unknown | 3 | MIX2, cc30, ext30 |
+| pending | 4 | |
+| reconciled | 7 | |
+
+- Status reads, refusals (busy, already refunded, in progress, access,
+  validation) and reconcile-on-final → 0 audit rows.
+- All rows are `ORG-TEST-001`. `after` keys hold ids / amounts / statuses /
+  codes only.
+- A scan for key or card patterns (`rk_` / `sk_`, bearer, authorization,
+  last4, exp_month, cvc, `pm_`, secret, vault) found 0 hits in F21 events.
+  The only hits are older F9 / F10 connect events whose *labels* read
+  `secretStoredIn` / `secretDeleted`.
+
+### FIN21.18 Live proof — Cash Flow, Month Report, Overview, Needs Attention, F19 (proofs 20–23)
+
+**Cash Flow (F17).**
+- The bank projection (summary, timeline, totals) is byte-identical in
+  every state:
+  - before F21;
+  - while Refund Due;
+  - while `outcome_unknown` (MIX2);
+  - while pending (s60);
+  - after all 7 succeeded;
+  - after disconnecting.
+- Every body, minus `notIncluded.refundDue` and `generatedAt`, is identical
+  for both 3m position and 30d money-out.
+- Projected low / end stays £10,687.75. No bank Cash Flow OUT and no
+  guessed payout date.
+- Final information block:
+  - `refundedViaStripe` 7 / £238.34, each "Refunded via Stripe on
+    2026-10-03 - settles through Stripe payouts (not in the bank Cash Flow
+    projection)", `bankProjection:false`;
+  - `processingInStripe` 0;
+  - `awaitingRefundAction` 0 (it was 7 / £238.34 before).
+
+**Month Report / Overview (F18 / F20).**
+- Sep + Oct, Actual + Expected, and the Overview are value-identical after
+  all refunds, compared with the post-connect baseline.
+- After disconnecting they are identical to the pre-F21 baseline.
+- Overview Oct profit is −6,855.50 (the F20 control).
+- No refund becomes an overhead or refund-month negative revenue.
+- The F10 Stripe exclusion block is unchanged by refunds: 17 charges /
+  £641.01, which counts succeeded charge amounts.
+
+**Needs Attention.** Cases are identical (Clear, 0). There is no new rule.
+
+**F19.**
+- Sync 2026-10 while connected: run succeeded. Control totals Actual
+  −6,855.50 / Expected −8,020.25 (= F20). Sept data and the legacy tabs
+  are byte-identical.
+- The 2026-10 rows differed only in the F10 Stripe-exclusion wording,
+  because WB01 was last synced while disconnected. No row mentions a
+  refund.
+- After the resting disconnect, a re-sync made the 2026-10 data hash
+  **byte-identical to its pre-F21 value**.
+- No F21 record enters report totals.
+- Sync runs: 23 → 25.
+
+### FIN21.19 F11 / F21 boundary as proven
+
+- F11 decides the amount and split. F21 copies `card_refund_minor`, the
+  charge and the currency verbatim. The caller cannot override them, and
+  the database re-checks them.
+- F21 never creates, restores or changes family credit (`fam_hash`
+  unchanged). F11's credit part was created at decision time.
+- F21 writes the decision only through its two database functions:
+  `refund_state` plus the once-only `stripe_refund_id`.
+- F11 counts a Hub-executed refund once (metadata `hub_refund_decision_id`
+  excludes it from "outside" refunds), so returnable maths stays right
+  after partials.
+- A `refund_failed` decision may be executed again as a new version (s60).
+  A `refunded` decision never can be.
+
+**UI note.** F11's source view lists decisions by their fixed
+`executionState` (e.g. `split_refund_due`), not the refund state. The
+decision detail carries `status.refund` (debt FIN21.22).
+
+### FIN21.20 Fixtures consumed (append-only; no fake reset)
+
+| Decision | Card | Final | Stripe refund | Executions |
+|---|---|---|---|---|
+| `FRD-CBCEF63635E7` | 100.00 | refunded | `re_ZZTEST21UZ6kF3jQeEXW4k` | v1 permission_denied, v2 key_rejected, v3 rate_limit, v4 succeeded |
+| `FRD-1DA6EDEA084D` (MIX1) | 30.00 | refunded | `re_ZZTEST214UznFHKA29R8wS` | v1 succeeded |
+| `FRD-9B917033B203` (MIX2) | 30.00 | refunded | `re_ZZTEST21bFejbduZJsB39C` | v1 outcome_unknown → reconciled succeeded |
+| `FRD-1653C1DF9EA7` (penny) | 3.34 | refunded | `re_ZZTEST21c7ztA4NCanxAGJ` | v1 malformed → in-call lookup succeeded |
+| `FRD-1C301CD93925` (cc30) | 30.00 | refunded | `re_ZZTEST21wxSFzi9qq2YqFJ` | v1 timeout → reconcile resend (attempts 2) |
+| `FRD-D27DC9419193` (s60) | 25.00 | refunded | `re_ZZTEST21YR3Jp9VCj7WvTk` | v1 failed, v2 canceled, v3 requires_action → succeeded |
+| `FRD-3A041016358A` (ext30) | 20.00 | refunded | `re_ZZTEST21ZcP4ndv86Q9S5L` | v1 500 → reconcile resend pending → succeeded |
+| `FRD-F21B00000001` (`ORG-ZZTEST-F21B`) | 20.00 | awaiting_refund_action | — | none (isolation fixture) |
+
+**Totals.**
+- 12 executions: 7 succeeded, 5 failed.
+- 13 emulator POSTs; 9 Hub-created emulator refunds (7 succeeded, 1
+  failed, 1 canceled); 9 idempotency rows.
+- Audit 541 → 584.
+- `fin_hash_ng` `9ebaa586…094` → `2325f404321f0c500c28b392cd47eb84`. The
+  change is expected: it covers `finance_refund_decisions`, the
+  executions, the connection and the isolation fixture.
+
+No ORG-TEST-001 Refund Due fixture remains for F21. A future proof needs
+new F11 decisions.
+
+### FIN21.21 Resting TEST state (after the live proof)
+
+- **Functions:** `finance` v30, `needs-attention` v20, `sheets-sandbox`
+  v1, `stripe-sandbox` v2.
+- **Finance access:**
+  - Finance module ON (Airtable Feature Control `recI5wFXcjUfY6BXy`);
+  - exactly one active grant: deliberate Manage
+    **`6757aefd-ff68-45b9-af1d-7dddf20ea16e`**.
+- **Settings:** Europe/London; Finance Reporting Start Month `2026-09`.
+- **Reporting:** WB01 `SBX_F19_TEST_REPORTING_WB01` connected.
+- **Stripe:**
+  - `finance_stripe_connections` ORG-TEST-001 **disconnected**; secret
+    removed; `refund_capability` `unknown` (reset by its trigger) — the
+    same resting state as after F11 / F18;
+  - emulator `refund_write` **false** (refund permission never assumed);
+  - 0 active emulator faults.
+- **Execution state:** 0 Finance write / settings locks; 0 open
+  (`processing` / `outcome_unknown`) executions; `f2probe` tokens cleared.
+- **Kept, append-only:** the execution ledger, audit history, emulator
+  refunds and request log.
+- **Production** (Airtable `apprptFotQuVL1mhs`, Supabase
+  `bkkukymqaxawnudoxdjs`): untouched. No real Stripe was called; every
+  Stripe call went to `stripe-sandbox`.
+
+### FIN21.22 Findings and future debt (live proof)
+
+- **actions.canExecute debt (finding).**
+  - The status read's `actions.canExecute` / `executeBlockedBy` reflect the
+    decision's eligibility only.
+  - Live, it was `true` for a Finance **View** caller, and while Stripe was
+    **disconnected** with refund capability `unavailable`.
+  - Server enforcement is correct: View → 403 `finance_manage_required`;
+    disconnected → 409 `stripe_not_connected`.
+  - Deployed code was not changed during the proof. A future read model /
+    UI should also require caller Finance Manage access and a connected
+    Stripe with refund capability not `unavailable`.
+- **Mistyped actor audit row (proof history).** One
+  `finance_stripe.connected` row (11:21:27Z) carries actor
+  `285f819e-8e0d-4fc4-a9a6-5f16781e97ba`. It is kept append-only and
+  superseded by the correctly attributed reconnect at 11:21:48Z
+  (FIN21.14).
+- **Live 400** is not injectable in emulator v2. A future emulator fault
+  `refund_reject_400` would let it be proven live.
+- **F11 source view** shows the decision's fixed `executionState`, not the
+  refund state (UI debt).
+- **Needs Attention:** no rule for a refund stuck in `refund_processing` /
+  `outcome_unknown`, or for `refund_failed`. The queue is unchanged (Clear,
+  0). ATT-025 stays Planned.
+- **`f2probe` helpers / fixtures** (`f21_marks` etc.): operator cleanup.
+- The rest of FIN21.13 stands.
+- **REAL STRIPE REFUND: NOT PROVEN.** The emulator only; no real Stripe
+  key or account was used.
