@@ -26889,7 +26889,7 @@ how to resolve it.
 
 **STATUS: P1 CORRECTION SLICE = COMPLETE IN TEST.**
 
-## Settings / Config Foundation — S1-a (shared organisation context + module contract, read-only Settings & System overview) — LIVE-PROVEN on `settings` v1; `hub-content` deploy + proof L WAITING ON OPERATOR — TEST only — 2026-10-03
+## Settings / Config Foundation — S1-a (shared organisation context + module contract, read-only Settings & System overview) — COMPLETE IN TEST: LIVE-PROVEN on `settings` v1 / `hub-content` v13 — TEST only — 2026-10-03
 
 Scope: **Organisation Management configuration only.** Not Platform Admin
 / Super Admin. Nothing here creates organisations, sets an organisation
@@ -26990,7 +26990,7 @@ access, invoices and connections were not changed or redeployed.
 - Finance still owns connecting, disconnecting and credentials. Nothing
   here writes.
 
-### S1-a.5 `hub-content` `/settings` (code at `cf5111e`; deploy pending)
+### S1-a.5 `hub-content` `/settings` (code at `cf5111e`, live on v13)
 
 - The route is purely public today. The frontend (`content-provider.js`)
   fetches it without a user session, so public and authenticated reads were
@@ -27011,13 +27011,10 @@ access, invoices and connections were not changed or redeployed.
 | Function | Version | verify_jwt | Files vs `cf5111e` |
 |---|---|---|---|
 | `settings` (new) | v1 (MCP deploy) | true | `settings/index.ts` `66f1cd3a90f3…`, `settings/settings-system.ts` `b8d99e08aa68…`, `_shared/organisation-context.ts` `82bdc4de0171…`. **All MATCH byte for byte**, compared from the `get_edge_function` payload. ezbr `7412756de1d9…` |
-| `hub-content` | **still v12 — operator deploy required** | true (keep) | to deploy: `hub-content/index.ts` `2e015c69e25a…`, `hub-content/player-access.ts` `21193840e9ff…` (unchanged), `_shared/organisation-context.ts` `82bdc4de0171…` |
+| `hub-content` | v13 (operator, from `cf5111e`) | true | `hub-content/index.ts` `2e015c69e25a…`, `hub-content/player-access.ts` `21193840e9ff…` (unchanged), `_shared/organisation-context.ts` `82bdc4de0171…`. **All MATCH**: verified by the operator and independently from the `get_edge_function` payload. ezbr `957c3684fec7…` |
 
-`hub-content` now imports `../_shared/organisation-context.ts`, so the
-deploy must include `_shared/`. Deploy from `supabase/functions-test` at
-`cf5111e` with the entrypoint `hub-content/index.ts` (`--project-ref
-dkqubldmfyeuudecxmvh`; TEST only). After the deploy: byte-verify, then
-run proof L (S1-a.7).
+`hub-content` imports `../_shared/organisation-context.ts`, so every
+deploy of it must include `_shared/` (v13 does).
 
 ### S1-a.7 Live proof (2026-10-03, TEST `pg_net` harness, real logins)
 
@@ -27034,8 +27031,28 @@ run proof L (S1-a.7).
 | I | Connections | values equal the three Finance connection rows (status, last success). Keys only `provider,label,status,lastSuccessAt,lastErrorCode,needsAttention,managedIn`. No secret-like content (regex scan) |
 | J | Org override | `?organisation_id=ORG-OTHER-999` and `?tenant=ORG-OTHER-999` → **400 `organisation_parameter_not_accepted`** |
 | K | Record ids | no `rec…` id anywhere in the responses |
-| L | `hub-content` `/settings` exact org match | **pending the operator deploy.** Baseline captured on v12: no-auth / Management / Coach `GET hub-content/settings` are all 200 with an identical body (md5 `d945c911…`). After the deploy: the public body must still be md5 `d945c911…`; Management and Coach must resolve ORG-TEST-001 by exact match; inactive must give 403 `inactive_profile` |
+| L | `hub-content` `/settings` exact org match (v13) | See S1-a.7a |
 | M | Production | never connected (Airtable `apprptFotQuVL1mhs` / Supabase `bkkukymqaxawnudoxdjs`); every function boot-guards the base |
+
+### S1-a.7a Proof L — `hub-content` v13 `/settings`
+
+The v12 baseline (captured before the deploy) is 200 with md5
+`d945c911…` for no-auth, Management and Coach alike.
+
+| # | Call (v13) | Result |
+|---|---|---|
+| L1 | No session (`apikey` only), `GET hub-content/settings`, and the bare root `GET hub-content` | **200, md5 `d945c911…`**, byte-identical to v12. No new auth requirement |
+| L2 | Signed in as Management / Coach A / Parent A | **200, ORG-TEST-001**, same body. Exact match on each caller's `profiles.organisation_id` |
+| L3 | Management set `active=false`: `GET hub-content/settings` and `GET hub-content` | **403 `inactive_profile`** on both. No fallback to the public payload |
+| L4 | Coach A's `organisation_id` temporarily set to `ORG-S1A-NOMATCH` | **403 `organisation_mismatch`**. A no-session call in the same window still returned the ORG-TEST-001 baseline (md5 `d945c911…`), so the signed-in path never uses the first Active row |
+| L5 | Both profiles restored (`active=true`, `ORG-TEST-001`) | Management / Coach back to 200, md5 `d945c911…` |
+| L6 | Regression on v13 | Coach `GET hub-content/players`: 200, 2 permanent rows, md5 `685b11e7…` (long-standing baseline). Management: 200, 5 admin rows. `settings/system` after: md5 identical to proof A |
+
+**Ambiguity was not provoked live.** It would need a second Active
+Organisation & Branding row with the same Organisation ID in the shared
+TEST config, and every org-aware function reads that table. The
+fail-closed `organisation_ambiguous` result is proven in code instead: O5
+and H29 in the S1-a suite, against the deployed source.
 
 ### S1-a.8 Tests and regression
 
@@ -27079,8 +27096,6 @@ run proof L (S1-a.7).
 
 ### S1-a.10 Remaining
 
-- **S1-a close-out:** operator deploy of `hub-content` from `cf5111e`, then
-  byte-verify and run proof L.
 - **S1-b:** switch Finance / NA / session-occurrences onto the shared
   resolver (behaviour-preserving, drift tests become identity tests); use
   `todayIn(ctx)` where "today" is still Europe/London-hard-coded;
@@ -27093,6 +27108,9 @@ run proof L (S1-a.7).
   - NA core-rule gating moved off module rows;
   - Hub Settings / Content & Brand ownership kept separate.
 
-**STATUS: S1-a = LIVE-PROVEN IN TEST for the `settings` overview; the
-`hub-content` `/settings` exact-match path is tested in code and waits on
-the operator deploy (proof L).**
+**STATUS: SETTINGS / CONFIG S1-a = COMPLETE IN TEST** (`settings` v1 +
+`hub-content` v13, proofs A–M live). Resting state re-checked after
+proof L: 9 profiles active and on ORG-TEST-001; 0 locks / tokens / pg_net
+queue; Finance audit 667; connection rows unchanged; Timezone
+Europe/London; Feature Controls unchanged; Hub Settings empty. Suites:
+Settings 39/39, P1 45/45, `npm test` 91/91.
